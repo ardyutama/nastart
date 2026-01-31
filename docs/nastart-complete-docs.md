@@ -458,12 +458,45 @@ flowchart TD
     A[Buy Groceries] --> B[Send Receipt Photo]
     B --> C[Bot Scans Receipt]
     C --> D{Is Ingredient?}
-    D -->|Yes| E[Add to Inventory]
-    D -->|No| F[Filter Out]
-    E --> G[Update Prices]
-    G --> H{Price Changed?}
-    H -->|>15%| I[Send Alert]
-    H -->|Normal| J[Save Quietly]
+    D -->|Yes| E[Show Confirmation Preview]
+    D -->|No| F[Add to Unmatched]
+    E --> G{User Confirms?}
+    G -->|Edit| H[Edit Items]
+    G -->|Add New| I[New Ingredient Wizard]
+    G -->|Confirm| J[Save to Inventory]
+    H --> E
+    I --> E
+    F --> E
+    J --> K[Update Prices]
+    K --> L{Price Changed?}
+    L -->|Yes| M[Show Transparency Summary]
+    L -->|No| N[Show Success]
+    M --> O{Margin Affected?}
+    O -->|>5% drop| P[Flag Recipe for Review]
+    O -->|OK| Q[Done]
+```
+
+## Onboarding Flow
+
+```mermaid
+flowchart TD
+    A[/start Command] --> B[Welcome Message]
+    B --> C{First Time User?}
+    C -->|Yes| D[Show Business Type Selection]
+    C -->|No| E[Show Main Menu]
+    D --> F{Select Type}
+    F -->|Bakery| G[Seed Bakery Ingredients]
+    F -->|Café| H[Seed Café Ingredients]
+    F -->|Catering| I[Seed Catering Ingredients]
+    F -->|Home| J[Seed Home Kitchen Ingredients]
+    F -->|Skip| K[Start Empty]
+    G --> L[Show Ingredient List]
+    H --> L
+    I --> L
+    J --> L
+    K --> E
+    L --> M[Tutorial Prompt]
+    M --> E
 ```
 
 ## Registration Flow
@@ -479,46 +512,93 @@ flowchart TD
     F -->|No| H[Retry]
 ```
 
-## Receipt Processing
+## Receipt Processing (Enhanced)
 
 ```mermaid
 flowchart TD
     A[Receipt Photo] --> B[OCR Scan]
     B --> C{Success?}
-    C -->|No| D[Retry]
+    C -->|No| D[Show Error & Retry]
     C -->|Yes| E[Extract Items]
     E --> F[Classify Items]
-    F --> G{Ingredient?}
-    G -->|Yes| H[Match to DB]
-    G -->|No| I[Filter Out]
-    H --> J{Found?}
-    J -->|Yes| K[Update Price]
-    J -->|No| L[Create New]
-    K --> M[Check Thresholds]
-    M --> N{Alert?}
-    N -->|Yes| O[Send WhatsApp]
-    N -->|No| P[Done]
+    F --> G[Fuzzy Match to DB]
+    G --> H[Build Confirmation Preview]
+    
+    H --> I{Show Preview}
+    I --> J{User Action}
+    J -->|Confirm| K[Save Items]
+    J -->|Edit| L[Edit Mode]
+    J -->|Cancel| M[Discard Session]
+    J -->|Add New| N[New Ingredient Wizard]
+    
+    L --> O[Modify Item]
+    O --> H
+    
+    N --> P{Select Category}
+    P --> Q{Select Unit}
+    Q --> R[Create Ingredient]
+    R --> S{More Unmatched?}
+    S -->|Yes| N
+    S -->|No| H
+    
+    K --> T{Partial Save?}
+    T -->|All Success| U[Show Success Summary]
+    T -->|Some Failed| V[Show Partial Save Report]
+    T -->|All Failed| W[Show Error]
+    
+    U --> X[Show Price Changes]
+    V --> X
+    X --> Y{Recipes Affected?}
+    Y -->|Yes| Z[Show Recipe Impact]
+    Y -->|No| AA[Done]
+    Z --> AB{Margin Dropped >5%?}
+    AB -->|Yes| AC[Mark for Review]
+    AB -->|No| AA
 ```
 
-## Recipe Creation
+## Recipe Creation (Enhanced with Draft State)
 
 ```mermaid
 flowchart TD
-    A[Recipe Input] --> B{Type}
-    B -->|Photo| C[OCR]
-    B -->|Text| D[Parse]
-    B -->|Manual| E[Select]
+    A[Start Recipe] --> B{Input Type}
+    B -->|Photo| C[OCR Recipe Card]
+    B -->|Text| D[Parse Description]
+    B -->|Manual| E[Select Ingredients]
+    
     C --> F[Extract Ingredients]
     D --> F
-    E --> G[Set Quantities]
-    F --> H[Match to DB]
-    G --> H
-    H --> I[Calculate Cost]
-    I --> J[Set Sell Price]
-    J --> K[Calculate Margin]
-    K --> L{OK?}
-    L -->|Below Min| M[Warning]
-    L -->|OK| N[Save]
+    
+    F --> G[Match to Inventory]
+    E --> G
+    
+    G --> H[Create Draft Recipe]
+    H --> I[Auto-Save Draft]
+    
+    I --> J{Add More?}
+    J -->|Yes| K[Add Ingredient]
+    K --> I
+    J -->|No| L[Set Quantities]
+    
+    L --> M[Transition to Costing]
+    M --> N[Calculate Cost]
+    N --> O[Set Sell Price]
+    O --> P[Calculate Margin]
+    
+    P --> Q{Margin OK?}
+    Q -->|Below Min| R[State: NeedsPriceAdjustment]
+    Q -->|OK| S[State: Ready]
+    R --> T[Suggest Price]
+    T --> O
+    S --> U[Publish Recipe]
+    U --> V[State: Active]
+    
+    %% Price Change Handling
+    W[Price Changed Event] --> X{Recipe Active?}
+    X -->|Yes| Y[Recalculate Cost]
+    Y --> Z{Margin Still OK?}
+    Z -->|No| AA[State: NeedsReview]
+    Z -->|Yes| AB[Keep Active]
+    AA --> AC[Notify User]
 ```
 
 ## Alert System
@@ -553,7 +633,11 @@ stateDiagram-v2
     Reviewing --> Confirmed
     Reviewing --> Editing
     Editing --> Reviewing
-    Confirmed --> Saved
+    Reviewing --> AddingNew: Unmatched Items
+    AddingNew --> Reviewing
+    Confirmed --> PartialSave: Some Failed
+    Confirmed --> Saved: All Success
+    PartialSave --> Saved
     Saved --> [*]
 ```
 
@@ -561,14 +645,26 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> Draft
-    Draft --> Costing
-    Costing --> Ready
-    Costing --> Incomplete
-    Incomplete --> Costing
-    Ready --> Active
-    Active --> NeedsReview
-    NeedsReview --> Active
-    Active --> Archived
+    Draft --> Draft: AutoSave
+    Draft --> Costing: SetQuantities
+    
+    Costing --> NeedsPriceAdjustment: LowMargin
+    Costing --> Ready: MarginOK
+    NeedsPriceAdjustment --> Costing: AdjustPrice
+    
+    Ready --> Active: Publish
+    
+    Active --> NeedsReview: PriceChanged + MarginDrop
+    Active --> Active: PriceChanged + MarginOK
+    Active --> Inactive: Deactivate
+    
+    NeedsReview --> Active: ReviewComplete
+    NeedsReview --> NeedsPriceAdjustment: NeedsAdjustment
+    
+    Inactive --> Active: Reactivate
+    Inactive --> Archived: Archive
+    
+    Archived --> [*]
 ```
 
 ---

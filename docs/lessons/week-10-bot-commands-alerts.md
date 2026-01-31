@@ -1,6 +1,6 @@
 # Week 10: Bot Commands + Alert Notifications 🔔
 
-> **Goal**: Implement Telegram bot commands (`/cost`, `/price`, `/low`, `/profit`), create `AlertNotificationService`, and connect domain events to Telegram notifications using MediatR `INotificationHandler`.
+> **Goal**: Implement Telegram bot commands (`/cost`, `/price`, `/low`, `/profit`), create `AlertNotificationService`, connect domain events to Telegram notifications using MediatR `INotificationHandler`, and provide transparent price change summaries.
 
 ---
 
@@ -11,6 +11,7 @@
 4. [Day 4: Implement /profit Command](#day-4-implement-profit-command)
 5. [Day 5: Domain Events & Alert System](#day-5-domain-events--alert-system)
 6. [Day 6: AlertNotificationService & Telegram Integration](#day-6-alertnotificationservice--telegram-integration)
+   - [Price Transparency: Post-Receipt Summary](#price-transparency-post-receipt-summary)
 7. [Day 7: Testing & Production Considerations](#day-7-testing--production-considerations)
 8. [Resources](#resources)
 
@@ -1588,6 +1589,347 @@ services.AddScoped<IAlertNotificationService, TelegramAlertNotificationService>(
 ### References
 - [MediatR Notifications](https://github.com/jbogard/MediatR/wiki#notifications)
 - [Domain Event Handlers](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation#implement-domain-events)
+
+---
+
+## Price Transparency: Post-Receipt Summary
+
+After a receipt is confirmed, show users a comprehensive summary of **what changed** and **what's affected**. This provides full transparency and helps users make informed decisions.
+
+### IReceiptConfirmationSummary Interface
+
+Create `src/Nastart.Application/Finance/Services/IReceiptConfirmationSummary.cs`:
+
+```csharp
+namespace Nastart.Application.Finance.Services;
+
+/// <summary>
+/// Builds a transparency summary after receipt confirmation.
+/// Shows price changes and affected recipes.
+/// </summary>
+public interface IReceiptConfirmationSummary
+{
+    Task<ReceiptImpactSummary> BuildSummaryAsync(
+        Guid sessionId,
+        IReadOnlyList<PriceUpdate> priceUpdates,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed record ReceiptImpactSummary(
+    int ItemsUpdated,
+    decimal TotalSpent,
+    IReadOnlyList<PriceChangeDetail> PriceChanges,
+    IReadOnlyList<RecipeImpact> AffectedRecipes);
+
+public sealed record PriceChangeDetail(
+    string IngredientName,
+    decimal OldPrice,
+    decimal NewPrice,
+    decimal ChangePercent,
+    DateTimeOffset LastPurchaseDate);
+
+public sealed record RecipeImpact(
+    string RecipeName,
+    decimal OldCost,
+    decimal NewCost,
+    decimal OldMargin,
+    decimal NewMargin,
+    bool NeedsReview);
+```
+
+### ReceiptConfirmationSummaryService
+
+Create `src/Nastart.Application/Finance/Services/ReceiptConfirmationSummaryService.cs`:
+
+```csharp
+using Microsoft.Extensions.Logging;
+using Nastart.Application.Recipe.Queries.GetRecipesUsingIngredient;
+
+namespace Nastart.Application.Finance.Services;
+
+public sealed class ReceiptConfirmationSummaryService : IReceiptConfirmationSummary
+{
+    private readonly IMediator _mediator;
+    private readonly IRecipeRepository _recipeRepository;
+    private readonly IIngredientRepository _ingredientRepository;
+    private readonly ILogger<ReceiptConfirmationSummaryService> _logger;
+
+    public ReceiptConfirmationSummaryService(
+        IMediator mediator,
+        IRecipeRepository recipeRepository,
+        IIngredientRepository ingredientRepository,
+        ILogger<ReceiptConfirmationSummaryService> logger)
+    {
+        _mediator = mediator;
+        _recipeRepository = recipeRepository;
+        _ingredientRepository = ingredientRepository;
+        _logger = logger;
+    }
+
+    public async Task<ReceiptImpactSummary> BuildSummaryAsync(
+        Guid sessionId,
+        IReadOnlyList<PriceUpdate> priceUpdates,
+        CancellationToken cancellationToken = default)
+    {
+        var priceChanges = new List<PriceChangeDetail>();
+        var affectedRecipes = new Dictionary<Guid, RecipeImpact>();
+        
+        foreach (var update in priceUpdates.Where(p => p.PriceChanged))
+        {
+            // Build price change detail
+            priceChanges.Add(new PriceChangeDetail(
+                update.IngredientName,
+                update.OldPrice,
+                update.NewPrice,
+                update.ChangePercent,
+                update.LastPurchaseDate));
+
+            // Find recipes using this ingredient
+            var recipes = await _mediator.Send(
+                new GetRecipesUsingIngredientQuery(update.IngredientId),
+                cancellationToken);
+
+            foreach (var recipe in recipes.Value)
+            {
+                if (affectedRecipes.ContainsKey(recipe.RecipeId))
+                    continue;
+
+                // Calculate new cost and margin
+                var fullRecipe = await _recipeRepository
+                    .GetByIdWithIngredientsAsync(recipe.RecipeId, cancellationToken);
+                
+                if (fullRecipe is null) continue;
+
+                var oldCost = fullRecipe.TotalCost;
+                fullRecipe.RecalculateCost();
+                var newCost = fullRecipe.TotalCost;
+
+                var oldMargin = fullRecipe.SellPrice > 0 
+                    ? ((fullRecipe.SellPrice - oldCost) / fullRecipe.SellPrice) * 100 
+                    : 0;
+                
+                var newMargin = fullRecipe.SellPrice > 0 
+                    ? ((fullRecipe.SellPrice - newCost) / fullRecipe.SellPrice) * 100 
+                    : 0;
+
+                var needsReview = oldMargin - newMargin > 5; // Margin dropped more than 5%
+
+                affectedRecipes[recipe.RecipeId] = new RecipeImpact(
+                    fullRecipe.Name,
+                    oldCost,
+                    newCost,
+                    oldMargin,
+                    newMargin,
+                    needsReview);
+            }
+        }
+
+        return new ReceiptImpactSummary(
+            ItemsUpdated: priceUpdates.Count,
+            TotalSpent: priceUpdates.Sum(p => p.TotalPaid),
+            PriceChanges: priceChanges,
+            AffectedRecipes: affectedRecipes.Values.ToList());
+    }
+}
+```
+
+### Enhanced Confirmation Response
+
+Update the callback handler to show the transparency summary:
+
+```csharp
+private async Task HandleConfirmWithTransparency(
+    long chatId,
+    int messageId,
+    Guid sessionId,
+    CancellationToken cancellationToken)
+{
+    // Confirm the receipt
+    var command = new ConfirmReceiptWithPartialSaveCommand(sessionId);
+    var result = await _mediator.Send(command, cancellationToken);
+
+    if (!result.IsSuccess)
+    {
+        await _botClient.EditMessageText(
+            chatId: chatId,
+            messageId: messageId,
+            text: $"❌ Failed to save: {result.Error?.Message}",
+            cancellationToken: cancellationToken);
+        return;
+    }
+
+    // Get impact summary
+    var summary = await _summaryService.BuildSummaryAsync(
+        sessionId,
+        result.Value.PriceUpdates,
+        cancellationToken);
+
+    var sb = new StringBuilder();
+    
+    // Success message
+    sb.AppendLine("✅ *Purchase Saved Successfully!*\n");
+    sb.AppendLine($"📦 {result.Value.SuccessfulItems} items updated");
+    sb.AppendLine($"💰 Total: Rp {summary.TotalSpent:N0}");
+    
+    // Price changes section
+    if (summary.PriceChanges.Count > 0)
+    {
+        sb.AppendLine();
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"💹 *{summary.PriceChanges.Count} Price(s) Updated:*\n");
+        
+        foreach (var change in summary.PriceChanges.Take(5))
+        {
+            var arrow = change.ChangePercent > 0 ? "📈" : "📉";
+            var sign = change.ChangePercent > 0 ? "+" : "";
+            
+            sb.AppendLine($"{arrow} *{change.IngredientName}*");
+            sb.AppendLine($"   Rp {change.OldPrice:N0} → Rp {change.NewPrice:N0} ({sign}{change.ChangePercent:N1}%)");
+            
+            if (change.LastPurchaseDate != default)
+            {
+                var daysSince = (DateTimeOffset.UtcNow - change.LastPurchaseDate).Days;
+                sb.AppendLine($"   _Last purchase: {daysSince} days ago_");
+            }
+        }
+        
+        if (summary.PriceChanges.Count > 5)
+        {
+            sb.AppendLine($"   _...and {summary.PriceChanges.Count - 5} more_");
+        }
+    }
+    
+    // Affected recipes section
+    if (summary.AffectedRecipes.Count > 0)
+    {
+        sb.AppendLine();
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"🍳 *{summary.AffectedRecipes.Count} Recipe(s) Affected:*\n");
+        
+        // Show recipes that need attention first
+        var needsReview = summary.AffectedRecipes.Where(r => r.NeedsReview).ToList();
+        var okRecipes = summary.AffectedRecipes.Where(r => !r.NeedsReview).ToList();
+        
+        foreach (var recipe in needsReview)
+        {
+            sb.AppendLine($"⚠️ *{recipe.RecipeName}*");
+            sb.AppendLine($"   Cost: Rp {recipe.OldCost:N0} → Rp {recipe.NewCost:N0}");
+            sb.AppendLine($"   Margin: {recipe.OldMargin:N1}% → {recipe.NewMargin:N1}% 📉");
+            sb.AppendLine($"   _Consider updating sell price_");
+        }
+        
+        if (okRecipes.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"✅ {okRecipes.Count} recipe(s) updated with stable margins");
+        }
+    }
+    
+    // Action suggestions
+    sb.AppendLine();
+    sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━");
+    
+    if (summary.AffectedRecipes.Any(r => r.NeedsReview))
+    {
+        sb.AppendLine("💡 *Suggested Actions:*");
+        sb.AppendLine("• Review recipes with declining margins");
+        sb.AppendLine("• Consider adjusting sell prices");
+        sb.AppendLine("• Use /cost [recipe] for details");
+    }
+    else
+    {
+        sb.AppendLine("_All recipes have healthy margins! 🎉_");
+    }
+
+    // Build action keyboard
+    var keyboard = BuildPostConfirmKeyboard(summary.AffectedRecipes.Any(r => r.NeedsReview));
+
+    await _botClient.EditMessageText(
+        chatId: chatId,
+        messageId: messageId,
+        text: sb.ToString(),
+        parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
+        replyMarkup: keyboard,
+        cancellationToken: cancellationToken);
+}
+
+private static InlineKeyboardMarkup BuildPostConfirmKeyboard(bool hasRecipesToReview)
+{
+    var buttons = new List<InlineKeyboardButton[]>();
+
+    if (hasRecipesToReview)
+    {
+        buttons.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData(
+                "📊 Review Recipes", 
+                "action:reviewrecipes"),
+            InlineKeyboardButton.WithCallbackData(
+                "⏭️ Dismiss", 
+                "action:dismiss")
+        });
+    }
+    
+    buttons.Add(new[]
+    {
+        InlineKeyboardButton.WithCallbackData(
+            "📝 View Price History", 
+            "action:pricehistory"),
+        InlineKeyboardButton.WithCallbackData(
+            "📷 Scan Another", 
+            "action:scanreceipt")
+    });
+
+    return new InlineKeyboardMarkup(buttons);
+}
+```
+
+### Query: GetRecipesUsingIngredient
+
+Create `src/Nastart.Application/Recipe/Queries/GetRecipesUsingIngredient/`:
+
+```csharp
+// GetRecipesUsingIngredientQuery.cs
+namespace Nastart.Application.Recipe.Queries.GetRecipesUsingIngredient;
+
+public sealed record GetRecipesUsingIngredientQuery(
+    Guid IngredientId
+) : IRequest<Result<IReadOnlyList<RecipeReference>>>;
+
+public sealed record RecipeReference(
+    Guid RecipeId,
+    string RecipeName);
+```
+
+```csharp
+// GetRecipesUsingIngredientHandler.cs
+namespace Nastart.Application.Recipe.Queries.GetRecipesUsingIngredient;
+
+internal sealed class GetRecipesUsingIngredientHandler
+    : IRequestHandler<GetRecipesUsingIngredientQuery, Result<IReadOnlyList<RecipeReference>>>
+{
+    private readonly IRecipeRepository _recipeRepository;
+
+    public GetRecipesUsingIngredientHandler(IRecipeRepository recipeRepository)
+    {
+        _recipeRepository = recipeRepository;
+    }
+
+    public async Task<Result<IReadOnlyList<RecipeReference>>> Handle(
+        GetRecipesUsingIngredientQuery request,
+        CancellationToken cancellationToken)
+    {
+        var recipes = await _recipeRepository
+            .GetRecipesUsingIngredientAsync(request.IngredientId, cancellationToken);
+
+        var references = recipes
+            .Select(r => new RecipeReference(r.Id, r.Name))
+            .ToList();
+
+        return references;
+    }
+}
+```
 
 ---
 

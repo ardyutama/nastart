@@ -266,17 +266,270 @@ public sealed class UpdateRouter : IUpdateRouter
 
 #### 3.3 Create Start and Help Commands
 
+> 💡 **UX Enhancement - Onboarding Starter Kit**: New users face an empty dashboard. We'll ask their business type and seed common ingredients to reduce friction.
+
+```csharp
+using MediatR;
+using Telegram.Bot;
+using Telegram.Bot.Types;
+using Telegram.Bot.Types.ReplyMarkups;
+using Nastart.Application.Inventory.Commands.SeedIngredients;
+
+namespace Nastart.Bot.Commands;
+
+/// <summary>
+/// Enhanced StartCommand with business type selection and ingredient seeding.
+/// Reduces time-to-value for new users.
+/// </summary>
+public sealed class StartCommand : ICommandHandler
+{
+    private readonly ITelegramBotClient _botClient;
+    private readonly IMediator _mediator;
+    private readonly IUserRepository _userRepository;
+
+    public StartCommand(
+        ITelegramBotClient botClient,
+        IMediator mediator,
+        IUserRepository userRepository)
+    {
+        _botClient = botClient;
+        _mediator = mediator;
+        _userRepository = userRepository;
+    }
+
+    public string Command => "start";
+
+    public async Task HandleAsync(Message message, CancellationToken cancellationToken = default)
+    {
+        var userId = message.From?.Id ?? 0;
+        var chatId = message.Chat.Id;
+        
+        // Check if user exists (returning user vs new user)
+        var existingUser = await _userRepository.GetByTelegramIdAsync(userId, cancellationToken);
+        
+        if (existingUser is not null)
+        {
+            // Returning user — show welcome back
+            await ShowWelcomeBack(chatId, existingUser.BusinessName, cancellationToken);
+            return;
+        }
+
+        // New user — start onboarding flow
+        await ShowBusinessTypeSelection(chatId, cancellationToken);
+    }
+
+    private async Task ShowBusinessTypeSelection(long chatId, CancellationToken cancellationToken)
+    {
+        var keyboard = new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("🍰 Bakery", "onboard:bakery"),
+                InlineKeyboardButton.WithCallbackData("☕ Café", "onboard:cafe")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("🍲 Catering", "onboard:catering"),
+                InlineKeyboardButton.WithCallbackData("🏠 Home Kitchen", "onboard:home")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("⏭️ Skip — Start Empty", "onboard:skip")
+            }
+        });
+
+        await _botClient.SendMessage(
+            chatId: chatId,
+            text: """
+                🍳 *Welcome to Nastart!*
+                
+                I help you track ingredient costs and recipe margins.
+                
+                *What type of food business do you run?*
+                
+                _Select your business type and I'll set up common ingredients for you!_
+                """,
+            parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
+            replyMarkup: keyboard,
+            cancellationToken: cancellationToken);
+    }
+
+    private async Task ShowWelcomeBack(
+        long chatId, 
+        string? businessName, 
+        CancellationToken cancellationToken)
+    {
+        var greeting = string.IsNullOrEmpty(businessName) 
+            ? "Welcome back!" 
+            : $"Welcome back, *{businessName}*!";
+
+        await _botClient.SendMessage(
+            chatId: chatId,
+            text: $"""
+                🍳 {greeting}
+                
+                📸 Send a receipt photo to log purchases
+                💰 Use /cost [recipe] to check costs
+                📊 Use /profit to see today's summary
+                ⚠️ Use /low to see low stock items
+                
+                What would you like to do?
+                """,
+            parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
+            cancellationToken: cancellationToken);
+    }
+}
+```
+
+**Onboarding Callback Handler**:
+
+```csharp
+// In CallbackHandler, add onboarding handling
+private async Task HandleOnboarding(
+    CallbackQuery callbackQuery, 
+    string businessType, 
+    CancellationToken cancellationToken)
+{
+    var userId = callbackQuery.From.Id;
+    var chatId = callbackQuery.Message!.Chat.Id;
+
+    if (businessType == "skip")
+    {
+        // Create user without seeding
+        await _mediator.Send(new CreateUserCommand(userId, chatId, null), cancellationToken);
+        
+        await _botClient.EditMessageText(
+            chatId: chatId,
+            messageId: callbackQuery.Message.MessageId,
+            text: "✅ *Account created!*\n\nYou're starting with a clean slate.\nSend me a receipt photo to begin!",
+            parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
+            cancellationToken: cancellationToken);
+        return;
+    }
+
+    // Seed ingredients based on business type
+    var seedCommand = new SeedIngredientsCommand(userId, businessType);
+    var result = await _mediator.Send(seedCommand, cancellationToken);
+
+    var ingredientCount = result.Value?.Count ?? 0;
+    var businessName = businessType switch
+    {
+        "bakery" => "Bakery",
+        "cafe" => "Café",
+        "catering" => "Catering",
+        "home" => "Home Kitchen",
+        _ => "Business"
+    };
+
+    await _botClient.EditMessageText(
+        chatId: chatId,
+        messageId: callbackQuery.Message.MessageId,
+        text: $"""
+            ✅ *Welcome to Nastart, {businessName}!*
+            
+            I've added *{ingredientCount} common ingredients* for you:
+            • Tepung Terigu (Wheat Flour)
+            • Gula Pasir (Sugar)
+            • Mentega (Butter)
+            • Telur (Eggs)
+            • _and more..._
+            
+            📸 *Next step:* Send me a receipt photo to start tracking prices!
+            
+            Or use /help to see all commands.
+            """,
+        parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
+        cancellationToken: cancellationToken);
+}
+```
+
+**Starter Ingredients Data**:
+
+```csharp
+// src/Nastart.Application/Inventory/Commands/SeedIngredients/StarterIngredients.cs
+public static class StarterIngredients
+{
+    public static readonly Dictionary<string, List<(string Name, string Unit, decimal MinStock)>> ByBusinessType = new()
+    {
+        ["bakery"] = new()
+        {
+            ("Tepung Terigu", "kg", 5),
+            ("Gula Pasir", "kg", 3),
+            ("Mentega", "kg", 2),
+            ("Telur", "pcs", 30),
+            ("Susu Cair", "L", 2),
+            ("Coklat Bubuk", "kg", 1),
+            ("Ragi Instan", "g", 500),
+            ("Baking Powder", "g", 500),
+            ("Keju Cheddar", "kg", 1),
+            ("Krim Kental", "L", 1),
+            ("Vanili Ekstrak", "mL", 100),
+            ("Garam", "kg", 1),
+            ("Minyak Goreng", "L", 2),
+            ("Selai Strawberry", "kg", 1),
+            ("Almond Slice", "kg", 0.5m),
+        },
+        ["cafe"] = new()
+        {
+            ("Kopi Bubuk", "kg", 2),
+            ("Susu Cair", "L", 5),
+            ("Gula Pasir", "kg", 3),
+            ("Sirup Vanilla", "mL", 500),
+            ("Sirup Hazelnut", "mL", 500),
+            ("Whipped Cream", "L", 1),
+            ("Coklat Bubuk", "kg", 1),
+            ("Matcha Powder", "g", 500),
+            ("Teh Celup", "pcs", 100),
+            ("Es Batu", "kg", 10),
+            ("Roti Tawar", "pcs", 20),
+            ("Keju Slice", "pcs", 50),
+            ("Mentega", "kg", 1),
+            ("Telur", "pcs", 30),
+        },
+        ["catering"] = new()
+        {
+            ("Beras", "kg", 25),
+            ("Minyak Goreng", "L", 10),
+            ("Ayam", "kg", 10),
+            ("Daging Sapi", "kg", 5),
+            ("Telur", "pcs", 100),
+            ("Bawang Merah", "kg", 3),
+            ("Bawang Putih", "kg", 2),
+            ("Cabai Merah", "kg", 2),
+            ("Garam", "kg", 2),
+            ("Gula Pasir", "kg", 3),
+            ("Kecap Manis", "L", 2),
+            ("Santan", "L", 5),
+            ("Bumbu Penyedap", "g", 500),
+            ("Tepung Terigu", "kg", 5),
+        },
+        ["home"] = new()
+        {
+            ("Tepung Terigu", "kg", 2),
+            ("Gula Pasir", "kg", 1),
+            ("Mentega", "kg", 0.5m),
+            ("Telur", "pcs", 12),
+            ("Susu Cair", "L", 1),
+            ("Coklat Bubuk", "g", 250),
+        }
+    };
+}
+```
+
+**Simple StartCommand (for reference)**:
+
 ```csharp
 using Telegram.Bot;
 using Telegram.Bot.Types;
 
 namespace Nastart.Bot.Commands;
 
-public sealed class StartCommand : ICommandHandler
+// Simple version without onboarding (for comparison)
+public sealed class SimpleStartCommand : ICommandHandler
 {
     private readonly ITelegramBotClient _botClient;
 
-    public StartCommand(ITelegramBotClient botClient)
+    public SimpleStartCommand(ITelegramBotClient botClient)
     {
         _botClient = botClient;
     }

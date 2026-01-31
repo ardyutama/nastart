@@ -648,6 +648,127 @@ public class Recipe : AggregateRoot<RecipeId>
 | Invariant Enforcement | `RecalculateCost()` after each change | Consistency |
 | Domain Events | `AddDomainEvent()` on significant changes | Decoupling |
 
+### Recipe State Machine — Draft State Persistence
+
+> 💡 **UX Enhancement**: Users often abandon recipe creation mid-way (network issues, app switches). We need to persist Draft state so they can continue later.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Draft: Start Recipe
+    Draft --> Draft: Add/Edit Ingredients
+    Draft --> Draft: Auto-save (every change)
+    Draft --> Costing: All required fields complete
+    Costing --> Ready: Cost calculated, margin OK
+    Costing --> NeedsPriceAdjustment: Margin below threshold
+    NeedsPriceAdjustment --> Costing: Price adjusted
+    Ready --> Active: Publish for sale
+    Active --> NeedsReview: Ingredient price changed
+    NeedsReview --> Active: User confirms new margin
+    NeedsReview --> Inactive: User pauses recipe
+    Active --> Archived: Discontinued
+    Inactive --> Active: Reactivate
+    
+    note right of Draft
+        Persists in DB after each change.
+        Survives app closure.
+        Expires after 7 days.
+    end note
+```
+
+**RecipeState Enum**:
+
+```csharp
+namespace Nastart.Domain.Recipe.ValueObjects;
+
+/// <summary>
+/// Represents the lifecycle state of a Recipe.
+/// Enables draft persistence for fault tolerance.
+/// </summary>
+public enum RecipeState
+{
+    /// <summary>Recipe is being created, auto-saved on each change.</summary>
+    Draft,
+    
+    /// <summary>All required fields complete, cost being calculated.</summary>
+    Costing,
+    
+    /// <summary>Cost calculated but margin below threshold — needs price adjustment.</summary>
+    NeedsPriceAdjustment,
+    
+    /// <summary>Recipe is ready but not yet published.</summary>
+    Ready,
+    
+    /// <summary>Recipe is active and available for sale.</summary>
+    Active,
+    
+    /// <summary>Recipe needs review due to ingredient price changes.</summary>
+    NeedsReview,
+    
+    /// <summary>Recipe is temporarily paused (not for sale).</summary>
+    Inactive,
+    
+    /// <summary>Recipe is discontinued.</summary>
+    Archived
+}
+```
+
+**Add state to Recipe aggregate**:
+
+```csharp
+// Add to Recipe aggregate properties
+public RecipeState State { get; private set; } = RecipeState.Draft;
+public DateTime? LastAutoSaveAt { get; private set; }
+
+// State transition methods
+public void TransitionToCosting()
+{
+    if (State != RecipeState.Draft)
+        throw new InvalidOperationException($"Cannot transition to Costing from {State}");
+    
+    if (string.IsNullOrEmpty(Name) || SellingPrice <= 0 || _items.Count == 0)
+        throw new InvalidOperationException("Recipe must have name, price, and at least one ingredient");
+    
+    State = RecipeState.Costing;
+    RecalculateCost();
+    
+    // Auto-transition based on margin
+    if (CurrentMargin.IsBelow(15))
+        State = RecipeState.NeedsPriceAdjustment;
+    else
+        State = RecipeState.Ready;
+}
+
+public void Publish()
+{
+    if (State != RecipeState.Ready)
+        throw new InvalidOperationException($"Cannot publish recipe in {State} state");
+    
+    State = RecipeState.Active;
+    AddDomainEvent(new RecipePublishedEvent(Id, Name));
+}
+
+public void MarkForReview(string reason)
+{
+    if (State != RecipeState.Active)
+        throw new InvalidOperationException($"Only active recipes can be marked for review");
+    
+    State = RecipeState.NeedsReview;
+    AddDomainEvent(new RecipeNeedsReviewEvent(Id, Name, reason));
+}
+
+public void AutoSave()
+{
+    LastAutoSaveAt = DateTime.UtcNow;
+    // Draft is persisted — no explicit action needed, just timestamp update
+}
+```
+
+**Why Draft Persistence Matters**:
+- **Fault tolerance**: User loses nothing on network disconnect
+- **Mobile-friendly**: Users switch apps frequently
+- **UX**: "Continue where you left off" experience
+- **Data quality**: Incomplete recipes are still captured
+
 ---
 
 # Day 3: RecipeItem Entity (Child Collection)

@@ -317,36 +317,181 @@ public sealed record Money(decimal Amount, string Currency = "IDR")
 }
 
 /// <summary>
-/// Represents a quantity with a unit of measurement.
+/// Represents a unit of measurement with conversion capabilities.
+/// Supports automatic conversion between compatible units.
 /// </summary>
-public sealed record Quantity(decimal Value, string Unit)
+/// <remarks>
+/// UX Enhancement: Auto-converts between compatible units (g→kg, ml→L)
+/// to prevent calculation errors when receipt uses different units than DB.
+/// </remarks>
+public sealed record Unit(string Name)
 {
-    public static Quantity Zero(string unit) => new(0, unit);
-    public static Quantity Kilograms(decimal value) => new(value, "kg");
-    public static Quantity Grams(decimal value) => new(value, "g");
-    public static Quantity Liters(decimal value) => new(value, "L");
-    public static Quantity Milliliters(decimal value) => new(value, "mL");
-    public static Quantity Pieces(decimal value) => new(value, "pcs");
+    // Standard units
+    public static Unit Kilogram => new("kg");
+    public static Unit Gram => new("g");
+    public static Unit Liter => new("L");
+    public static Unit Milliliter => new("mL");
+    public static Unit Pieces => new("pcs");
+    public static Unit Ons => new("ons"); // Indonesian: 100g
 
-    public Quantity Add(Quantity other)
+    /// <summary>
+    /// Conversion table for compatible units.
+    /// Key: (FromUnit, ToUnit), Value: multiplication factor
+    /// </summary>
+    private static readonly Dictionary<(string, string), decimal> ConversionTable = new()
     {
-        if (Unit != other.Unit)
-            throw new InvalidOperationException($"Cannot add {Unit} to {other.Unit}");
+        // Mass conversions
+        [("g", "kg")] = 0.001m,
+        [("kg", "g")] = 1000m,
+        [("ons", "g")] = 100m,
+        [("g", "ons")] = 0.01m,
+        [("ons", "kg")] = 0.1m,
+        [("kg", "ons")] = 10m,
         
-        return this with { Value = Value + other.Value };
+        // Volume conversions
+        [("mL", "L")] = 0.001m,
+        [("L", "mL")] = 1000m,
+        [("cc", "mL")] = 1m,
+        [("mL", "cc")] = 1m,
+    };
+
+    /// <summary>
+    /// Unit compatibility groups - units that can be converted to each other.
+    /// </summary>
+    private static readonly Dictionary<string, string[]> CompatibilityGroups = new()
+    {
+        ["mass"] = ["kg", "g", "ons"],
+        ["volume"] = ["L", "mL", "cc"],
+        ["count"] = ["pcs", "butir", "buah", "lembar"],
+    };
+
+    /// <summary>
+    /// Checks if this unit can be converted to another unit.
+    /// </summary>
+    public bool IsCompatibleWith(Unit other)
+    {
+        if (Name == other.Name) return true;
+        
+        foreach (var group in CompatibilityGroups.Values)
+        {
+            if (group.Contains(Name, StringComparer.OrdinalIgnoreCase) &&
+                group.Contains(other.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
+    /// <summary>
+    /// Gets the conversion factor from this unit to another.
+    /// Returns null if units are not compatible.
+    /// </summary>
+    public decimal? GetConversionFactor(Unit targetUnit)
+    {
+        if (Name == targetUnit.Name) return 1m;
+        
+        var key = (Name.ToLowerInvariant(), targetUnit.Name.ToLowerInvariant());
+        return ConversionTable.TryGetValue(key, out var factor) ? factor : null;
+    }
+
+    /// <summary>
+    /// Normalizes Indonesian unit abbreviations to standard form.
+    /// </summary>
+    public static Unit Normalize(string unitText)
+    {
+        var normalized = unitText.Trim().ToLowerInvariant() switch
+        {
+            "kilogram" or "kilo" => "kg",
+            "gram" or "gr" or "grm" => "g",
+            "liter" or "ltr" or "lt" => "L",
+            "mililiter" or "mil" => "mL",
+            "pieces" or "pcs" or "pc" or "bh" or "buah" => "pcs",
+            "butir" or "btr" => "pcs",  // eggs
+            "lembar" or "lbr" => "pcs", // sheets
+            "ons" or "oz" => "ons",
+            var s => s
+        };
+        return new Unit(normalized);
+    }
+
+    public override string ToString() => Name;
+}
+
+/// <summary>
+/// Represents a quantity with a unit of measurement.
+/// Supports automatic conversion between compatible units.
+/// </summary>
+public sealed record Quantity(decimal Value, Unit Unit)
+{
+    public static Quantity Zero(Unit unit) => new(0, unit);
+    public static Quantity Kilograms(decimal value) => new(value, Unit.Kilogram);
+    public static Quantity Grams(decimal value) => new(value, Unit.Gram);
+    public static Quantity Liters(decimal value) => new(value, Unit.Liter);
+    public static Quantity Milliliters(decimal value) => new(value, Unit.Milliliter);
+    public static Quantity Pieces(decimal value) => new(value, Unit.Pieces);
+
+    /// <summary>
+    /// Adds another quantity, auto-converting if units are compatible.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">If units are incompatible.</exception>
+    public Quantity Add(Quantity other)
+    {
+        if (Unit.Name == other.Unit.Name)
+            return this with { Value = Value + other.Value };
+        
+        // Try to convert other to this unit
+        var factor = other.Unit.GetConversionFactor(Unit);
+        if (factor.HasValue)
+        {
+            var convertedValue = other.Value * factor.Value;
+            return this with { Value = Value + convertedValue };
+        }
+        
+        throw new InvalidOperationException(
+            $"Cannot add {other.Unit.Name} to {Unit.Name}. Units are not compatible.");
+    }
+
+    /// <summary>
+    /// Subtracts another quantity, auto-converting if units are compatible.
+    /// </summary>
     public Quantity Subtract(Quantity other)
     {
-        if (Unit != other.Unit)
-            throw new InvalidOperationException($"Cannot subtract {other.Unit} from {Unit}");
+        if (Unit.Name == other.Unit.Name)
+            return this with { Value = Value - other.Value };
         
-        return this with { Value = Value - other.Value };
+        var factor = other.Unit.GetConversionFactor(Unit);
+        if (factor.HasValue)
+        {
+            var convertedValue = other.Value * factor.Value;
+            return this with { Value = Value - convertedValue };
+        }
+        
+        throw new InvalidOperationException(
+            $"Cannot subtract {other.Unit.Name} from {Unit.Name}. Units are not compatible.");
+    }
+
+    /// <summary>
+    /// Converts this quantity to a target unit.
+    /// </summary>
+    public Quantity ConvertTo(Unit targetUnit)
+    {
+        if (Unit.Name == targetUnit.Name)
+            return this;
+        
+        var factor = Unit.GetConversionFactor(targetUnit);
+        if (!factor.HasValue)
+        {
+            throw new InvalidOperationException(
+                $"Cannot convert {Unit.Name} to {targetUnit.Name}.");
+        }
+        
+        return new Quantity(Value * factor.Value, targetUnit);
     }
 
     public bool IsEmpty => Value <= 0;
 
-    public override string ToString() => $"{Value:N2} {Unit}";
+    public override string ToString() => $"{Value:N2} {Unit.Name}";
 }
 
 /// <summary>

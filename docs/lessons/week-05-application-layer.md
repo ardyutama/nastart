@@ -1559,6 +1559,153 @@ public sealed class PriceSpikeDetectedEventHandler
 }
 ```
 
+### PriceChangedEventHandler — Auto Recipe Recalculation
+
+> 💡 **UX Enhancement**: When ingredient prices change, automatically recalculate all affected recipe costs. Users see up-to-date margins without manual refresh.
+
+Create `src/Nastart.Application/Inventory/EventHandlers/PriceChangedEventHandler.cs`:
+
+```csharp
+using MediatR;
+using Microsoft.Extensions.Logging;
+using Nastart.Application.Common.Interfaces;
+using Nastart.Domain.Inventory.Events;
+using Nastart.Domain.Recipe.ValueObjects;
+
+namespace Nastart.Application.Inventory.EventHandlers;
+
+/// <summary>
+/// Handles PriceChangedEvent to automatically recalculate recipe costs.
+/// Ensures recipe margins always reflect current ingredient prices.
+/// </summary>
+/// <remarks>
+/// UX Enhancement: Solves the "stale margin" problem where users see
+/// outdated cost calculations. Now margins update automatically.
+/// </remarks>
+public sealed class PriceChangedEventHandler 
+    : INotificationHandler<PriceChangedEvent>
+{
+    private readonly IRecipeRepository _recipeRepository;
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly INotificationService _notificationService;
+    private readonly ILogger<PriceChangedEventHandler> _logger;
+
+    public PriceChangedEventHandler(
+        IRecipeRepository recipeRepository,
+        IUnitOfWork unitOfWork,
+        INotificationService notificationService,
+        ILogger<PriceChangedEventHandler> logger)
+    {
+        _recipeRepository = recipeRepository;
+        _unitOfWork = unitOfWork;
+        _notificationService = notificationService;
+        _logger = logger;
+    }
+
+    public async Task Handle(
+        PriceChangedEvent notification, 
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Price changed for {IngredientName}: {OldPrice} → {NewPrice}",
+            notification.IngredientName,
+            notification.OldPrice.Amount,
+            notification.NewPrice.Amount);
+
+        // 1. Find all recipes using this ingredient
+        var affectedRecipes = await _recipeRepository
+            .GetByIngredientIdAsync(notification.IngredientId, cancellationToken);
+
+        if (!affectedRecipes.Any())
+        {
+            _logger.LogDebug("No recipes affected by price change");
+            return;
+        }
+
+        var recipesWithMarginImpact = new List<(string Name, decimal OldMargin, decimal NewMargin)>();
+
+        // 2. Update each recipe's ingredient cost
+        foreach (var recipe in affectedRecipes)
+        {
+            var oldMargin = recipe.CurrentMargin.Percentage;
+            
+            // Update the ingredient cost in the recipe
+            recipe.UpdateIngredientCost(
+                notification.IngredientId, 
+                notification.NewPrice.Amount);
+            
+            var newMargin = recipe.CurrentMargin.Percentage;
+            
+            // Track significant margin changes
+            if (Math.Abs(oldMargin - newMargin) > 1)
+            {
+                recipesWithMarginImpact.Add((recipe.Name, oldMargin, newMargin));
+                
+                // Mark active recipes for review if margin dropped significantly
+                if (recipe.State == RecipeState.Active && newMargin < oldMargin - 5)
+                {
+                    recipe.MarkForReview($"Ingredient '{notification.IngredientName}' price changed");
+                }
+            }
+            
+            _recipeRepository.Update(recipe);
+            
+            _logger.LogInformation(
+                "Recipe '{RecipeName}' cost updated: margin {OldMargin:F1}% → {NewMargin:F1}%",
+                recipe.Name, oldMargin, newMargin);
+        }
+
+        // 3. Notify user of affected recipes
+        if (recipesWithMarginImpact.Any())
+        {
+            var message = BuildRecipeImpactMessage(
+                notification.IngredientName,
+                notification.OldPrice.Amount,
+                notification.NewPrice.Amount,
+                recipesWithMarginImpact);
+            
+            await _notificationService.SendAlertAsync(
+                $"📊 Recipe Margins Updated",
+                message,
+                recipesWithMarginImpact.Any(r => r.NewMargin < 15) ? "Warning" : "Info",
+                cancellationToken);
+        }
+
+        _logger.LogInformation(
+            "Updated {Count} recipes affected by price change to {Ingredient}",
+            affectedRecipes.Count(),
+            notification.IngredientName);
+    }
+
+    private static string BuildRecipeImpactMessage(
+        string ingredientName,
+        decimal oldPrice,
+        decimal newPrice,
+        List<(string Name, decimal OldMargin, decimal NewMargin)> recipes)
+    {
+        var changePercent = oldPrice > 0 
+            ? ((newPrice - oldPrice) / oldPrice) * 100 
+            : 0;
+        var changeEmoji = changePercent > 0 ? "📈" : "📉";
+        
+        var lines = new List<string>
+        {
+            $"{changeEmoji} *{ingredientName}*: Rp {oldPrice:N0} → Rp {newPrice:N0} ({changePercent:+0.0;-0.0}%)",
+            "",
+            "*Affected Recipes:*"
+        };
+
+        foreach (var (name, oldMargin, newMargin) in recipes.OrderBy(r => r.NewMargin))
+        {
+            var marginEmoji = newMargin < 15 ? "⚠️" : newMargin < oldMargin ? "🔻" : "✅";
+            lines.Add($"{marginEmoji} {name}: {oldMargin:F1}% → {newMargin:F1}%");
+        }
+
+        return string.Join("\n", lines);
+    }
+}
+```
+
 ### RecipeCreatedEventHandler
 
 Create `src/Nastart.Application/Recipe/EventHandlers/RecipeCreatedEventHandler.cs`:

@@ -1387,9 +1387,771 @@ public sealed class CallbackHandler : ICallbackHandler
 }
 ```
 
-### References
-- [Telegram Inline Keyboards](https://core.telegram.org/bots/api#inlinekeyboardmarkup)
-- [Callback Query Best Practices](https://core.telegram.org/bots/api#answercallbackquery)
+### Enhanced Confirmation Preview with Price Changes
+
+The confirmation preview should also show **price change impact** when existing ingredient prices will be updated:
+
+Create `src/Nastart.Bot/Services/EnhancedReceiptConfirmationBuilder.cs`:
+
+```csharp
+using System.Text;
+using Telegram.Bot.Types.ReplyMarkups;
+using Nastart.Application.Finance.Commands.ScanReceipt;
+using Nastart.Application.Finance.Queries.GetIngredientCurrentPrice;
+using MediatR;
+
+namespace Nastart.Bot.Services;
+
+/// <summary>
+/// Enhanced confirmation builder that shows price change impact
+/// before the user confirms the receipt.
+/// </summary>
+public sealed class EnhancedReceiptConfirmationBuilder : IReceiptConfirmationBuilder
+{
+    private readonly IMediator _mediator;
+
+    public EnhancedReceiptConfirmationBuilder(IMediator mediator)
+    {
+        _mediator = mediator;
+    }
+
+    public async Task<(string Text, InlineKeyboardMarkup Keyboard)> BuildAsync(
+        ReceiptScanResponse response,
+        CancellationToken cancellationToken = default)
+    {
+        var sb = new StringBuilder();
+        var priceChanges = new List<PriceChangePreview>();
+        
+        if (response.MatchedItems.Count > 0)
+        {
+            sb.AppendLine("✅ *Receipt Scanned Successfully!*\n");
+            sb.AppendLine("*Found items:*");
+            
+            var total = 0m;
+            for (var i = 0; i < response.MatchedItems.Count; i++)
+            {
+                var item = response.MatchedItems[i];
+                var confidence = item.MatchConfidence >= 0.9 ? "✓" : "?";
+                
+                sb.AppendLine($"{i + 1}. {confidence} *{item.IngredientName}*");
+                
+                if (item.Quantity.HasValue && !string.IsNullOrEmpty(item.Unit))
+                {
+                    sb.Append($"   {item.Quantity:N1} {item.Unit}");
+                }
+                
+                if (item.UnitPrice.HasValue)
+                {
+                    sb.Append($" @ Rp {item.UnitPrice:N0}");
+                    
+                    // Check for price change
+                    var currentPrice = await _mediator.Send(
+                        new GetIngredientCurrentPriceQuery(item.IngredientId),
+                        cancellationToken);
+                    
+                    if (currentPrice.IsSuccess && currentPrice.Value.Amount != item.UnitPrice.Value)
+                    {
+                        var change = item.UnitPrice.Value - currentPrice.Value.Amount;
+                        var changePercent = (change / currentPrice.Value.Amount) * 100;
+                        var arrow = change > 0 ? "📈" : "📉";
+                        
+                        sb.Append($" {arrow} ({changePercent:+0.0;-0.0}%)");
+                        
+                        priceChanges.Add(new PriceChangePreview(
+                            item.IngredientName,
+                            currentPrice.Value.Amount,
+                            item.UnitPrice.Value,
+                            changePercent));
+                    }
+                }
+                
+                if (item.LineTotal.HasValue)
+                {
+                    sb.AppendLine($" = *Rp {item.LineTotal:N0}*");
+                    total += item.LineTotal.Value;
+                }
+                else
+                {
+                    sb.AppendLine();
+                }
+            }
+            
+            sb.AppendLine();
+            sb.AppendLine($"📊 *Total: Rp {total:N0}*");
+        }
+
+        // Show price change summary
+        if (priceChanges.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━");
+            sb.AppendLine($"💡 *{priceChanges.Count} price(s) will be updated:*");
+            
+            foreach (var change in priceChanges.Take(5))
+            {
+                var arrow = change.ChangePercent > 0 ? "📈" : "📉";
+                sb.AppendLine($"{arrow} {change.IngredientName}");
+                sb.AppendLine($"   Rp {change.OldPrice:N0} → Rp {change.NewPrice:N0}");
+            }
+            
+            if (priceChanges.Count > 5)
+            {
+                sb.AppendLine($"_...and {priceChanges.Count - 5} more_");
+            }
+        }
+
+        // Show unmatched items
+        if (response.UnmatchedLines.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"⚠️ *{response.UnmatchedLines.Count} item(s) not recognized:*");
+            
+            foreach (var line in response.UnmatchedLines.Take(3))
+            {
+                sb.AppendLine($"• _{line.OriginalText}_");
+            }
+            
+            sb.AppendLine();
+            sb.AppendLine("_Tap '➕ Add as New' to create new ingredients_");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("_What would you like to do?_");
+
+        var keyboard = BuildEnhancedKeyboard(
+            response.SessionId, 
+            response.MatchedItems.Count,
+            response.UnmatchedLines.Count);
+
+        return (sb.ToString(), keyboard);
+    }
+
+    private static InlineKeyboardMarkup BuildEnhancedKeyboard(
+        Guid sessionId, 
+        int matchedCount,
+        int unmatchedCount)
+    {
+        var buttons = new List<InlineKeyboardButton[]>();
+
+        // Main action row
+        buttons.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData(
+                "✅ Confirm & Save", 
+                $"receipt:confirm:{sessionId}"),
+            InlineKeyboardButton.WithCallbackData(
+                "❌ Cancel", 
+                $"receipt:cancel:{sessionId}")
+        });
+
+        // Edit row (if there are items)
+        if (matchedCount > 0)
+        {
+            buttons.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData(
+                    "✏️ Edit Items", 
+                    $"receipt:edit:{sessionId}"),
+                InlineKeyboardButton.WithCallbackData(
+                    "💰 View Price Changes", 
+                    $"receipt:pricechanges:{sessionId}")
+            });
+        }
+
+        // Add new ingredient button (if there are unmatched items)
+        if (unmatchedCount > 0)
+        {
+            buttons.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData(
+                    $"➕ Add as New ({unmatchedCount})", 
+                    $"receipt:newingredient:{sessionId}:0")
+            });
+        }
+
+        return new InlineKeyboardMarkup(buttons);
+    }
+
+    // Simple implementation for the sync interface
+    public (string Text, InlineKeyboardMarkup Keyboard) Build(ReceiptScanResponse response)
+    {
+        // Fallback sync version without price change detection
+        return BuildAsync(response, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    public (string Text, InlineKeyboardMarkup Keyboard) BuildEditItem(
+        ReceiptScanResponse response, 
+        int itemIndex)
+    {
+        // ... existing implementation
+        throw new NotImplementedException();
+    }
+}
+
+internal record PriceChangePreview(
+    string IngredientName,
+    decimal OldPrice,
+    decimal NewPrice,
+    decimal ChangePercent);
+```
+
+### New Ingredient Wizard
+
+When unmatched items are detected, allow users to quickly add them as new ingredients:
+
+Update `src/Nastart.Bot/Handlers/CallbackHandler.cs`:
+
+```csharp
+private async Task HandleNewIngredientWizard(
+    long chatId,
+    int messageId,
+    Guid sessionId,
+    int itemIndex,
+    CancellationToken cancellationToken)
+{
+    // Get the unmatched items from session
+    var session = await _sessionStore.GetAsync(sessionId, cancellationToken);
+    if (session is null) return;
+
+    var unmatchedItems = session.UnmatchedLines;
+    if (itemIndex >= unmatchedItems.Count) return;
+
+    var item = unmatchedItems[itemIndex];
+    var sb = new StringBuilder();
+    
+    sb.AppendLine("➕ *New Ingredient Wizard*\n");
+    sb.AppendLine($"*Detected text:* `{item.OriginalText}`");
+    sb.AppendLine();
+    sb.AppendLine("What type of ingredient is this?");
+
+    var keyboard = new InlineKeyboardMarkup(new[]
+    {
+        // Category selection
+        new[]
+        {
+            InlineKeyboardButton.WithCallbackData(
+                "🥛 Dairy", 
+                $"newin:cat:{sessionId}:{itemIndex}:dairy"),
+            InlineKeyboardButton.WithCallbackData(
+                "🌾 Dry Goods", 
+                $"newin:cat:{sessionId}:{itemIndex}:dry"),
+        },
+        new[]
+        {
+            InlineKeyboardButton.WithCallbackData(
+                "🥩 Meat", 
+                $"newin:cat:{sessionId}:{itemIndex}:meat"),
+            InlineKeyboardButton.WithCallbackData(
+                "🥬 Produce", 
+                $"newin:cat:{sessionId}:{itemIndex}:produce"),
+        },
+        new[]
+        {
+            InlineKeyboardButton.WithCallbackData(
+                "🧂 Spices", 
+                $"newin:cat:{sessionId}:{itemIndex}:spices"),
+            InlineKeyboardButton.WithCallbackData(
+                "📦 Other", 
+                $"newin:cat:{sessionId}:{itemIndex}:other"),
+        },
+        new[]
+        {
+            InlineKeyboardButton.WithCallbackData(
+                "⏭️ Skip This Item", 
+                $"newin:skip:{sessionId}:{itemIndex}"),
+            InlineKeyboardButton.WithCallbackData(
+                "⬅️ Back", 
+                $"receipt:summary:{sessionId}"),
+        }
+    });
+
+    await _botClient.EditMessageText(
+        chatId: chatId,
+        messageId: messageId,
+        text: sb.ToString(),
+        parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
+        replyMarkup: keyboard,
+        cancellationToken: cancellationToken);
+}
+
+private async Task HandleNewIngredientCategory(
+    long chatId,
+    int messageId,
+    Guid sessionId,
+    int itemIndex,
+    string category,
+    CancellationToken cancellationToken)
+{
+    var session = await _sessionStore.GetAsync(sessionId, cancellationToken);
+    if (session is null) return;
+
+    var item = session.UnmatchedLines[itemIndex];
+    
+    var sb = new StringBuilder();
+    sb.AppendLine("➕ *New Ingredient Wizard*\n");
+    sb.AppendLine($"*Text:* `{item.OriginalText}`");
+    sb.AppendLine($"*Category:* {category}");
+    sb.AppendLine();
+    sb.AppendLine("Select the unit of measurement:");
+
+    var keyboard = new InlineKeyboardMarkup(new[]
+    {
+        new[]
+        {
+            InlineKeyboardButton.WithCallbackData(
+                "kg", 
+                $"newin:unit:{sessionId}:{itemIndex}:{category}:kg"),
+            InlineKeyboardButton.WithCallbackData(
+                "g", 
+                $"newin:unit:{sessionId}:{itemIndex}:{category}:g"),
+            InlineKeyboardButton.WithCallbackData(
+                "L", 
+                $"newin:unit:{sessionId}:{itemIndex}:{category}:L"),
+        },
+        new[]
+        {
+            InlineKeyboardButton.WithCallbackData(
+                "mL", 
+                $"newin:unit:{sessionId}:{itemIndex}:{category}:mL"),
+            InlineKeyboardButton.WithCallbackData(
+                "pcs", 
+                $"newin:unit:{sessionId}:{itemIndex}:{category}:pcs"),
+            InlineKeyboardButton.WithCallbackData(
+                "pack", 
+                $"newin:unit:{sessionId}:{itemIndex}:{category}:pack"),
+        },
+        new[]
+        {
+            InlineKeyboardButton.WithCallbackData(
+                "⬅️ Back", 
+                $"newin:start:{sessionId}:{itemIndex}"),
+        }
+    });
+
+    await _botClient.EditMessageText(
+        chatId: chatId,
+        messageId: messageId,
+        text: sb.ToString(),
+        parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
+        replyMarkup: keyboard,
+        cancellationToken: cancellationToken);
+}
+
+private async Task HandleNewIngredientConfirm(
+    long chatId,
+    int messageId,
+    Guid sessionId,
+    int itemIndex,
+    string category,
+    string unit,
+    CancellationToken cancellationToken)
+{
+    var session = await _sessionStore.GetAsync(sessionId, cancellationToken);
+    if (session is null) return;
+
+    var item = session.UnmatchedLines[itemIndex];
+    
+    // Create the new ingredient
+    var command = new CreateIngredientFromReceiptCommand(
+        Name: item.OriginalText.Trim(),
+        Category: category,
+        DefaultUnit: unit,
+        InitialPrice: item.DetectedPrice,
+        InitialQuantity: item.DetectedQuantity,
+        SessionId: sessionId);
+    
+    var result = await _mediator.Send(command, cancellationToken);
+
+    if (result.IsSuccess)
+    {
+        // Check if there are more unmatched items
+        if (itemIndex + 1 < session.UnmatchedLines.Count)
+        {
+            // Move to next unmatched item
+            await HandleNewIngredientWizard(
+                chatId, messageId, sessionId, 
+                itemIndex + 1, cancellationToken);
+        }
+        else
+        {
+            // All done, return to summary
+            await HandleBackToSummary(chatId, messageId, sessionId, cancellationToken);
+        }
+    }
+    else
+    {
+        await _botClient.EditMessageText(
+            chatId: chatId,
+            messageId: messageId,
+            text: $"❌ Failed to create ingredient: {result.Error?.Message}",
+            cancellationToken: cancellationToken);
+    }
+}
+```
+
+### Partial Save on Errors (Fault Tolerance)
+
+Handle cases where some items can be saved but others fail:
+
+Create `src/Nastart.Application/Finance/Commands/ConfirmReceiptWithPartialSave/`:
+
+```csharp
+// ConfirmReceiptWithPartialSaveCommand.cs
+namespace Nastart.Application.Finance.Commands.ConfirmReceiptWithPartialSave;
+
+public sealed record ConfirmReceiptWithPartialSaveCommand(
+    Guid SessionId,
+    bool AllowPartialSave = true
+) : IRequest<Result<PartialSaveResult>>;
+
+public sealed record PartialSaveResult(
+    int SuccessfulItems,
+    int FailedItems,
+    IReadOnlyList<ItemSaveResult> Results,
+    decimal TotalSaved);
+
+public sealed record ItemSaveResult(
+    string IngredientName,
+    bool Success,
+    string? ErrorMessage = null);
+```
+
+```csharp
+// ConfirmReceiptWithPartialSaveHandler.cs
+using Microsoft.Extensions.Logging;
+using Nastart.Domain.Inventory;
+
+namespace Nastart.Application.Finance.Commands.ConfirmReceiptWithPartialSave;
+
+internal sealed class ConfirmReceiptWithPartialSaveHandler 
+    : IRequestHandler<ConfirmReceiptWithPartialSaveCommand, Result<PartialSaveResult>>
+{
+    private readonly IReceiptSessionStore _sessionStore;
+    private readonly IIngredientRepository _ingredientRepository;
+    private readonly IPurchaseRepository _purchaseRepository;
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly ILogger<ConfirmReceiptWithPartialSaveHandler> _logger;
+
+    public ConfirmReceiptWithPartialSaveHandler(
+        IReceiptSessionStore sessionStore,
+        IIngredientRepository ingredientRepository,
+        IPurchaseRepository purchaseRepository,
+        IUnitOfWork unitOfWork,
+        ILogger<ConfirmReceiptWithPartialSaveHandler> logger)
+    {
+        _sessionStore = sessionStore;
+        _ingredientRepository = ingredientRepository;
+        _purchaseRepository = purchaseRepository;
+        _unitOfWork = unitOfWork;
+        _logger = logger;
+    }
+
+    public async Task<Result<PartialSaveResult>> Handle(
+        ConfirmReceiptWithPartialSaveCommand request, 
+        CancellationToken cancellationToken)
+    {
+        var session = await _sessionStore.GetAsync(request.SessionId, cancellationToken);
+        if (session is null)
+        {
+            return Result.Failure<PartialSaveResult>(
+                Error.NotFound("Session not found"));
+        }
+
+        var results = new List<ItemSaveResult>();
+        var totalSaved = 0m;
+
+        foreach (var item in session.MatchedItems)
+        {
+            try
+            {
+                var ingredient = await _ingredientRepository
+                    .GetByIdAsync(item.IngredientId, cancellationToken);
+                
+                if (ingredient is null)
+                {
+                    results.Add(new ItemSaveResult(
+                        item.IngredientName, 
+                        false, 
+                        "Ingredient not found"));
+                    continue;
+                }
+
+                // Update price
+                if (item.UnitPrice.HasValue)
+                {
+                    ingredient.UpdatePrice(
+                        Money.FromDecimal(item.UnitPrice.Value, "IDR"),
+                        DateTimeOffset.UtcNow);
+                }
+
+                // Add stock
+                if (item.Quantity.HasValue)
+                {
+                    var quantity = new Quantity(
+                        item.Quantity.Value, 
+                        Unit.Parse(item.Unit ?? "pcs"));
+                    
+                    ingredient.AddStock(quantity);
+                }
+
+                // Create purchase record
+                var purchase = Purchase.Create(
+                    ingredientId: ingredient.Id,
+                    quantity: item.Quantity ?? 1,
+                    unit: item.Unit ?? "pcs",
+                    unitPrice: item.UnitPrice ?? 0,
+                    purchaseDate: session.ProcessedAt);
+
+                await _purchaseRepository.AddAsync(purchase, cancellationToken);
+
+                results.Add(new ItemSaveResult(item.IngredientName, true));
+                totalSaved += item.LineTotal ?? 0;
+
+                _logger.LogInformation(
+                    "Successfully saved item: {IngredientName}", 
+                    item.IngredientName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, 
+                    "Failed to save item: {IngredientName}", 
+                    item.IngredientName);
+                
+                results.Add(new ItemSaveResult(
+                    item.IngredientName, 
+                    false, 
+                    ex.Message));
+                
+                // Continue with other items if partial save is allowed
+                if (!request.AllowPartialSave)
+                {
+                    throw;
+                }
+            }
+        }
+
+        // Commit successful items
+        if (results.Any(r => r.Success))
+        {
+            await _unitOfWork.CommitAsync(cancellationToken);
+        }
+
+        // Clean up session
+        await _sessionStore.RemoveAsync(request.SessionId, cancellationToken);
+
+        var successCount = results.Count(r => r.Success);
+        var failedCount = results.Count(r => !r.Success);
+
+        return new PartialSaveResult(
+            successCount, 
+            failedCount, 
+            results, 
+            totalSaved);
+    }
+}
+```
+
+Update the confirmation handler to use partial save:
+
+```csharp
+private async Task HandleConfirmWithPartialSave(
+    long chatId,
+    int messageId,
+    Guid sessionId,
+    CancellationToken cancellationToken)
+{
+    var command = new ConfirmReceiptWithPartialSaveCommand(sessionId);
+    var result = await _mediator.Send(command, cancellationToken);
+
+    if (!result.IsSuccess)
+    {
+        await _botClient.EditMessageText(
+            chatId: chatId,
+            messageId: messageId,
+            text: $"❌ Failed to save: {result.Error?.Message}",
+            cancellationToken: cancellationToken);
+        return;
+    }
+
+    var sb = new StringBuilder();
+    
+    if (result.Value.FailedItems == 0)
+    {
+        // All items saved successfully
+        sb.AppendLine("✅ *Purchase saved successfully!*\n");
+        sb.AppendLine($"📦 {result.Value.SuccessfulItems} items added to inventory");
+        sb.AppendLine($"💰 Total: Rp {result.Value.TotalSaved:N0}");
+    }
+    else if (result.Value.SuccessfulItems > 0)
+    {
+        // Partial save - some items failed
+        sb.AppendLine("⚠️ *Partially Saved*\n");
+        sb.AppendLine($"✅ {result.Value.SuccessfulItems} items saved");
+        sb.AppendLine($"❌ {result.Value.FailedItems} items failed");
+        sb.AppendLine($"💰 Total saved: Rp {result.Value.TotalSaved:N0}");
+        sb.AppendLine();
+        sb.AppendLine("*Failed items:*");
+        
+        foreach (var failed in result.Value.Results.Where(r => !r.Success))
+        {
+            sb.AppendLine($"• {failed.IngredientName}");
+            sb.AppendLine($"  _Error: {failed.ErrorMessage}_");
+        }
+    }
+    else
+    {
+        // All items failed
+        sb.AppendLine("❌ *Save Failed*\n");
+        sb.AppendLine("None of the items could be saved.");
+        sb.AppendLine();
+        sb.AppendLine("*Errors:*");
+        
+        foreach (var failed in result.Value.Results)
+        {
+            sb.AppendLine($"• {failed.IngredientName}: {failed.ErrorMessage}");
+        }
+    }
+
+    await _botClient.EditMessageText(
+        chatId: chatId,
+        messageId: messageId,
+        text: sb.ToString(),
+        parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
+        cancellationToken: cancellationToken);
+}
+```
+
+### Unit Conversion Integration
+
+Integrate smart unit conversion when processing receipts:
+
+```csharp
+// In ConfirmReceiptWithPartialSaveHandler.cs
+private static Quantity NormalizeQuantity(decimal value, string unit)
+{
+    var parsedUnit = Unit.Parse(unit);
+    
+    // Auto-convert to standard units
+    var quantity = new Quantity(value, parsedUnit);
+    
+    // Convert grams > 1000 to kg
+    if (parsedUnit == Unit.Gram && value >= 1000)
+    {
+        return quantity.ConvertTo(Unit.Kilogram);
+    }
+    
+    // Convert mL > 1000 to L
+    if (parsedUnit == Unit.Milliliter && value >= 1000)
+    {
+        return quantity.ConvertTo(Unit.Liter);
+    }
+    
+    return quantity;
+}
+```
+
+### CreateIngredientFromReceiptCommand
+
+Used by the New Ingredient Wizard to quickly add ingredients from unmatched receipt items:
+
+Create `src/Nastart.Application/Inventory/Commands/CreateIngredientFromReceipt/`:
+
+```csharp
+// CreateIngredientFromReceiptCommand.cs
+namespace Nastart.Application.Inventory.Commands.CreateIngredientFromReceipt;
+
+public sealed record CreateIngredientFromReceiptCommand(
+    string Name,
+    string Category,
+    string DefaultUnit,
+    decimal? InitialPrice,
+    decimal? InitialQuantity,
+    Guid SessionId
+) : IRequest<Result<CreateIngredientFromReceiptResponse>>;
+
+public sealed record CreateIngredientFromReceiptResponse(
+    Guid IngredientId,
+    string Name);
+```
+
+```csharp
+// CreateIngredientFromReceiptHandler.cs
+using Nastart.Domain.Inventory;
+
+namespace Nastart.Application.Inventory.Commands.CreateIngredientFromReceipt;
+
+internal sealed class CreateIngredientFromReceiptHandler
+    : IRequestHandler<CreateIngredientFromReceiptCommand, Result<CreateIngredientFromReceiptResponse>>
+{
+    private readonly IIngredientRepository _ingredientRepository;
+    private readonly IReceiptSessionStore _sessionStore;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public CreateIngredientFromReceiptHandler(
+        IIngredientRepository ingredientRepository,
+        IReceiptSessionStore sessionStore,
+        IUnitOfWork unitOfWork)
+    {
+        _ingredientRepository = ingredientRepository;
+        _sessionStore = sessionStore;
+        _unitOfWork = unitOfWork;
+    }
+
+    public async Task<Result<CreateIngredientFromReceiptResponse>> Handle(
+        CreateIngredientFromReceiptCommand request,
+        CancellationToken cancellationToken)
+    {
+        // Check for duplicates
+        var existing = await _ingredientRepository
+            .FindByNameAsync(request.Name, cancellationToken);
+        
+        if (existing is not null)
+        {
+            return Result.Failure<CreateIngredientFromReceiptResponse>(
+                Error.Conflict($"Ingredient '{request.Name}' already exists"));
+        }
+
+        // Create new ingredient
+        var ingredient = Ingredient.Create(
+            name: request.Name,
+            category: request.Category,
+            defaultUnit: Unit.Parse(request.DefaultUnit),
+            minimumStock: Quantity.Zero(Unit.Parse(request.DefaultUnit)));
+
+        // Set initial price if provided
+        if (request.InitialPrice.HasValue)
+        {
+            ingredient.UpdatePrice(
+                Money.FromDecimal(request.InitialPrice.Value, "IDR"),
+                DateTimeOffset.UtcNow);
+        }
+
+        // Add initial stock if provided
+        if (request.InitialQuantity.HasValue)
+        {
+            var quantity = new Quantity(
+                request.InitialQuantity.Value,
+                Unit.Parse(request.DefaultUnit));
+            
+            ingredient.AddStock(quantity);
+        }
+
+        await _ingredientRepository.AddAsync(ingredient, cancellationToken);
+        await _unitOfWork.CommitAsync(cancellationToken);
+
+        // Update session to move this item from unmatched to matched
+        await _sessionStore.MoveToMatchedAsync(
+            request.SessionId,
+            request.Name,
+            ingredient.Id,
+            cancellationToken);
+
+        return new CreateIngredientFromReceiptResponse(
+            ingredient.Id,
+            ingredient.Name);
+    }
+}
+```
 
 ---
 
