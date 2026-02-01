@@ -1,0 +1,78 @@
+# Docker Compose for Nastart development environment
+
+services:
+  # ==========================================
+  # PostgreSQL Database
+  # ==========================================
+  postgres:
+    image: postgres:18-alpine
+    container_name: nastart-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nastart
+      POSTGRES_PASSWORD: nastart_dev_password
+      POSTGRES_DB: nastart
+    ports:
+      - "5432:5432"
+    volumes:
+      - nastart_postgres_data:/var/lib/postgresql/data
+    networks:
+      - nastart-backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nastart"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # ==========================================
+  # .NET API Service
+  # ==========================================
+  api:
+    build:
+      context: ./backend
+      dockerfile: src/Nastart.Api/Dockerfile
+      target: runtime
+    container_name: nastart-api
+    restart: unless-stopped
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=nastart;Username=nastart;Password=nastart_dev_password
+    ports:
+      - "5001:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nastart-backend
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+networks:
+  nastart-backend:
+    driver: bridge
+
+volumes:
+  nastart_postgres_data:
+    driver: local

@@ -10,7 +10,7 @@
 3. [Day 4: Ubiquitous Language](#day-4-ubiquitous-language)
 4. [Day 5: GitHub Repository Setup](#day-5-github-repository-setup)
 5. [Day 6: .NET Solution Structure (slnx)](#day-6-net-solution-structure-slnx)
-6. [Day 7: Docker & PostgreSQL](#day-7-docker--postgresql)
+6. [Day 7: Docker & PostgreSQL with Best Practices](#day-7-docker--postgresql-with-best-practices)
 7. [Resources](#resources) *(Microsoft Official Docs Verified)*
 
 ---
@@ -530,7 +530,7 @@ dotnet test
 
 ---
 
-# Day 7: Docker & PostgreSQL
+# Day 7: Docker & PostgreSQL with Best Practices
 
 ## 🧒 Explain Like I'm 5
 
@@ -538,6 +538,11 @@ Docker is like a **lunchbox** for computer programs:
 - Your sandwich (program) stays fresh
 - It doesn't mix with your friend's sandwich
 - You can share the exact same lunchbox with anyone!
+
+But we need to be SMART about our lunchboxes:
+- **Small lunchbox** = faster to carry (optimized image)
+- **Lock on lunchbox** = keeps it safe (security)
+- **Check inside** = make sure food is good (health checks)
 
 PostgreSQL is a **super-smart filing cabinet** that:
 - Remembers ALL your data
@@ -555,15 +560,130 @@ We put PostgreSQL INSIDE a Docker lunchbox, so everyone on our team has the exac
 3. **Easy Cleanup** — Delete container, fresh start
 4. **Multiple Versions** — Run PostgreSQL 18 alongside other versions
 
-### docker-compose.yml:
+### Step 1: Create .dockerignore (Build Context Optimization)
+
+Before building, we MUST exclude unnecessary files to speed up builds and keep images small:
+
+```gitignore
+# .dockerignore — Place in project root
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Node
+node_modules/
+.nuxt/
+.output/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# IDE
+.idea/
+*.swp
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (NEVER include in build context!)
+.env
+appsettings.*.json
+!.dockerignore
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed in containers)
+*.md
+docs/
+```
+
+### Step 2: Optimized .NET API Dockerfile (Multi-Stage Build)
+
+Create `backend/src/Nastart.Api/Dockerfile` with production-ready patterns:
+
+```dockerfile
+# ==========================================
+# STAGE 1: Build
+# Restore and compile in one stage for reliability
+# ==========================================
+FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
+WORKDIR /src
+
+# Copy only project files first (layer caching optimization)
+COPY src/Nastart.Domain/Nastart.Domain.csproj Nastart.Domain/
+COPY src/Nastart.Application/Nastart.Application.csproj Nastart.Application/
+COPY src/Nastart.Infrastructure/Nastart.Infrastructure.csproj Nastart.Infrastructure/
+COPY src/Nastart.Api/Nastart.Api.csproj Nastart.Api/
+
+# Restore dependencies (cached unless .csproj changes)
+RUN dotnet restore Nastart.Api/Nastart.Api.csproj
+
+# Copy source code
+COPY src/ .
+
+# Build in Release mode (allow implicit restore since COPY overwrites obj folders)
+RUN dotnet build Nastart.Api/Nastart.Api.csproj -c Release
+
+# ==========================================
+# STAGE 2: Publish
+# Prepare runtime artifacts
+# ==========================================
+FROM build AS publish
+WORKDIR /src
+RUN dotnet publish Nastart.Api/Nastart.Api.csproj -c Release -o /app/publish --no-build
+
+# ==========================================
+# STAGE 3: Runtime (Production)
+# Minimal, secure runtime image
+# ==========================================
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS runtime
+
+# Security: Create non-root user
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -S appuser -u 1001 -G appgroup
+
+WORKDIR /app
+
+# Copy published artifacts with correct ownership
+COPY --from=publish --chown=appuser:appgroup /app/publish .
+
+# Security: Run as non-root user
+USER 1001
+
+# Health check for container monitoring
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+EXPOSE 8080
+
+ENTRYPOINT ["dotnet", "Nastart.Api.dll"]
+```
+
+### Step 3: Production-Ready docker-compose.yml
+
+Create `docker-compose.yml` with orchestration best practices:
 
 ```yaml
-version: '3.8'
+# Docker Compose for Nastart development environment
 
 services:
+  # ==========================================
+  # PostgreSQL Database
+  # ==========================================
   postgres:
-    image: postgres:18
+    image: postgres:18-alpine
     container_name: nastart-db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: nastart
       POSTGRES_PASSWORD: nastart_dev_password
@@ -572,75 +692,233 @@ services:
       - "5432:5432"
     volumes:
       - nastart_postgres_data:/var/lib/postgresql/data
+    networks:
+      - nastart-backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nastart"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
-  # PaddleOCR service for development
-  ocr:
-    build: ./ocr-service
-    container_name: nastart-ocr
+  # ==========================================
+  # .NET API Service
+  # ==========================================
+  api:
+    build:
+      context: ./backend
+      dockerfile: src/Nastart.Api/Dockerfile
+      target: runtime
+    container_name: nastart-api
+    restart: unless-stopped
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=nastart;Username=nastart;Password=nastart_dev_password
     ports:
-      - "8001:8001"
+      - "5000:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nastart-backend
+      - nastart-frontend
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # ==========================================
+  # PaddleOCR Service
+  # ==========================================
+  ocr:
+    build:
+      context: ./ocr-service
+      dockerfile: Dockerfile
+    container_name: nastart-ocr
+    restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
+      - PORT=8001
+    ports:
+      - "8001:8001"
+    networks:
+      - nastart-backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+networks:
+  nastart-backend:
+    driver: bridge
+  nastart-frontend:
+    driver: bridge
 
 volumes:
   nastart_postgres_data:
+    driver: local
 ```
 
-### Commands to Run:
+### Step 4: Development Override (docker-compose.override.yml)
+
+For development with hot reload, create `docker-compose.override.yml`:
+
+```yaml
+# Docker Compose for Nastart development environment
+
+services:
+  api:
+    build:
+      target: build  # Use build stage for dev
+    volumes:
+      - ./backend/src:/src:ro  # Mount source code read-only
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+    command: dotnet watch run --project src/Nastart.Api/Nastart.Api.csproj
+    ports:
+      - "5000:8080"
+      - "9229:9229"  # Debug port
+```
+
+### Step 5: Commands to Run
 
 ```powershell
 # Install Docker Desktop for Windows (if not installed)
 winget install Docker.DockerDesktop
 
-# Start services
-cd C:\Users\AU1833\Documents\personal\nastart
-docker-compose up -d
+# Verify Docker installation
+docker --version
+docker info | findstr "Server Version"
 
-# Check status
+# Build and start services
+cd C:\Users\AU1833\Documents\personal\nastart
+docker-compose up -d --build
+
+# Check container status
 docker-compose ps
 
-# View logs
+# View logs (follow mode)
+docker-compose logs -f
+
+# View specific service logs
+docker-compose logs -f api
 docker-compose logs -f postgres
 
 # Connect to PostgreSQL
 docker exec -it nastart-db psql -U nastart -d nastart
 
-# Stop services
+# Stop services (keep data)
 docker-compose down
 
-# Stop and remove data
+# Stop and remove all data (CAREFUL!)
 docker-compose down -v
+
+# Validate compose configuration
+docker-compose config
+
+# Check image sizes
+docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+
+# Inspect container health
+docker inspect --format='{{.State.Health.Status}}' nastart-api
 ```
 
-### Connection String for .NET:
+### Step 6: Connection String for .NET
 
 ```json
 // appsettings.Development.json
 {
   "ConnectionStrings": {
-    "DefaultConnection": "Host=localhost;Port=5432;Database=nastart;Username=nastart;Password=nastart_dev_password"
+    "DefaultConnection": "Host=postgres;Port=5432;Database=nastart;Username=nastart;Password=nastart_dev_password"
   }
 }
 ```
 
-### Install EF Core Tools:
+Note: Use `Host=postgres` (service name) when running inside Docker network, `Host=localhost` when running API outside Docker.
+
+### Step 7: Install EF Core Tools
 
 ```powershell
+# Install EF Core CLI tool
 dotnet tool install --global dotnet-ef
+
+# Verify installation
+dotnet ef --version
 ```
+
+### Docker Expert Checklist
+
+Before considering your Docker setup complete, verify:
+
+#### Dockerfile Optimization
+- [ ] Dependencies copied before source code for optimal layer caching
+- [ ] Multi-stage builds separate build and runtime environments
+- [ ] Production stage only includes necessary artifacts
+- [ ] Build context optimized with comprehensive .dockerignore
+- [ ] Base image uses Alpine for smaller size (mcr.microsoft.com/dotnet/aspnet:10.0-alpine)
+
+#### Container Security Hardening
+- [ ] Non-root user created with specific UID/GID (1001)
+- [ ] Container runs as non-root user (USER 1001 directive)
+- [ ] Secrets managed via environment files (not committed to git)
+- [ ] Minimal attack surface (Alpine-based images)
+- [ ] Health checks implemented for container monitoring
+
+#### Docker Compose Orchestration
+- [ ] Service dependencies properly defined with health checks (condition: service_healthy)
+- [ ] Custom networks configured for service isolation (nastart-backend, nastart-frontend)
+- [ ] Environment-specific configurations separated (dev override file)
+- [ ] Volume strategies appropriate for data persistence (named volumes)
+- [ ] Resource limits defined to prevent resource exhaustion
+- [ ] Restart policies configured for production resilience (unless-stopped)
+
+#### Image Size & Performance
+- [ ] Final image size optimized (Alpine base, multi-stage)
+- [ ] Build cache optimization via proper layer ordering
+- [ ] Artifact copying selective (only required files)
 
 ### Your Task (Day 7):
 
-1. Install Docker Desktop
-2. Create `docker-compose.yml` in project root
-3. Run `docker-compose up -d`
-4. Verify PostgreSQL is running
-5. Update connection string in appsettings
+1. **Install Docker Desktop** and verify installation
+2. **Create .dockerignore** in project root (comprehensive exclusions)
+3. **Create optimized Dockerfile** for Nastart.Api with multi-stage builds
+4. **Create docker-compose.yml** with health checks, networks, and resource limits
+5. **Create docker-compose.override.yml** for development workflow
+6. **Build and run**: `docker-compose up -d --build`
+7. **Verify health checks**: `docker ps` should show containers as "healthy"
+8. **Connect to PostgreSQL** and verify connection
+9. **Review image sizes**: Run `docker images` and ensure API image < 200MB
+10. **Validate checklist**: Ensure all security and optimization items are complete
 
 ---
 
@@ -757,11 +1035,17 @@ dotnet tool install --global dotnet-ef
   - [ ] Add project references
   - [ ] Verify `dotnet build` works
 
-- [ ] **Day 7**: Docker & PostgreSQL
-  - [ ] Install Docker Desktop
-  - [ ] Create docker-compose.yml
-  - [ ] Start PostgreSQL container
-  - [ ] Verify connection
+- [ ] **Day 7**: Docker & PostgreSQL with Best Practices
+  - [ ] Install Docker Desktop and verify installation
+  - [ ] Create comprehensive .dockerignore
+  - [ ] Create optimized multi-stage Dockerfile for API
+  - [ ] Create docker-compose.yml with health checks & resource limits
+  - [ ] Create docker-compose.override.yml for development
+  - [ ] Build and run: `docker-compose up -d --build`
+  - [ ] Verify all containers show as "healthy"
+  - [ ] Connect to PostgreSQL and test connection
+  - [ ] Review image sizes (target: API < 200MB)
+  - [ ] Complete Docker Expert Checklist validation
 
 ---
 
