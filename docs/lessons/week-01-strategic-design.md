@@ -1,274 +1,494 @@
-# Week 1: Strategic Design 🎯
+# Week 1: Strategic Design with Vertical Slice Architecture 🎯
 
-> **Goal**: Before writing any code, we need to understand WHAT we're building and WHY.
+> **Goal**: Before writing any code, we need to understand WHAT we're building, WHY, and HOW to organize our code around features — not technical layers.
 
 ---
 
 ## Table of Contents
-1. [Day 1-2: Event Storming](#day-1-2-event-storming)
-2. [Day 3: Bounded Contexts](#day-3-bounded-contexts)
-3. [Day 4: Ubiquitous Language](#day-4-ubiquitous-language)
+1. [Day 1-2: Feature Discovery](#day-1-2-feature-discovery)
+2. [Day 3: Understanding Vertical Slice Architecture](#day-3-understanding-vertical-slice-architecture)
+3. [Day 4: Feature Glossary & Naming](#day-4-feature-glossary--naming)
 4. [Day 5: GitHub Repository Setup](#day-5-github-repository-setup)
-5. [Day 6: .NET Solution Structure (slnx)](#day-6-net-solution-structure-slnx)
+5. [Day 6: .NET Solution Structure — Feature-Based (slnx)](#day-6-net-solution-structure--feature-based-slnx)
 6. [Day 7: Docker & PostgreSQL with Best Practices](#day-7-docker--postgresql-with-best-practices)
 7. [Resources](#resources) *(Microsoft Official Docs Verified)*
 
 ---
 
-# Day 1-2: Event Storming
+# Day 1-2: Feature Discovery
 
 ## 🧒 Explain Like I'm 5
 
-Imagine you're telling a story about a baker named Ibu Sari:
+Imagine you're making a list of everything a baker named Ibu Sari wants to do with the app:
 
-> "Ibu Sari **went to the store**. She **bought flour**. She **took a photo** of the receipt. The app **saw the photo**. The app **wrote down** what she bought. The flour **got more expensive**! The app **told Ibu Sari** about the price change."
+> "Ibu Sari wants to **scan her receipt**. She wants to **see her ingredient prices**. She wants to **create a recipe**. She wants to **know if she's making money**. She wants to **get alerts** when flour gets expensive!"
 
-See those **bold words**? Those are **things that happened** — we call them "events"!
+Each thing she wants to do is a **feature** — it's like a button that does something useful!
 
-Event Storming is like telling the whole story of your app using sticky notes. Each sticky note = one thing that happened.
-
-**Orange sticky note** = Something happened (event)
-**Blue sticky note** = A command (someone did something)
-**Yellow sticky note** = Who/what did it
+Instead of organizing our code by *how* it works (all the buttons together, all the screens together), we organize it by *what* it does (everything about scanning receipts in one place, everything about recipes in another).
 
 ## 🔧 Engineer Language
 
-**Event Storming** is a collaborative workshop technique created by Alberto Brandolini to discover business domains through domain events.
+**Feature Discovery** is a technique to identify the capabilities your application needs from a user's perspective. Unlike traditional layered architecture where code is grouped by technical concerns (Controllers, Services, Repositories), **Vertical Slice Architecture** organizes code by *feature* or *use case*.
+
+### Why Vertical Slices?
+
+| Traditional Layers | Vertical Slices |
+|-------------------|-----------------|
+| Change one feature → touch 5+ folders | Change one feature → touch 1 folder |
+| Hard to understand feature flow | Easy to read entire feature |
+| Tight coupling between layers | Loose coupling between features |
+| `Controllers/`, `Services/`, `Repositories/` | `Features/ScanReceipt/`, `Features/CreateRecipe/` |
 
 ### Core Concepts:
 
-| Color | Element | Description |
-|-------|---------|-------------|
-| 🟠 Orange | Domain Event | Something that happened (past tense): `PurchaseRecorded`, `PriceChanged` |
-| 🔵 Blue | Command | Action that triggers event: `RecordPurchase`, `ScanReceipt` |
-| 🟡 Yellow | Aggregate | Entity that handles command: `Purchase`, `Ingredient` |
-| 🟣 Purple | Policy | Automated reaction: "When price spikes, send alert" |
-| 🔴 Red | Hot Spot | Questions, problems, unclear areas |
-| 🟢 Green | Read Model | Data needed for UI/queries |
+| Concept | Description | Example |
+|---------|-------------|---------|
+| 🎯 **Feature** | A single user capability | "Scan Receipt", "Create Recipe" |
+| 📦 **Slice** | All code for one feature in one folder | Handler, Request, Response, Validator |
+| 📨 **Request** | Input for a feature (Command or Query) | `ScanReceiptCommand`, `GetRecipesQuery` |
+| 📤 **Response** | Output from a feature | `ScanReceiptResult`, `RecipeListDto` |
+| 🔗 **Handler** | The logic that processes a request | `ScanReceiptHandler.cs` |
 
-### How to Do It:
+### How to Discover Features:
 
-1. **Chaotic Exploration** (30 min)
-   - Write ALL events you can think of on orange sticky notes
-   - Don't organize yet, just brainstorm
+1. **User Story Mapping** (30 min)
+   - List what users want to DO (verbs)
+   - Group by capability, not by data type
 
-2. **Timeline** (20 min)
-   - Arrange events left-to-right in time order
-   - Start: User registers → End: User sees profit report
+2. **Identify Commands vs Queries** (20 min)
+   - Commands: Change state (Create, Update, Delete)
+   - Queries: Read state (Get, List, Search)
 
-3. **Find Pivotal Events** (10 min)
-   - Events that change the system state significantly
-   - `PurchaseRecorded`, `RecipeCostCalculated`, `AlertSent`
+3. **Name Your Slices** (20 min)
+   - Use verb + noun: `ScanReceipt`, `CreateRecipe`, `GetPriceHistory`
+   - These become folder names!
 
-4. **Add Commands & Aggregates** (30 min)
-   - What command triggered each event?
-   - What entity processed it?
+4. **Map Dependencies** (20 min)
+   - What data does each feature need?
+   - What other features might it trigger?
 
-### Nastart Event Storm Example:
+### Nastart Feature Map:
 
 ```
-Timeline →
+Features/
+├── Receipts/
+│   ├── ScanReceipt/           ← Command: Upload & OCR receipt
+│   ├── GetPurchaseHistory/    ← Query: List past purchases
+│   └── MatchIngredients/      ← Command: Match OCR text to ingredients
+│
+├── Ingredients/
+│   ├── CreateIngredient/      ← Command: Add new ingredient
+│   ├── GetIngredient/         ← Query: Get ingredient details
+│   ├── GetAllIngredients/     ← Query: List all ingredients
+│   ├── UpdatePrice/           ← Command: Update ingredient price
+│   └── GetPriceHistory/       ← Query: Price trends over time
+│
+├── Recipes/
+│   ├── CreateRecipe/          ← Command: Create new recipe
+│   ├── GetRecipe/             ← Query: Get recipe with cost
+│   ├── GetAllRecipes/         ← Query: List all recipes
+│   ├── AddIngredientToRecipe/ ← Command: Add ingredient with quantity
+│   └── CalculateCost/         ← Query: Get real-time cost
+│
+├── Alerts/
+│   ├── GetAlerts/             ← Query: Get pending alerts
+│   ├── DismissAlert/          ← Command: Mark alert as read
+│   └── CreatePriceSpikeAlert/ ← Internal: Auto-created on price change
+│
+└── Reports/
+    ├── GetDashboard/          ← Query: Summary stats
+    └── GetProfitReport/       ← Query: Profit analysis
+```
 
-[User Registered] → [Phone Linked] → [Receipt Photo Sent] → [Receipt Scanned] 
-    → [Items Extracted] → [Ingredients Matched] → [Purchase Recorded] 
-    → [Prices Updated] → [Price Spike Detected] → [Alert Sent]
-    
-                                    ↓
-                            [Recipe Created] → [Cost Calculated] 
-                            → [Margin Analyzed] → [Margin Alert Sent]
+### Feature Slice Structure:
+
+Each feature folder is self-contained:
+
+```
+Features/
+└── ScanReceipt/
+    ├── ScanReceiptCommand.cs      ← The request (input)
+    ├── ScanReceiptHandler.cs      ← The logic
+    ├── ScanReceiptResult.cs       ← The response (output)
+    ├── ScanReceiptValidator.cs    ← Input validation (optional)
+    └── ScanReceiptEndpoint.cs     ← Minimal API endpoint mapping
 ```
 
 ### Your Task (Day 1-2):
 
 1. Get paper/whiteboard or use Miro/FigJam
-2. Write these events on orange notes:
-   - `UserRegistered`
-   - `PhoneVerified`
-   - `ReceiptPhotoReceived`
-   - `ReceiptScanned`
-   - `PurchaseRecorded`
-   - `IngredientPriceUpdated`
-   - `PriceSpikeDetected`
-   - `RecipeCreated`
-   - `RecipeCostCalculated`
-   - `MarginBelowThreshold`
-   - `AlertCreated`
-   - `AlertSent`
-   - `SaleRecorded`
+2. List ALL things a user wants to DO:
+   - Register account
+   - Link phone to Telegram
+   - Upload receipt photo
+   - View scanned items
+   - Confirm/edit ingredient matches
+   - Add new ingredient
+   - View ingredient price history
+   - Create a recipe
+   - Add ingredients to recipe
+   - View recipe cost breakdown
+   - Set minimum margin
+   - Receive price spike alert
+   - View dashboard
 
-3. Arrange in timeline
-4. Add commands (blue) that trigger each event
-5. Circle related events that belong together
+3. Group by capability area (Receipts, Ingredients, Recipes, Alerts, Reports)
+4. Mark each as Command (changes data) or Query (reads data)
+5. Give each a verb+noun name: `ScanReceipt`, `CreateRecipe`, etc.
 
 ---
 
-# Day 3: Bounded Contexts
+# Day 3: Understanding Vertical Slice Architecture
 
 ## 🧒 Explain Like I'm 5
 
-Imagine your house has different rooms:
-- **Kitchen** = where you cook
-- **Bedroom** = where you sleep
-- **Bathroom** = where you shower
+Imagine you have a toy box with TWO ways to organize:
 
-Each room has its own rules! You don't sleep in the kitchen, right?
+**Old Way (Layers):**
+- One drawer for ALL wheels (car wheels, train wheels, bike wheels)
+- One drawer for ALL bodies (car bodies, train bodies, bike bodies)
+- To play with a car, you open 3 different drawers!
 
-In our app, we have "rooms" too:
-- **Inventory Room** = knows about ingredients and stock
-- **Recipe Room** = knows how to make cookies
-- **Money Room** = knows about buying and selling
-- **Alert Room** = knows when to tell you something important
+**New Way (Slices):**
+- One box with EVERYTHING for cars (wheels, body, windows)
+- One box with EVERYTHING for trains (wheels, body, smokestack)
+- To play with a car, you just open 1 box!
 
-Each "room" only cares about its own stuff. The Recipe Room doesn't care HOW you bought the flour — it just needs to know the flour price!
+**Vertical Slice Architecture** is like the new way — everything for ONE feature lives together!
 
 ## 🔧 Engineer Language
 
-**Bounded Context** is a central pattern in Domain-Driven Design (DDD). It defines a boundary within which a particular domain model applies.
+**Vertical Slice Architecture** (VSA) is an architectural pattern where code is organized by feature rather than by technical layer. Each "slice" cuts vertically through all layers (API → Logic → Data).
 
-### Why Bounded Contexts Matter:
-
-1. **Clear Ownership** — Each context has its own code, database tables, team
-2. **Independent Deployment** — Change one context without breaking others
-3. **Focused Models** — `Ingredient` in Inventory ≠ `Ingredient` in Recipe context
-4. **Reduced Complexity** — Smaller, understandable pieces
-
-### Nastart Bounded Contexts:
+### Traditional Layered Architecture vs Vertical Slices:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        NASTART SYSTEM                           │
-├─────────────────┬─────────────────┬─────────────────┬──────────┤
-│   📦 INVENTORY  │   📖 RECIPE     │   💰 FINANCE    │ 🔔 ALERT │
-├─────────────────┼─────────────────┼─────────────────┼──────────┤
-│ • Ingredient    │ • Recipe        │ • Purchase      │ • Alert  │
-│ • Category      │ • RecipeItem    │ • PurchaseItem  │ • Trigger│
-│ • Shop          │ • CostCalc      │ • Sale          │ • Channel│
-│ • Stock         │ • Margin        │ • PriceHistory  │          │
-├─────────────────┼─────────────────┼─────────────────┼──────────┤
-│ Responsibilities│ Responsibilities│ Responsibilities│ Respons. │
-│ - Track stock   │ - Store recipes │ - Log purchases │ - Create │
-│ - Manage shops  │ - Calculate cost│ - Track prices  │   alerts │
-│ - Categorize    │ - Analyze margin│ - Record sales  │ - Send   │
-│                 │                 │ - Detect spikes │   notifs │
-└─────────────────┴─────────────────┴─────────────────┴──────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                    TRADITIONAL LAYERS                                 │
+├──────────────────────────────────────────────────────────────────────┤
+│  Controllers/        Services/           Repositories/               │
+│  ├── ReceiptCtrl     ├── ReceiptSvc      ├── ReceiptRepo            │
+│  ├── RecipeCtrl      ├── RecipeSvc       ├── RecipeRepo             │
+│  └── AlertCtrl       └── AlertSvc        └── AlertRepo              │
+│                                                                       │
+│  To add "ScanReceipt", you touch ALL 3 folders + Models + DTOs!     │
+└──────────────────────────────────────────────────────────────────────┘
+
+                              ↓
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                    VERTICAL SLICES                                    │
+├──────────────────────────────────────────────────────────────────────┤
+│  Features/                                                            │
+│  ├── ScanReceipt/        ← EVERYTHING for scanning receipts          │
+│  │   ├── ScanReceiptCommand.cs                                       │
+│  │   ├── ScanReceiptHandler.cs                                       │
+│  │   ├── ScanReceiptEndpoint.cs                                      │
+│  │   └── ScanReceiptResult.cs                                        │
+│  ├── CreateRecipe/       ← EVERYTHING for creating recipes           │
+│  │   └── ...                                                          │
+│  └── SendAlert/          ← EVERYTHING for sending alerts             │
+│      └── ...                                                          │
+│                                                                       │
+│  To add "ScanReceipt", you touch ONLY 1 folder!                      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-### Context Mapping (How They Talk):
+### Key Principles:
+
+| Principle | Description |
+|-----------|-------------|
+| **Feature Cohesion** | All code for a feature lives together |
+| **Minimal Coupling** | Features don't depend on each other |
+| **No Premature Abstraction** | Don't create interfaces until needed |
+| **CQRS Light** | Separate Commands (write) from Queries (read) |
+| **Handlers Over Services** | One handler per request, not god-services |
+
+### Comparison with DDD:
+
+| Aspect | Domain-Driven Design | Vertical Slice Architecture |
+|--------|---------------------|----------------------------|
+| **Organization** | By domain/bounded context | By feature/use case |
+| **Abstractions** | Many interfaces, repositories | Minimal abstractions |
+| **Complexity** | High (aggregates, value objects) | Lower (handlers, requests) |
+| **Best For** | Complex domains, large teams | CRUD-heavy apps, small teams |
+| **Learning Curve** | Steep | Gentle |
+
+> **Note**: VSA doesn't mean NO domain modeling — you can still have rich domain objects. But you organize them by feature, not by layer.
+
+### When to Use Vertical Slices:
+
+✅ **Good Fit:**
+- CRUD-heavy applications
+- Small to medium teams
+- Rapid prototyping
+- Microservices
+- Applications with clear features
+
+❌ **Consider DDD Instead:**
+- Very complex business rules
+- Multiple teams need shared domain model
+- Heavy domain logic independent of UI
+
+### Nastart Feature Organization:
 
 ```
-Finance ──(PriceChanged)──► Inventory
-         │
-         └─(PriceSpikeDetected)──► Alert
-
-Recipe ──(MarginBelowThreshold)──► Alert
-
-Inventory ──(LowStock)──► Alert
+┌────────────────────────────────────────────────────────────────────┐
+│                        NASTART FEATURES                             │
+├──────────────────┬────────────────┬────────────────┬───────────────┤
+│   📸 RECEIPTS    │   🥣 RECIPES   │   💰 PRICES    │   🔔 ALERTS   │
+├──────────────────┼────────────────┼────────────────┼───────────────┤
+│ • ScanReceipt    │ • CreateRecipe │ • UpdatePrice  │ • GetAlerts   │
+│ • MatchItems     │ • GetRecipe    │ • GetPriceHist │ • DismissAlert│
+│ • ConfirmPurchase│ • AddIngredient│ • DetectSpike  │ • CreateAlert │
+│ • GetPurchases   │ • CalcCost     │                │               │
+├──────────────────┴────────────────┴────────────────┴───────────────┤
+│  Shared/                                                            │
+│  ├── Domain/         ← Entities (Ingredient, Recipe, Purchase)     │
+│  ├── Infrastructure/ ← DbContext, External Services                │
+│  └── Common/         ← Shared utilities, base classes              │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
-### Integration Patterns:
+### The Slice Anatomy:
 
-| Pattern | Use Case |
-|---------|----------|
-| **Domain Events** | Finance publishes `PriceChanged`, Inventory subscribes |
-| **Shared Kernel** | Common Value Objects like `Money`, `Quantity` |
-| **Anti-Corruption Layer** | External APIs (WhatsApp, OCR) don't leak into domain |
+Every feature follows a similar structure using **MediatR**:
+
+```csharp
+// 1. REQUEST — What goes in
+public record ScanReceiptCommand(
+    Guid UserId,
+    IFormFile ReceiptImage
+) : IRequest<ScanReceiptResult>;
+
+// 2. RESULT — What comes out  
+public record ScanReceiptResult(
+    Guid PurchaseId,
+    List<ScannedItem> Items,
+    decimal Total
+);
+
+// 3. HANDLER — The logic
+public class ScanReceiptHandler : IRequestHandler<ScanReceiptCommand, ScanReceiptResult>
+{
+    private readonly AppDbContext _db;
+    private readonly IOcrService _ocr;
+    
+    public ScanReceiptHandler(AppDbContext db, IOcrService ocr)
+    {
+        _db = db;
+        _ocr = ocr;
+    }
+    
+    public async Task<ScanReceiptResult> Handle(
+        ScanReceiptCommand request, 
+        CancellationToken cancellationToken)
+    {
+        // 1. OCR the image
+        var text = await _ocr.ExtractTextAsync(request.ReceiptImage);
+        
+        // 2. Parse items
+        var items = ParseReceiptItems(text);
+        
+        // 3. Save to database
+        var purchase = new Purchase { UserId = request.UserId, Items = items };
+        _db.Purchases.Add(purchase);
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        return new ScanReceiptResult(purchase.Id, items, items.Sum(i => i.Total));
+    }
+}
+
+// 4. ENDPOINT — Wire to API
+public static class ScanReceiptEndpoint
+{
+    public static void Map(IEndpointRouteBuilder app)
+    {
+        app.MapPost("/api/receipts/scan", async (
+            [FromForm] IFormFile image,
+            ClaimsPrincipal user,
+            IMediator mediator) =>
+        {
+            var userId = Guid.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!);
+            var result = await mediator.Send(new ScanReceiptCommand(userId, image));
+            return TypedResults.Created($"/api/purchases/{result.PurchaseId}", result);
+        }).WithTags("Receipts");
+    }
+}
+```
+
+### Endpoint Organization with Minimal API:
+
+Using **MapGroup** to organize endpoints by feature area:
+
+```csharp
+// Program.cs
+var app = builder.Build();
+
+// Group endpoints by feature area
+app.MapGroup("/api/receipts")
+   .MapReceiptEndpoints()
+   .WithTags("Receipts");
+
+app.MapGroup("/api/recipes")
+   .MapRecipeEndpoints()
+   .WithTags("Recipes");
+
+app.MapGroup("/api/alerts")
+   .MapAlertEndpoints()
+   .WithTags("Alerts")
+   .RequireAuthorization();
+
+app.Run();
+```
 
 ### Your Task (Day 3):
 
-1. Draw 4 boxes on paper — one for each context
-2. List entities/concepts in each box
-3. Draw arrows showing which events flow between contexts
-4. Ask yourself: "If I change X in Context A, does Context B care?"
+1. Draw a box for each feature area (Receipts, Recipes, Ingredients, Alerts)
+2. List the features/slices in each box
+3. Mark dependencies: "ScanReceipt depends on OCR service"
+4. Identify shared code: "Both CreateRecipe and GetRecipe need Recipe entity"
+5. Ask: "Can I add a new feature without touching existing features?"
 
 ---
 
-# Day 4: Ubiquitous Language
+# Day 4: Feature Glossary & Naming
 
 ## 🧒 Explain Like I'm 5
 
 When mom says "snack time!", everyone knows it means cookies and milk. Nobody is confused!
 
-But what if dad calls it "eating time" and grandma calls it "treat time"? Confusing, right?
-
-**Ubiquitous Language** means EVERYONE uses the SAME words for the SAME things:
+In our app, we want EVERYONE to use the SAME words:
+- We ALL say "ScanReceipt" (not "UploadReceipt", "ProcessReceipt", "OCRReceipt")
 - We ALL say "Ingredient" (not "item", "product", "material")
-- We ALL say "Purchase" (not "transaction", "buy", "order")
-- We ALL say "Margin" (not "profit percent", "markup")
+- We ALL say "Handler" (not "service", "processor", "manager")
 
-When the baker says "margin" and the programmer says "margin" — they mean the SAME thing!
+When the baker says "scan receipt" and the programmer writes `ScanReceiptHandler` — they mean the SAME thing!
 
 ## 🔧 Engineer Language
 
-**Ubiquitous Language** is a shared vocabulary between developers and domain experts, used consistently in code, documentation, and conversation.
+**Feature Glossary** (similar to DDD's Ubiquitous Language) is a shared vocabulary used consistently in code, documentation, and conversation. In Vertical Slice Architecture, we add specific terms for our patterns.
 
 ### Benefits:
 
-1. **No Translation Layer** — Code reads like business requirements
-2. **Reduced Miscommunication** — "Recipe" in meeting = `Recipe` in code
-3. **Living Documentation** — Code IS the specification
-4. **Onboarding** — New devs learn domain by reading code
+1. **No Translation Layer** — Feature names = folder names = endpoint names
+2. **Reduced Miscommunication** — "ScanReceipt" in meeting = `ScanReceipt/` in code
+3. **Living Documentation** — Code structure IS the documentation
+4. **Onboarding** — New devs understand features by reading folder names
 
-### Nastart Glossary:
+### Nastart VSA Glossary:
+
+| Term | Definition | Code Example |
+|------|------------|--------------|
+| **Feature** | A single user capability organized as a vertical slice | `Features/ScanReceipt/` |
+| **Command** | A request that changes state (Create, Update, Delete) | `CreateRecipeCommand` |
+| **Query** | A request that reads state (Get, List, Search) | `GetRecipeCostQuery` |
+| **Handler** | The class that processes a Command or Query | `ScanReceiptHandler` |
+| **Result** | The output returned by a Handler | `ScanReceiptResult` |
+| **Endpoint** | Minimal API route mapped to a Handler via MediatR | `ScanReceiptEndpoint.cs` |
+| **Validator** | FluentValidation rules for a Command/Query | `ScanReceiptValidator` |
+
+### Domain Terms (kept from business):
 
 | Term | Definition | Code Example |
 |------|------------|--------------|
 | **Ingredient** | A trackable item used in recipes | `class Ingredient` |
 | **Purchase** | A single shopping transaction with receipt | `class Purchase` |
 | **Recipe** | A product formula with ingredients and quantities | `class Recipe` |
-| **RecipeItem** | One ingredient entry in a recipe with quantity | `class RecipeItem` |
-| **Cost** | Total ingredient expense to produce one unit | `Money TotalCost` |
-| **Margin** | Percentage profit after deducting cost from sell price | `Percentage Margin` |
-| **Price Spike** | Ingredient price increases >15% from last purchase | `PriceSpikeDetectedEvent` |
-| **Low Stock** | Ingredient quantity below minimum threshold | `LowStockEvent` |
-| **Shop** | A store where ingredients are purchased | `class Shop` |
-| **Category** | Classification of ingredients (dairy, dry goods, etc.) | `class Category` |
+| **Recipe Item** | One ingredient entry in a recipe with quantity | `class RecipeItem` |
+| **Cost** | Total ingredient expense to produce one unit | `decimal TotalCost` |
+| **Margin** | Percentage profit after deducting cost from sell price | `decimal MarginPercent` |
+| **Price Spike** | Ingredient price increases >15% from last purchase | Triggers `CreatePriceSpikeAlert` |
+| **Low Stock** | Ingredient quantity below minimum threshold | Triggers `CreateLowStockAlert` |
+
+### Naming Conventions:
+
+```csharp
+// ✅ GOOD — Clear VSA naming
+Features/
+├── ScanReceipt/
+│   ├── ScanReceiptCommand.cs        // Verb + Noun + Command
+│   ├── ScanReceiptHandler.cs        // Verb + Noun + Handler
+│   ├── ScanReceiptResult.cs         // Verb + Noun + Result
+│   └── ScanReceiptEndpoint.cs       // Verb + Noun + Endpoint
+
+// ❌ BAD — Generic/layered naming
+Services/
+├── ReceiptService.cs                // God class doing everything
+├── ReceiptProcessor.cs              // What does it process?
+├── ReceiptManager.cs                // Manager of what?
+```
+
+### Command vs Query Naming:
+
+```csharp
+// COMMANDS (change state) — Use action verbs
+public record ScanReceiptCommand(...) : IRequest<ScanReceiptResult>;
+public record CreateRecipeCommand(...) : IRequest<Guid>;
+public record UpdateIngredientPriceCommand(...) : IRequest;
+public record DeleteAlertCommand(...) : IRequest;
+
+// QUERIES (read state) — Use "Get" or "List"
+public record GetRecipeQuery(Guid RecipeId) : IRequest<RecipeDto>;
+public record GetAllIngredientsQuery() : IRequest<List<IngredientDto>>;
+public record GetPriceHistoryQuery(Guid IngredientId) : IRequest<PriceHistoryDto>;
+```
+
+### How Naming Appears in Code:
+
+```csharp
+// The code reads like a feature description!
+public class CreateRecipeHandler : IRequestHandler<CreateRecipeCommand, Guid>
+{
+    private readonly AppDbContext _db;
+    
+    public CreateRecipeHandler(AppDbContext db)
+    {
+        _db = db;
+    }
+    
+    public async Task<Guid> Handle(
+        CreateRecipeCommand command, 
+        CancellationToken cancellationToken)
+    {
+        var recipe = new Recipe
+        {
+            Name = command.Name,
+            SellPrice = command.SellPrice,
+            MinimumMargin = command.MinimumMargin
+        };
+        
+        _db.Recipes.Add(recipe);
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        return recipe.Id;
+    }
+}
+```
 
 ### Anti-Patterns to Avoid:
 
 ```csharp
 // ❌ BAD — Generic programming terms
 class ItemManager { }
-class TransactionService { }
 class DataProcessor { }
+class GenericService { }
+interface IRepository<T> { }  // Premature abstraction!
 
-// ✅ GOOD — Domain language
-class Ingredient { }
-class PurchaseService { }
-class RecipeCostCalculator { }
-```
-
-### How Ubiquitous Language Appears in Code:
-
-```csharp
-// The code reads like a business conversation!
-public class Recipe
-{
-    public void AddIngredient(Ingredient ingredient, Quantity quantity)
-    {
-        var recipeItem = new RecipeItem(ingredient, quantity);
-        _items.Add(recipeItem);
-        RecalculateCost();
-    }
-    
-    public void RecalculateCost()
-    {
-        TotalCost = _items.Sum(item => item.CalculateCost());
-        Margin = CalculateMargin(SellPrice, TotalCost);
-        
-        if (Margin.IsBelow(_minimumMargin))
-        {
-            AddDomainEvent(new MarginBelowThresholdEvent(this));
-        }
-    }
-}
+// ✅ GOOD — Feature-specific terms
+record CreateIngredientCommand { }
+class CreateIngredientHandler { }
+record GetIngredientByIdQuery { }
+class GetIngredientByIdHandler { }
 ```
 
 ### Your Task (Day 4):
 
-1. Create a glossary document (already exists: `docs/glossary.md`)
-2. Define 15-20 key terms
-3. Review with stakeholder (or imagine explaining to a baker)
-4. Ensure EVERY term maps to a class/property/method name
+1. Create/update `docs/glossary.md` with VSA-specific terms
+2. Define all feature names using Verb+Noun format
+3. Ensure every term maps directly to a folder/class/file name
+4. Review with stakeholder: "When I say 'ScanReceipt', is this clear?"
 
 ---
 
@@ -388,54 +608,57 @@ appsettings.*.json
 
 ---
 
-# Day 6: .NET Solution Structure (slnx)
+# Day 6: .NET Solution Structure — Feature-Based (slnx)
 
 ## 🧒 Explain Like I'm 5
 
 Imagine you're building with LEGO:
 - **Solution (.slnx)** = The instruction book for the whole LEGO city
-- **Project** = One building (house, school, hospital)
-- **Reference** = A bridge connecting buildings
+- **Project** = One building (but now organized differently!)
 
-Our LEGO city (Nastart) has these buildings:
-- `Nastart.Api` — The front door (where visitors come in)
-- `Nastart.Domain` — The rules book (what can and can't happen)
-- `Nastart.Application` — The manager (tells everyone what to do)
-- `Nastart.Infrastructure` — The workers (talk to database, send messages)
-- `Nastart.Bot` — The messenger (talks to WhatsApp/Telegram)
+**Old Way** (Layered):
+- One building for ALL controllers
+- One building for ALL services
+- One building for ALL data access
+- To find anything about "recipes", look in 3 buildings!
+
+**New Way** (Vertical Slices):
+- One building with rooms organized by FEATURE
+- The "Recipes room" has everything about recipes
+- The "Alerts room" has everything about alerts
+- To find anything about "recipes", look in ONE place!
 
 ## 🔧 Engineer Language
 
-### Clean Architecture Layers:
+### Vertical Slice Architecture Project Structure:
+
+In VSA, we have fewer projects but more organized folders:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                         Nastart.Api                          │
-│  (Controllers, Middleware, Program.cs)                       │
-│  Depends on: Application, Infrastructure                     │
+│  (Program.cs, Features/, Shared/, Endpoints)                 │
+│  Contains: ALL FEATURES organized by use case                │
 ├──────────────────────────────────────────────────────────────┤
-│                      Nastart.Bot                             │
-│  (Telegram/WhatsApp handlers)                                │
-│  Depends on: Application, Infrastructure                     │
+│                     Nastart.Domain (Optional)                │
+│  (Entities, Value Objects — if you need rich domain logic)   │
+│  Note: Many VSA apps keep entities IN the Api project        │
 ├──────────────────────────────────────────────────────────────┤
-│                   Nastart.Application                        │
-│  (Commands, Queries, Handlers, DTOs)                         │
-│  Depends on: Domain                                          │
-├──────────────────────────────────────────────────────────────┤
-│                  Nastart.Infrastructure                      │
-│  (EF Core, Repositories, External Services)                  │
-│  Depends on: Domain, Application                             │
-├──────────────────────────────────────────────────────────────┤
-│                     Nastart.Domain                           │
-│  (Entities, Value Objects, Domain Events, Interfaces)        │
-│  Depends on: NOTHING (pure domain logic)                     │
+│                    Nastart.Bot (Optional)                    │
+│  (Telegram handlers, separate entry point)                   │
+│  Can share code with Api via shared Features                 │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### Dependency Rule:
+### Key Difference from Layered:
 
-> **Inner layers NEVER depend on outer layers.**
-> Domain is the core — it knows nothing about databases, HTTP, or UI.
+| Layered Architecture | Vertical Slice Architecture |
+|---------------------|---------------------------|
+| 5+ projects (Api, Domain, Application, Infrastructure, Contracts) | 1-3 projects (Api, optional Domain, optional Bot) |
+| `Controllers/RecipeController.cs` | `Features/Recipes/CreateRecipe/Endpoint.cs` |
+| `Services/RecipeService.cs` | `Features/Recipes/CreateRecipe/Handler.cs` |
+| `Repositories/IRecipeRepository.cs` | Direct DbContext in Handler |
+| Many interfaces | Few/no interfaces (YAGNI) |
 
 ### Why `.slnx` over `.sln`?
 
@@ -446,8 +669,68 @@ Our LEGO city (Nastart) has these buildings:
 | Git Merge | Conflict-prone | Easy to merge |
 | Size | Verbose | Compact |
 
-> **Note**: In .NET 10, `dotnet new sln` automatically creates `.slnx` format. No extra flags needed!
-> If you need the legacy `.sln` format, use: `dotnet new sln --format sln`
+> **Note**: In .NET 10, `dotnet new sln` automatically creates `.slnx` format!
+
+### Recommended Project Structure:
+
+```
+Nastart.Api/
+├── Features/                          # All vertical slices
+│   ├── Receipts/
+│   │   ├── ScanReceipt/
+│   │   │   ├── ScanReceiptCommand.cs
+│   │   │   ├── ScanReceiptHandler.cs
+│   │   │   ├── ScanReceiptResult.cs
+│   │   │   ├── ScanReceiptValidator.cs
+│   │   │   └── ScanReceiptEndpoint.cs
+│   │   ├── GetPurchaseHistory/
+│   │   │   ├── GetPurchaseHistoryQuery.cs
+│   │   │   ├── GetPurchaseHistoryHandler.cs
+│   │   │   └── GetPurchaseHistoryEndpoint.cs
+│   │   └── _ReceiptEndpoints.cs       # MapGroup for all receipt endpoints
+│   │
+│   ├── Recipes/
+│   │   ├── CreateRecipe/
+│   │   ├── GetRecipe/
+│   │   ├── GetAllRecipes/
+│   │   ├── AddIngredientToRecipe/
+│   │   └── _RecipeEndpoints.cs
+│   │
+│   ├── Ingredients/
+│   │   ├── CreateIngredient/
+│   │   ├── GetIngredient/
+│   │   ├── UpdatePrice/
+│   │   └── _IngredientEndpoints.cs
+│   │
+│   └── Alerts/
+│       ├── GetAlerts/
+│       ├── DismissAlert/
+│       └── _AlertEndpoints.cs
+│
+├── Domain/                            # Domain entities (or separate project)
+│   ├── Ingredient.cs
+│   ├── Recipe.cs
+│   ├── RecipeItem.cs
+│   ├── Purchase.cs
+│   ├── PurchaseItem.cs
+│   └── Alert.cs
+│
+├── Shared/                            # Cross-cutting concerns
+│   ├── Infrastructure/
+│   │   ├── AppDbContext.cs
+│   │   ├── Configurations/           # EF Core configurations
+│   │   └── Migrations/
+│   ├── Services/
+│   │   ├── IOcrService.cs
+│   │   └── OcrService.cs
+│   └── Behaviors/                     # MediatR pipeline behaviors
+│       ├── ValidationBehavior.cs
+│       └── LoggingBehavior.cs
+│
+├── Program.cs                         # Entry point, DI, middleware
+├── appsettings.json
+└── Nastart.Api.csproj
+```
 
 ### Commands to Create Solution:
 
@@ -460,45 +743,29 @@ cd C:\Users\AU1833\Documents\personal\nastart\backend
 # Create solution (.slnx is the default format in .NET 10)
 dotnet new sln -n Nastart
 
-# Create projects using official templates
-# Template: webapi - ASP.NET Core Web API (controllers or minimal APIs)
-# Template: classlib - Class Library
-# Template: xunit - xUnit Test Project
-# See all templates: dotnet new list
+# Create main API project (contains Features)
+dotnet new webapi -n Nastart.Api -o src/Nastart.Api --use-minimal-apis
 
-dotnet new webapi -n Nastart.Api -o src/Nastart.Api
-dotnet new classlib -n Nastart.Domain -o src/Nastart.Domain
-dotnet new classlib -n Nastart.Application -o src/Nastart.Application
-dotnet new classlib -n Nastart.Infrastructure -o src/Nastart.Infrastructure
-dotnet new classlib -n Nastart.Bot -o src/Nastart.Bot
+# Create optional Bot project
+dotnet new worker -n Nastart.Bot -o src/Nastart.Bot
 
 # Create test projects
-dotnet new xunit -n Nastart.Domain.Tests -o tests/Nastart.Domain.Tests
-dotnet new xunit -n Nastart.Application.Tests -o tests/Nastart.Application.Tests
+dotnet new xunit -n Nastart.Api.Tests -o tests/Nastart.Api.Tests
 
 # Add projects to solution
-# See: https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-sln
 dotnet sln add src/Nastart.Api/Nastart.Api.csproj
-dotnet sln add src/Nastart.Domain/Nastart.Domain.csproj
-dotnet sln add src/Nastart.Application/Nastart.Application.csproj
-dotnet sln add src/Nastart.Infrastructure/Nastart.Infrastructure.csproj
 dotnet sln add src/Nastart.Bot/Nastart.Bot.csproj
-dotnet sln add tests/Nastart.Domain.Tests/Nastart.Domain.Tests.csproj
-dotnet sln add tests/Nastart.Application.Tests/Nastart.Application.Tests.csproj
+dotnet sln add tests/Nastart.Api.Tests/Nastart.Api.Tests.csproj
 
-# Add project references
-# See: https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-add-reference
-dotnet add src/Nastart.Application/Nastart.Application.csproj reference src/Nastart.Domain/Nastart.Domain.csproj
-dotnet add src/Nastart.Infrastructure/Nastart.Infrastructure.csproj reference src/Nastart.Domain/Nastart.Domain.csproj
-dotnet add src/Nastart.Infrastructure/Nastart.Infrastructure.csproj reference src/Nastart.Application/Nastart.Application.csproj
-dotnet add src/Nastart.Api/Nastart.Api.csproj reference src/Nastart.Application/Nastart.Application.csproj
-dotnet add src/Nastart.Api/Nastart.Api.csproj reference src/Nastart.Infrastructure/Nastart.Infrastructure.csproj
-dotnet add src/Nastart.Bot/Nastart.Bot.csproj reference src/Nastart.Application/Nastart.Application.csproj
-dotnet add src/Nastart.Bot/Nastart.Bot.csproj reference src/Nastart.Infrastructure/Nastart.Infrastructure.csproj
+# Add test reference
+dotnet add tests/Nastart.Api.Tests/Nastart.Api.Tests.csproj reference src/Nastart.Api/Nastart.Api.csproj
 
-# Add test references
-dotnet add tests/Nastart.Domain.Tests/Nastart.Domain.Tests.csproj reference src/Nastart.Domain/Nastart.Domain.csproj
-dotnet add tests/Nastart.Application.Tests/Nastart.Application.Tests.csproj reference src/Nastart.Application/Nastart.Application.csproj
+# Add required packages to Api project
+cd src/Nastart.Api
+dotnet add package MediatR
+dotnet add package FluentValidation.DependencyInjectionExtensions
+dotnet add package Microsoft.EntityFrameworkCore.Design
+dotnet add package Npgsql.EntityFrameworkCore.PostgreSQL
 ```
 
 ### What Nastart.slnx Looks Like:
@@ -507,19 +774,105 @@ dotnet add tests/Nastart.Application.Tests/Nastart.Application.Tests.csproj refe
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Nastart.Api/Nastart.Api.csproj" />
-    <Project Path="src/Nastart.Domain/Nastart.Domain.csproj" />
-    <Project Path="src/Nastart.Application/Nastart.Application.csproj" />
-    <Project Path="src/Nastart.Infrastructure/Nastart.Infrastructure.csproj" />
     <Project Path="src/Nastart.Bot/Nastart.Bot.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/Nastart.Domain.Tests/Nastart.Domain.Tests.csproj" />
-    <Project Path="tests/Nastart.Application.Tests/Nastart.Application.Tests.csproj" />
+    <Project Path="tests/Nastart.Api.Tests/Nastart.Api.Tests.csproj" />
   </Folder>
 </Solution>
 ```
 
-See how clean that is? No random GUIDs, no cryptic syntax!
+### Program.cs Setup for Vertical Slices:
+
+```csharp
+using MediatR;
+using FluentValidation;
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add DbContext
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// Add MediatR (scans for handlers in this assembly)
+builder.Services.AddMediatR(cfg => 
+    cfg.RegisterServicesFromAssemblyContaining<Program>());
+
+// Add FluentValidation
+builder.Services.AddValidatorsFromAssemblyContaining<Program>();
+
+// Add our services
+builder.Services.AddScoped<IOcrService, OcrService>();
+
+// Add OpenAPI
+builder.Services.AddOpenApi();
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+}
+
+app.UseHttpsRedirection();
+
+// Map feature endpoints using MapGroup
+app.MapGroup("/api/receipts")
+   .MapReceiptEndpoints()
+   .WithTags("Receipts");
+
+app.MapGroup("/api/recipes")
+   .MapRecipeEndpoints()
+   .WithTags("Recipes");
+
+app.MapGroup("/api/ingredients")
+   .MapIngredientEndpoints()
+   .WithTags("Ingredients");
+
+app.MapGroup("/api/alerts")
+   .MapAlertEndpoints()
+   .WithTags("Alerts");
+
+app.Run();
+```
+
+### Example Feature Endpoint Registration:
+
+```csharp
+// Features/Recipes/_RecipeEndpoints.cs
+public static class RecipeEndpointExtensions
+{
+    public static RouteGroupBuilder MapRecipeEndpoints(this RouteGroupBuilder group)
+    {
+        group.MapPost("/", CreateRecipeEndpoint.Handle)
+             .WithName("CreateRecipe");
+        
+        group.MapGet("/{id:guid}", GetRecipeEndpoint.Handle)
+             .WithName("GetRecipe");
+        
+        group.MapGet("/", GetAllRecipesEndpoint.Handle)
+             .WithName("GetAllRecipes");
+        
+        group.MapPost("/{id:guid}/ingredients", AddIngredientToRecipeEndpoint.Handle)
+             .WithName("AddIngredientToRecipe");
+        
+        return group;
+    }
+}
+
+// Features/Recipes/CreateRecipe/CreateRecipeEndpoint.cs
+public static class CreateRecipeEndpoint
+{
+    public static async Task<IResult> Handle(
+        CreateRecipeCommand command,
+        IMediator mediator)
+    {
+        var id = await mediator.Send(command);
+        return TypedResults.Created($"/api/recipes/{id}", new { id });
+    }
+}
+```
 
 ### Verify Solution:
 
@@ -926,30 +1279,37 @@ Before considering your Docker setup complete, verify:
 
 > ✅ All links verified as of January 2026
 
-## Event Storming
+## Vertical Slice Architecture
 | Resource | Type | Link |
 |----------|------|------|
-| Event Storming (Alberto Brandolini) | Book | https://www.eventstorming.com/book/ |
-| Event Storming Guide | Article | https://www.eventstorming.com/ |
-| Miro Event Storming Template | Tool | https://miro.com/templates/event-storming/ |
+| **Organizing ASP.NET Core Minimal APIs** | Article | https://www.tessferrandez.com/blog/2023/10/31/organizing-minimal-apis.html |
+| Vertical Slice Architecture (Jimmy Bogard) | Video | https://www.youtube.com/watch?v=SUiWfhAhgQw |
+| ContosoUniversity VSA Example | GitHub | https://github.com/jbogard/ContosoUniversityDotNetCore-Pages |
+| Feature Folders in ASP.NET Core | Article | https://scottsauber.com/2016/04/25/feature-folder-structure-in-asp-net-core/ |
 
-## Domain-Driven Design (Microsoft Official)
+## Minimal APIs (Microsoft Official)
 | Resource | Type | Link |
 |----------|------|------|
-| **Design a DDD-oriented microservice** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/ddd-oriented-microservice |
-| **Using domain analysis to model microservices** | MS Docs | https://learn.microsoft.com/en-us/azure/architecture/microservices/model/domain-analysis |
-| **Implement a microservice domain model with .NET** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model |
-| **Design a microservice domain model** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model |
-| Vaughn Vernon - Effective Aggregate Design (Part 1-3) | PDF | https://dddcommunity.org/library/vernon_2011/ |
-| DDD Reference (Eric Evans - Free PDF) | PDF | https://www.domainlanguage.com/ddd/reference/ |
+| **Minimal APIs quick reference** | MS Docs | https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis |
+| **Tutorial: Create a Minimal API** | MS Docs | https://learn.microsoft.com/en-us/aspnet/core/tutorials/min-web-api |
+| **Minimal API route handlers** | MS Docs | https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/route-handlers |
+| **Parameter binding in Minimal APIs** | MS Docs | https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/parameter-binding |
+| **Create responses in Minimal API apps** | MS Docs | https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/responses |
+| **Filters in Minimal API apps** | MS Docs | https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/min-api-filters |
 
-## Clean Architecture (Microsoft Official)
+## MediatR & CQRS
 | Resource | Type | Link |
 |----------|------|------|
-| **Common web application architectures - Clean Architecture** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/common-web-application-architectures#clean-architecture |
-| **Design a microservice-oriented application** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/multi-container-microservice-net-applications/microservice-application-design |
-| Ardalis Clean Architecture Template | GitHub | https://github.com/ardalis/cleanarchitecture |
-| Jason Taylor Clean Architecture | GitHub | https://github.com/jasontaylordev/CleanArchitecture |
+| MediatR Documentation | GitHub Wiki | https://github.com/jbogard/MediatR/wiki |
+| MediatR Library | GitHub | https://github.com/jbogard/MediatR |
+| **Implement command pipeline with MediatR** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-application-layer-implementation-web-api |
+
+## Common Web Application Architectures (Microsoft Official)
+| Resource | Type | Link |
+|----------|------|------|
+| **Common web application architectures** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/common-web-application-architectures |
+| **Clean Architecture** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/common-web-application-architectures#clean-architecture |
+| **Architect Modern Web Apps** | MS eBook | https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/ |
 
 ## .NET 10 & CLI (Microsoft Official)
 | Resource | Type | Link |
@@ -960,7 +1320,6 @@ Before considering your Docker setup complete, verify:
 | **dotnet add reference** | MS Docs | https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-add-reference |
 | **What's new in .NET 10** | MS Docs | https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-10/overview |
 | **dotnet new sln defaults to SLNX** | MS Docs | https://learn.microsoft.com/en-us/dotnet/core/compatibility/sdk/10.0/dotnet-new-sln-slnx-default |
-| **What's new in MSBuild 17 (SLNX support)** | MS Docs | https://learn.microsoft.com/en-us/visualstudio/msbuild/whats-new-msbuild-17-0 |
 
 ## Entity Framework Core & PostgreSQL (Microsoft Official)
 | Resource | Type | Link |
@@ -968,7 +1327,6 @@ Before considering your Docker setup complete, verify:
 | **Entity Framework Core** | MS Docs | https://learn.microsoft.com/en-us/ef/core/ |
 | **Getting Started with EF Core** | MS Docs | https://learn.microsoft.com/en-us/ef/core/get-started/overview/first-app |
 | **EF Core - ASP.NET MVC Tutorial** | MS Docs | https://learn.microsoft.com/en-us/aspnet/core/data/ef-mvc/intro |
-| **Razor Pages with EF Core** | MS Docs | https://learn.microsoft.com/en-us/aspnet/core/data/ef-rp/intro |
 | Npgsql EF Core Provider | Docs | https://www.npgsql.org/efcore/ |
 
 ## Docker & Containers (Microsoft Official)
@@ -980,23 +1338,22 @@ Before considering your Docker setup complete, verify:
 | **Development workflow for Docker apps** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/docker-application-development-process/docker-app-development-workflow |
 | Docker Desktop | Tool | https://docs.docker.com/desktop/ |
 
-## CQRS & MediatR (Microsoft Official)
+## Validation with FluentValidation
 | Resource | Type | Link |
 |----------|------|------|
-| **Implement the command process pipeline with MediatR** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-application-layer-implementation-web-api |
-| **Domain events: design and implementation** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation |
-| MediatR Library | GitHub | https://github.com/jbogard/MediatR |
+| FluentValidation Docs | Official | https://docs.fluentvalidation.net/ |
+| FluentValidation with MediatR | GitHub | https://github.com/FluentValidation/FluentValidation |
 
 ## eBooks (Free Downloads from Microsoft)
 | Resource | Description | Link |
 |----------|-------------|------|
-| **.NET Microservices Architecture** | Complete DDD/CQRS guide | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/ |
-| **Architect Modern Web Apps with ASP.NET Core** | Clean Architecture patterns | https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/ |
+| **Architect Modern Web Apps with ASP.NET Core** | Architecture patterns | https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/ |
+| **.NET Microservices Architecture** | CQRS patterns (still relevant for VSA) | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/ |
 
 ## Tools
 | Tool | Purpose | Link |
 |------|---------|------|
-| Miro | Event Storming online | https://miro.com |
+| Miro | Feature mapping online | https://miro.com |
 | FigJam | Collaborative whiteboard | https://www.figma.com/figjam/ |
 | draw.io | Diagrams | https://www.drawio.com/ |
 | GitHub Desktop | Git GUI | https://desktop.github.com/ |
@@ -1007,21 +1364,24 @@ Before considering your Docker setup complete, verify:
 
 # Week 1 Checklist
 
-- [ ] **Day 1-2**: Complete Event Storming exercise
-  - [ ] Write 15+ domain events on sticky notes
-  - [ ] Arrange in timeline
-  - [ ] Identify commands and aggregates
+- [ ] **Day 1-2**: Complete Feature Discovery exercise
+  - [ ] List 15+ user capabilities (things users want to DO)
+  - [ ] Group by feature area (Receipts, Recipes, Ingredients, Alerts)
+  - [ ] Mark each as Command or Query
+  - [ ] Name using Verb+Noun format
   - [ ] Take photo/screenshot for reference
 
-- [ ] **Day 3**: Define Bounded Contexts
-  - [ ] Draw 4 context boxes
-  - [ ] Assign entities to each context
-  - [ ] Map events between contexts
+- [ ] **Day 3**: Understand Vertical Slice Architecture
+  - [ ] Draw feature map with all slices
+  - [ ] Understand Command vs Query pattern
+  - [ ] Sketch a single slice structure (Command, Handler, Result, Endpoint)
+  - [ ] Compare with traditional layered architecture
 
-- [ ] **Day 4**: Write Ubiquitous Language
-  - [ ] Create/update `docs/glossary.md`
-  - [ ] Define 15-20 terms
-  - [ ] Verify terms match code naming
+- [ ] **Day 4**: Write Feature Glossary
+  - [ ] Create/update `docs/glossary.md` with VSA terms
+  - [ ] Define all feature names
+  - [ ] Verify naming convention: Verb+Noun
+  - [ ] Ensure terms match code folder/class names
 
 - [ ] **Day 5**: GitHub Repository
   - [ ] Create monorepo structure
@@ -1029,10 +1389,12 @@ Before considering your Docker setup complete, verify:
   - [ ] Add .gitignore
   - [ ] Push to GitHub
 
-- [ ] **Day 6**: .NET Solution (slnx)
-  - [ ] Create solution with `--format slnx`
-  - [ ] Add 5 projects + 2 test projects
-  - [ ] Add project references
+- [ ] **Day 6**: .NET Solution — Feature-Based (slnx)
+  - [ ] Create solution with slnx format
+  - [ ] Create Nastart.Api project with Minimal APIs
+  - [ ] Set up Features/ folder structure
+  - [ ] Add MediatR and FluentValidation packages
+  - [ ] Create test project
   - [ ] Verify `dotnet build` works
 
 - [ ] **Day 7**: Docker & PostgreSQL with Best Practices
@@ -1049,7 +1411,7 @@ Before considering your Docker setup complete, verify:
 
 ---
 
-**Next Week**: [Week 2 - Domain Layer Foundation](./week-02-domain-foundation.md)
+**Next Week**: [Week 2 - Building Your First Features](./week-02-domain-foundation.md)
 
 ---
 
@@ -1058,14 +1420,21 @@ Before considering your Docker setup complete, verify:
 For quick access during development, bookmark these essential Microsoft docs:
 
 ```
+Minimal APIs:
+├── Quick reference: https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis
+├── Tutorial: https://learn.microsoft.com/en-us/aspnet/core/tutorials/min-web-api
+├── Route handlers: https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/route-handlers
+└── Responses: https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/responses
+
 .NET CLI Commands:
 ├── dotnet new: https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-new
 ├── dotnet sln: https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-sln
 ├── dotnet add reference: https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-add-reference
 └── All templates: https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-new-sdk-templates
 
-DDD & Microservices Architecture:
-└── https://learn.microsoft.com/en-us/dotnet/architecture/microservices/
+Architecture:
+├── Common architectures: https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/common-web-application-architectures
+└── Modern Web Apps eBook: https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/
 
 .NET 10 What's New:
 └── https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-10/overview
@@ -1077,22 +1446,28 @@ Docker + .NET:
 └── https://learn.microsoft.com/en-us/dotnet/core/docker/introduction
 ```
 
+### Key Packages for Vertical Slice Architecture
+
+| Package | Purpose | NuGet |
+|---------|---------|-------|
+| MediatR | Request/Handler pattern | `dotnet add package MediatR` |
+| FluentValidation | Input validation | `dotnet add package FluentValidation.DependencyInjectionExtensions` |
+| Npgsql.EntityFrameworkCore.PostgreSQL | PostgreSQL provider | `dotnet add package Npgsql.EntityFrameworkCore.PostgreSQL` |
+| Microsoft.EntityFrameworkCore.Design | EF Core tooling | `dotnet add package Microsoft.EntityFrameworkCore.Design` |
+
 ### Available Templates (dotnet new list)
 
 | Template | Short Name | Description |
 |----------|------------|-------------|
 | Solution File | `sln` | Empty solution (slnx in .NET 10) |
-| ASP.NET Core Web API | `webapi` | Web API with controllers or minimal APIs |
+| ASP.NET Core Web API | `webapi` | Web API with Minimal APIs |
 | Class Library | `classlib` | Reusable class library |
 | Console App | `console` | Console application |
 | xUnit Test Project | `xunit` | Unit test project with xUnit |
-| MSTest Test Project | `mstest` | Unit test project with MSTest |
-| NUnit Test Project | `nunit` | Unit test project with NUnit |
-| Blazor Web App | `blazor` | Interactive web UI with Blazor |
 | Worker Service | `worker` | Background worker service |
 
 Run `dotnet new list` to see all available templates on your system.
 
 ---
 
-*Happy learning! Remember: understanding WHY is more important than HOW.* 🚀
+*Happy learning! Remember: Features, not layers — organize by what users DO, not how the code works.* 🚀

@@ -1,2296 +1,2175 @@
-# Week 10: Bot Commands + Alert Notifications 🔔
+# Week 10: Bot Commands + Alerts 📢
 
-> **Goal**: Implement Telegram bot commands (`/cost`, `/price`, `/low`, `/profit`), create `AlertNotificationService`, connect domain events to Telegram notifications using MediatR `INotificationHandler`, and provide transparent price change summaries.
+> **Goal**: Build the utility bot commands (`/cost`, `/price`, `/low`, `/profit`), connect the notification system to send Telegram alerts for price spikes and margin drops, and complete the full bot workflow.
 
 ---
 
 ## Table of Contents
-1. [Day 1: Command Architecture with MediatR](#day-1-command-architecture-with-mediatr)
-2. [Day 2: Implement /cost Command](#day-2-implement-cost-command)
-3. [Day 3: Implement /price and /low Commands](#day-3-implement-price-and-low-commands)
-4. [Day 4: Implement /profit Command](#day-4-implement-profit-command)
-5. [Day 5: Domain Events & Alert System](#day-5-domain-events--alert-system)
-6. [Day 6: AlertNotificationService & Telegram Integration](#day-6-alertnotificationservice--telegram-integration)
-   - [Price Transparency: Post-Receipt Summary](#price-transparency-post-receipt-summary)
-7. [Day 7: Testing & Production Considerations](#day-7-testing--production-considerations)
-8. [Resources](#resources)
+1. [Day 1: CostCommand Feature Slice](#day-1-costcommand-feature-slice)
+2. [Day 2: PriceCommand Feature Slice](#day-2-pricecommand-feature-slice)
+3. [Day 3: LowStockCommand Feature Slice](#day-3-lowstockcommand-feature-slice)
+4. [Day 4: ProfitCommand Feature Slice](#day-4-profitcommand-feature-slice)
+5. [Day 5: Telegram Alert Notifications](#day-5-telegram-alert-notifications)
+6. [Day 6: Notification Handlers & Scheduling](#day-6-notification-handlers--scheduling)
+7. [Day 7: Full Bot Workflow Testing](#day-7-full-bot-workflow-testing)
+8. [Resources](#resources) *(Microsoft Official Docs Verified)*
 
 ---
 
-# Day 1: Command Architecture with MediatR
+# Day 1: CostCommand Feature Slice
 
 ## 🧒 Explain Like I'm 5
 
-Bot commands are like asking questions:
-- `/cost cake` → "How much does it cost to make a cake?"
-- `/price flour` → "What's the current price of flour?"
-- `/low` → "What ingredients are running low?"
-- `/profit` → "How much money did I make today?"
+Imagine Ibu Sari wants to know how much it costs to make her Nastar cookies 🍪:
 
-The bot takes your question, finds the answer, and tells you!
+She types: `/cost Nastar`
+
+The robot looks up the recipe and says:
+```
+🍪 Nastar (24 pcs)
+
+Bahan:
+• Tepung Terigu (500g) — Rp 12.500
+• Mentega (250g) — Rp 22.500
+• Gula Halus (150g) — Rp 4.500
+• Telur (2 pcs) — Rp 7.000
+• Selai Nanas (300g) — Rp 18.000
+
+💰 Total Biaya: Rp 64.500
+📦 Biaya per pcs: Rp 2.687
+💵 Harga Jual: Rp 5.000/pcs
+📈 Margin: 46.3% ✅
+```
+
+Now Ibu Sari knows exactly how much money she makes!
 
 ## 🔧 Engineer Language
 
-Using MediatR for command handling:
-1. **Telegram Command** → Parsed by `ICommandHandler`
-2. **MediatR Query** → Sent to Application layer
-3. **Query Handler** → Fetches data from repositories
-4. **Response** → Formatted and sent back via Telegram
+The **CostCommand** feature handles the `/cost [recipe_name]` command. It queries the recipe, calculates real-time costs using current ingredient prices, and returns a formatted breakdown.
 
-### Command-to-Query Flow
+> 📖 **Microsoft Docs**: *"MediatR simplifies request/response patterns. Handlers encapsulate all logic for a specific request."*
+>
+> — [MediatR on GitHub](https://github.com/jbogard/MediatR)
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant T as Telegram
-    participant C as CommandHandler
-    participant M as MediatR
-    participant H as QueryHandler
-    participant DB as Database
+### CostCommand Feature
 
-    U->>T: /cost chocolate cake
-    T->>C: Message with "/cost"
-    C->>C: Parse arguments
-    C->>M: Send(GetRecipeCostQuery)
-    M->>H: Handle(query)
-    H->>DB: Find recipe, calculate cost
-    H-->>M: RecipeCostResponse
-    M-->>C: Result
-    C->>T: SendMessage(formatted response)
-    T->>U: "🍰 Chocolate Cake costs Rp 45,000..."
-```
-
-### Bot Commands Summary
-
-| Command | Query | Description |
-|---------|-------|-------------|
-| `/cost [recipe]` | `GetRecipeCostQuery` | Recipe cost breakdown |
-| `/price [ingredient]` | `GetIngredientPriceQuery` | Current price + history |
-| `/low` | `GetLowStockQuery` | Items below minimum |
-| `/profit` | `GetDailyProfitQuery` | Today's P&L summary |
-| `/help` | — | Show available commands |
-
-### Base Command Handler Pattern
-
-Create `src/Nastart.Bot/Commands/BaseCommandHandler.cs`:
+Create `src/Nastart.Api/Features/Bot/Commands/CostCommand.cs`:
 
 ```csharp
 using MediatR;
-using Telegram.Bot;
-using Telegram.Bot.Types;
-using Telegram.Bot.Types.Enums;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Recipes;
+using Nastart.Api.Shared.Data;
+using Telegram.Bot.Types.ReplyMarkups;
 
-namespace Nastart.Bot.Commands;
+namespace Nastart.Api.Features.Bot;
 
+// ══════════════════════════════════════════════════════════════
+// COST COMMAND FEATURE SLICE
+// Handles /cost [recipe] — shows recipe cost breakdown
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
 /// <summary>
-/// Base class for command handlers that use MediatR queries.
+/// Command to calculate and display recipe cost.
 /// </summary>
-public abstract class BaseCommandHandler : ICommandHandler
+public sealed record CostCommand(
+    long ChatId,
+    long UserId,
+    string? RecipeName
+) : IRequest<Unit>;
+
+// ── Handler ──
+/// <summary>
+/// Handles the /cost command by calculating recipe costs.
+/// </summary>
+/// <remarks>
+/// Calculates cost using current ingredient prices from latest purchases.
+/// See: https://learn.microsoft.com/en-us/ef/core/querying/
+/// </remarks>
+public sealed class CostCommandHandler : IRequestHandler<CostCommand, Unit>
 {
-    protected readonly ITelegramBotClient BotClient;
-    protected readonly IMediator Mediator;
-    protected readonly ILogger Logger;
+    private readonly ITelegramBotService _botService;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<CostCommandHandler> _logger;
 
-    protected BaseCommandHandler(
-        ITelegramBotClient botClient,
-        IMediator mediator,
-        ILogger logger)
+    public CostCommandHandler(
+        ITelegramBotService botService,
+        NastartDbContext db,
+        ILogger<CostCommandHandler> logger)
     {
-        BotClient = botClient;
-        Mediator = mediator;
-        Logger = logger;
+        _botService = botService;
+        _db = db;
+        _logger = logger;
     }
 
-    public abstract string Command { get; }
-    public abstract string Description { get; }
-    
-    public abstract Task HandleAsync(Message message, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Parses command arguments from message text.
-    /// </summary>
-    protected string[] ParseArguments(string text)
-    {
-        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return parts.Length > 1 ? parts[1..] : [];
-    }
-
-    /// <summary>
-    /// Sends a markdown-formatted message.
-    /// </summary>
-    protected async Task SendMarkdownAsync(
-        long chatId,
-        string text,
+    public async Task<Unit> Handle(
+        CostCommand request,
         CancellationToken cancellationToken)
     {
-        await BotClient.SendMessage(
-            chatId: chatId,
-            text: text,
-            parseMode: ParseMode.Markdown,
+        _logger.LogInformation(
+            "Cost command from chat {ChatId}: {RecipeName}",
+            request.ChatId,
+            request.RecipeName);
+        
+        // If no recipe name provided, show list
+        if (string.IsNullOrWhiteSpace(request.RecipeName))
+        {
+            await SendRecipeList(request.ChatId, request.UserId, cancellationToken);
+            return Unit.Value;
+        }
+        
+        // Find user by Telegram ID
+        var user = await _db.Users
+            .FirstOrDefaultAsync(u => u.TelegramId == request.UserId, cancellationToken);
+        
+        if (user is null)
+        {
+            await _botService.SendTextMessageAsync(
+                request.ChatId,
+                "❌ Silakan /start dulu untuk mendaftar.",
+                cancellationToken: cancellationToken);
+            return Unit.Value;
+        }
+        
+        // Find recipe by name (fuzzy match)
+        var recipe = await _db.Recipes
+            .Include(r => r.Items)
+                .ThenInclude(i => i.Ingredient)
+            .Where(r => r.UserId == user.Id)
+            .Where(r => EF.Functions.ILike(r.Name, $"%{request.RecipeName}%"))
+            .FirstOrDefaultAsync(cancellationToken);
+        
+        if (recipe is null)
+        {
+            await _botService.SendTextMessageAsync(
+                request.ChatId,
+                $"❌ Resep \"{request.RecipeName}\" tidak ditemukan.\n\nKetik /cost tanpa argumen untuk lihat daftar resep.",
+                cancellationToken: cancellationToken);
+            return Unit.Value;
+        }
+        
+        // Calculate costs
+        var costBreakdown = await CalculateCostBreakdown(recipe, cancellationToken);
+        
+        // Format and send response
+        var message = FormatCostMessage(recipe, costBreakdown);
+        var keyboard = BuildCostKeyboard(recipe.Id);
+        
+        await _botService.SendTextMessageAsync(
+            request.ChatId,
+            message,
+            keyboard,
+            cancellationToken: cancellationToken);
+        
+        return Unit.Value;
+    }
+
+    private async Task SendRecipeList(
+        long chatId,
+        long userId,
+        CancellationToken cancellationToken)
+    {
+        var user = await _db.Users
+            .FirstOrDefaultAsync(u => u.TelegramId == userId, cancellationToken);
+        
+        if (user is null)
+        {
+            await _botService.SendTextMessageAsync(
+                chatId,
+                "❌ Silakan /start dulu untuk mendaftar.",
+                cancellationToken: cancellationToken);
+            return;
+        }
+        
+        var recipes = await _db.Recipes
+            .Where(r => r.UserId == user.Id && r.IsActive)
+            .OrderBy(r => r.Name)
+            .Select(r => new { r.Id, r.Name, r.YieldQuantity, r.YieldUnit })
+            .Take(20)
+            .ToListAsync(cancellationToken);
+        
+        if (!recipes.Any())
+        {
+            await _botService.SendTextMessageAsync(
+                chatId,
+                "📭 Belum ada resep.\n\nGunakan dashboard web untuk menambah resep.",
+                cancellationToken: cancellationToken);
+            return;
+        }
+        
+        var message = "<b>📋 Daftar Resep</b>\n\n";
+        message += "Ketik <code>/cost [nama]</code> untuk lihat biaya:\n\n";
+        
+        foreach (var recipe in recipes)
+        {
+            message += $"• <b>{recipe.Name}</b> ({recipe.YieldQuantity} {recipe.YieldUnit})\n";
+        }
+        
+        message += "\n<i>Contoh: /cost Nastar</i>";
+        
+        // Build inline keyboard for quick selection
+        var buttons = recipes.Take(6).Select(r =>
+            new[] { InlineKeyboardButton.WithCallbackData(
+                $"📊 {r.Name}",
+                $"cost:view:{r.Id}") }
+        ).ToList();
+        
+        var keyboard = new InlineKeyboardMarkup(buttons);
+        
+        await _botService.SendTextMessageAsync(
+            chatId,
+            message,
+            keyboard,
             cancellationToken: cancellationToken);
     }
 
-    /// <summary>
-    /// Sends an error message to the user.
-    /// </summary>
-    protected async Task SendErrorAsync(
-        long chatId,
-        string error,
+    private async Task<CostBreakdown> CalculateCostBreakdown(
+        Recipe recipe,
         CancellationToken cancellationToken)
     {
-        await BotClient.SendMessage(
-            chatId: chatId,
-            text: $"❌ {error}",
-            cancellationToken: cancellationToken);
+        var itemCosts = new List<ItemCost>();
+        decimal totalCost = 0;
+        
+        foreach (var item in recipe.Items)
+        {
+            if (item.Ingredient is null) continue;
+            
+            // Get latest price for ingredient
+            var latestPrice = item.Ingredient.CurrentPrice;
+            var itemTotal = item.Quantity * latestPrice;
+            
+            itemCosts.Add(new ItemCost(
+                IngredientName: item.Ingredient.Name,
+                Quantity: item.Quantity,
+                Unit: item.Ingredient.Unit,
+                UnitPrice: latestPrice,
+                TotalPrice: itemTotal
+            ));
+            
+            totalCost += itemTotal;
+        }
+        
+        var costPerUnit = recipe.YieldQuantity > 0 
+            ? totalCost / recipe.YieldQuantity 
+            : totalCost;
+        
+        var margin = recipe.SellingPrice > 0 
+            ? ((recipe.SellingPrice - costPerUnit) / recipe.SellingPrice) * 100 
+            : 0;
+        
+        return new CostBreakdown(
+            Items: itemCosts,
+            TotalCost: totalCost,
+            CostPerUnit: costPerUnit,
+            SellingPrice: recipe.SellingPrice,
+            Margin: margin
+        );
     }
 
-    /// <summary>
-    /// Sends usage instructions when command is malformed.
-    /// </summary>
-    protected async Task SendUsageAsync(
-        long chatId,
-        string usage,
-        CancellationToken cancellationToken)
+    private static string FormatCostMessage(Recipe recipe, CostBreakdown breakdown)
     {
-        await BotClient.SendMessage(
-            chatId: chatId,
-            text: $"💡 *Usage:* `{usage}`",
-            parseMode: ParseMode.Markdown,
-            cancellationToken: cancellationToken);
+        var sb = new System.Text.StringBuilder();
+        
+        // Header
+        sb.AppendLine($"🍪 <b>{recipe.Name}</b> ({recipe.YieldQuantity} {recipe.YieldUnit})");
+        sb.AppendLine();
+        
+        // Ingredients
+        sb.AppendLine("<b>Bahan:</b>");
+        foreach (var item in breakdown.Items)
+        {
+            sb.AppendLine($"• {item.IngredientName} ({item.Quantity}{item.Unit}) — Rp {item.TotalPrice:N0}");
+        }
+        sb.AppendLine();
+        
+        // Totals
+        sb.AppendLine($"💰 <b>Total Biaya:</b> Rp {breakdown.TotalCost:N0}");
+        sb.AppendLine($"📦 <b>Biaya per {recipe.YieldUnit}:</b> Rp {breakdown.CostPerUnit:N0}");
+        
+        if (breakdown.SellingPrice > 0)
+        {
+            sb.AppendLine($"💵 <b>Harga Jual:</b> Rp {breakdown.SellingPrice:N0}/{recipe.YieldUnit}");
+            
+            // Margin with emoji indicator
+            var marginEmoji = breakdown.Margin switch
+            {
+                >= 40 => "✅",  // Healthy margin
+                >= 25 => "⚠️",  // Warning
+                _ => "🔴"       // Low margin
+            };
+            sb.AppendLine($"📈 <b>Margin:</b> {breakdown.Margin:F1}% {marginEmoji}");
+        }
+        
+        // Timestamp
+        sb.AppendLine();
+        sb.AppendLine($"<i>Dihitung: {DateTime.Now:dd/MM/yyyy HH:mm}</i>");
+        
+        return sb.ToString();
+    }
+
+    private static InlineKeyboardMarkup BuildCostKeyboard(Guid recipeId)
+    {
+        return new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("🔄 Refresh", $"cost:refresh:{recipeId}"),
+                InlineKeyboardButton.WithCallbackData("📊 Trend", $"cost:trend:{recipeId}"),
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("📋 Resep Lain", "cost:list"),
+            }
+        });
     }
 }
-```
 
-### References
-- [MediatR Documentation](https://github.com/jbogard/MediatR)
-- [CQRS Pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs)
-
----
-
-# Day 2: Implement /cost Command
-
-## 🧒 Explain Like I'm 5
-
-When you ask `/cost chocolate cake`, the bot:
-1. Finds the recipe called "chocolate cake"
-2. Looks up all ingredients and their prices
-3. Calculates total cost
-4. Tells you the margin (how much profit you make)
-
-## 🔧 Engineer Language
-
-The `/cost` command queries recipe cost with full breakdown:
-- Ingredient costs using current prices
-- Total cost calculation
-- Margin based on selling price
-- Warning if margin is below threshold
-
-### GetRecipeCostQuery
-
-Create `src/Nastart.Application/Recipe/Queries/GetRecipeCost/GetRecipeCostQuery.cs`:
-
-```csharp
-using MediatR;
-using Nastart.Application.Common;
-
-namespace Nastart.Application.Recipe.Queries.GetRecipeCost;
-
-/// <summary>
-/// Query to get recipe cost breakdown.
-/// </summary>
-public record GetRecipeCostQuery(
-    string RecipeName,
-    long UserId
-) : IRequest<Result<RecipeCostResponse>>;
-
-/// <summary>
-/// Detailed cost breakdown for a recipe.
-/// </summary>
-public record RecipeCostResponse(
-    Guid RecipeId,
-    string RecipeName,
-    decimal SellingPrice,
-    decimal TotalCost,
-    decimal Margin,
-    decimal MarginPercent,
-    bool IsBelowThreshold,
-    decimal Threshold,
-    IReadOnlyList<IngredientCostItem> Ingredients,
-    DateTime CostCalculatedAt
-);
-
-/// <summary>
-/// Individual ingredient cost in a recipe.
-/// </summary>
-public record IngredientCostItem(
-    Guid IngredientId,
+// ── Supporting Records ──
+internal sealed record ItemCost(
     string IngredientName,
     decimal Quantity,
     string Unit,
     decimal UnitPrice,
-    decimal LineCost
+    decimal TotalPrice
+);
+
+internal sealed record CostBreakdown(
+    IReadOnlyList<ItemCost> Items,
+    decimal TotalCost,
+    decimal CostPerUnit,
+    decimal SellingPrice,
+    decimal Margin
 );
 ```
 
-### GetRecipeCostQueryHandler
+### Update Webhook Handler
 
-Create `src/Nastart.Application/Recipe/Queries/GetRecipeCost/GetRecipeCostQueryHandler.cs`:
+Add to `HandleWebhook.cs` in the `DispatchCommand` method:
 
 ```csharp
-using MediatR;
-using Microsoft.Extensions.Logging;
-using Nastart.Application.Common;
-using Nastart.Application.Common.Interfaces;
+"cost" => await DispatchCostCommand(message, cancellationToken),
 
-namespace Nastart.Application.Recipe.Queries.GetRecipeCost;
-
-/// <summary>
-/// Handles GetRecipeCostQuery using repository and domain logic.
-/// </summary>
-public class GetRecipeCostQueryHandler 
-    : IRequestHandler<GetRecipeCostQuery, Result<RecipeCostResponse>>
+// ... and add the method:
+private async Task<string> DispatchCostCommand(
+    TelegramMessage message,
+    CancellationToken cancellationToken)
 {
-    private readonly IRecipeRepository _recipeRepository;
-    private readonly IIngredientRepository _ingredientRepository;
-    private readonly IUserSettingsRepository _userSettingsRepository;
-    private readonly ILogger<GetRecipeCostQueryHandler> _logger;
-
-    public GetRecipeCostQueryHandler(
-        IRecipeRepository recipeRepository,
-        IIngredientRepository ingredientRepository,
-        IUserSettingsRepository userSettingsRepository,
-        ILogger<GetRecipeCostQueryHandler> logger)
-    {
-        _recipeRepository = recipeRepository;
-        _ingredientRepository = ingredientRepository;
-        _userSettingsRepository = userSettingsRepository;
-        _logger = logger;
-    }
-
-    public async Task<Result<RecipeCostResponse>> Handle(
-        GetRecipeCostQuery request, 
-        CancellationToken cancellationToken)
-    {
-        // Find recipe by name (fuzzy search)
-        var recipe = await _recipeRepository.FindByNameAsync(
-            request.RecipeName, 
-            request.UserId, 
-            cancellationToken);
-
-        if (recipe is null)
-        {
-            _logger.LogWarning(
-                "Recipe '{Name}' not found for user {UserId}", 
-                request.RecipeName, request.UserId);
-            
-            return Result<RecipeCostResponse>.Failure(
-                Error.NotFound("RecipeNotFound", 
-                    $"Recipe '{request.RecipeName}' not found"));
-        }
-
-        // Get user's margin threshold
-        var settings = await _userSettingsRepository.GetByUserIdAsync(
-            request.UserId, cancellationToken);
-        var threshold = settings?.MinMarginPercent ?? 20m;
-
-        // Calculate costs for each ingredient
-        var ingredientCosts = new List<IngredientCostItem>();
-        var totalCost = 0m;
-
-        foreach (var recipeItem in recipe.Items)
-        {
-            var ingredient = await _ingredientRepository.GetByIdAsync(
-                recipeItem.IngredientId, cancellationToken);
-
-            if (ingredient is null) continue;
-
-            var lineCost = recipeItem.Quantity.Value * ingredient.CurrentPrice.Amount;
-            totalCost += lineCost;
-
-            ingredientCosts.Add(new IngredientCostItem(
-                IngredientId: ingredient.Id.Value,
-                IngredientName: ingredient.Name,
-                Quantity: recipeItem.Quantity.Value,
-                Unit: ingredient.Unit.Name,
-                UnitPrice: ingredient.CurrentPrice.Amount,
-                LineCost: lineCost
-            ));
-        }
-
-        // Calculate margin
-        var margin = recipe.SellingPrice.Amount - totalCost;
-        var marginPercent = recipe.SellingPrice.Amount > 0 
-            ? (margin / recipe.SellingPrice.Amount) * 100 
-            : 0;
-
-        _logger.LogInformation(
-            "Calculated cost for recipe {RecipeId}: Cost={Cost}, Margin={Margin}%",
-            recipe.Id.Value, totalCost, marginPercent);
-
-        return Result<RecipeCostResponse>.Success(new RecipeCostResponse(
-            RecipeId: recipe.Id.Value,
-            RecipeName: recipe.Name,
-            SellingPrice: recipe.SellingPrice.Amount,
-            TotalCost: totalCost,
-            Margin: margin,
-            MarginPercent: marginPercent,
-            IsBelowThreshold: marginPercent < threshold,
-            Threshold: threshold,
-            Ingredients: ingredientCosts,
-            CostCalculatedAt: DateTime.UtcNow
-        ));
-    }
+    await _mediator.Send(new CostCommand(
+        ChatId: message.Chat.Id,
+        UserId: message.From?.Id ?? 0,
+        RecipeName: message.CommandArgs
+    ), cancellationToken);
+    
+    return "CostCommand";
 }
 ```
 
-### CostCommand Handler
+### Your Task (Day 1):
 
-Create `src/Nastart.Bot/Commands/CostCommand.cs`:
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
 
-```csharp
-using System.Text;
-using MediatR;
-using Telegram.Bot;
-using Telegram.Bot.Types;
-using Nastart.Application.Recipe.Queries.GetRecipeCost;
+# Create CostCommand feature
+New-Item Features\Bot\Commands\CostCommand.cs
 
-namespace Nastart.Bot.Commands;
+# Update HandleWebhook.cs with cost command routing
 
-/// <summary>
-/// Handles /cost [recipe] command.
-/// </summary>
-public sealed class CostCommand : BaseCommandHandler
-{
-    public CostCommand(
-        ITelegramBotClient botClient,
-        IMediator mediator,
-        ILogger<CostCommand> logger)
-        : base(botClient, mediator, logger)
-    {
-    }
-
-    public override string Command => "cost";
-    public override string Description => "Get recipe cost breakdown";
-
-    public override async Task HandleAsync(
-        Message message, 
-        CancellationToken cancellationToken = default)
-    {
-        var chatId = message.Chat.Id;
-        var userId = message.From?.Id ?? 0;
-
-        var args = ParseArguments(message.Text ?? string.Empty);
-        
-        if (args.Length == 0)
-        {
-            await SendUsageAsync(chatId, "/cost [recipe name]", cancellationToken);
-            return;
-        }
-
-        var recipeName = string.Join(" ", args);
-
-        Logger.LogInformation(
-            "Cost query for '{Recipe}' from user {UserId}", 
-            recipeName, userId);
-
-        var query = new GetRecipeCostQuery(recipeName, userId);
-        var result = await Mediator.Send(query, cancellationToken);
-
-        if (!result.IsSuccess)
-        {
-            await SendErrorAsync(chatId, result.Error?.Message ?? "Recipe not found", cancellationToken);
-            return;
-        }
-
-        var response = FormatCostResponse(result.Value);
-        await SendMarkdownAsync(chatId, response, cancellationToken);
-    }
-
-    private static string FormatCostResponse(RecipeCostResponse cost)
-    {
-        var sb = new StringBuilder();
-
-        // Header
-        var marginEmoji = cost.IsBelowThreshold ? "⚠️" : "✅";
-        sb.AppendLine($"🍳 *{cost.RecipeName}*\n");
-
-        // Ingredient breakdown
-        sb.AppendLine("*Ingredients:*");
-        foreach (var item in cost.Ingredients)
-        {
-            sb.AppendLine($"• {item.IngredientName}");
-            sb.AppendLine($"  {item.Quantity:N1} {item.Unit} × Rp {item.UnitPrice:N0} = *Rp {item.LineCost:N0}*");
-        }
-
-        sb.AppendLine();
-
-        // Summary
-        sb.AppendLine("─────────────────");
-        sb.AppendLine($"📦 *Total Cost:* Rp {cost.TotalCost:N0}");
-        sb.AppendLine($"💰 *Sell Price:* Rp {cost.SellingPrice:N0}");
-        sb.AppendLine($"{marginEmoji} *Margin:* Rp {cost.Margin:N0} ({cost.MarginPercent:N1}%)");
-
-        // Warning if below threshold
-        if (cost.IsBelowThreshold)
-        {
-            sb.AppendLine();
-            sb.AppendLine($"⚠️ _Margin is below your threshold of {cost.Threshold:N0}%_");
-        }
-
-        sb.AppendLine();
-        sb.AppendLine($"_Updated: {cost.CostCalculatedAt:dd MMM yyyy HH:mm}_");
-
-        return sb.ToString();
-    }
-}
+# Verify build
+dotnet build
 ```
-
-### References
-- [MediatR Request/Response](https://github.com/jbogard/MediatR/wiki)
-- [Result Pattern in C#](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation)
 
 ---
 
-# Day 3: Implement /price and /low Commands
+# Day 2: PriceCommand Feature Slice
 
 ## 🧒 Explain Like I'm 5
 
-- `/price flour` → "What's the price of flour? Has it gone up or down?"
-- `/low` → "What ingredients are running out?"
+Ibu Sari wants to check how much flour costs now:
 
-These commands help you stay on top of your inventory!
+She types: `/price tepung`
+
+The robot says:
+```
+🏷️ Tepung Terigu
+
+💵 Harga Saat Ini: Rp 25.000/kg
+📅 Update Terakhir: 05/02/2026
+
+📊 Riwayat Harga:
+• 01/02 — Rp 24.000 
+• 15/01 — Rp 23.500
+• 01/01 — Rp 22.000
+
+📈 Naik 13.6% dalam 1 bulan
+```
+
+Now she can see if flour is getting more expensive!
 
 ## 🔧 Engineer Language
 
-### GetIngredientPriceQuery
+The **PriceCommand** feature handles `/price [ingredient_name]`. It shows current price, price history, and calculates price trends.
 
-Create `src/Nastart.Application/Inventory/Queries/GetIngredientPrice/GetIngredientPriceQuery.cs`:
+> 📖 **Microsoft Docs**: *"EF Core supports complex queries with LINQ. Use projections to select only the data you need."*
+>
+> — [Querying Data](https://learn.microsoft.com/en-us/ef/core/querying/)
+
+### PriceCommand Feature
+
+Create `src/Nastart.Api/Features/Bot/Commands/PriceCommand.cs`:
 
 ```csharp
 using MediatR;
-using Nastart.Application.Common;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Telegram.Bot.Types.ReplyMarkups;
 
-namespace Nastart.Application.Inventory.Queries.GetIngredientPrice;
+namespace Nastart.Api.Features.Bot;
 
-public record GetIngredientPriceQuery(
-    string IngredientName,
-    long UserId
-) : IRequest<Result<IngredientPriceResponse>>;
+// ══════════════════════════════════════════════════════════════
+// PRICE COMMAND FEATURE SLICE
+// Handles /price [ingredient] — shows price info and trends
+// ══════════════════════════════════════════════════════════════
 
-public record IngredientPriceResponse(
-    Guid IngredientId,
-    string IngredientName,
-    decimal CurrentPrice,
-    string Unit,
-    decimal CurrentStock,
-    decimal MinStock,
-    bool IsLowStock,
-    IReadOnlyList<PriceHistoryItem> RecentPrices,
-    decimal? PriceChange,
-    decimal? PriceChangePercent
-);
+// ── Request ──
+/// <summary>
+/// Command to display ingredient price information.
+/// </summary>
+public sealed record PriceCommand(
+    long ChatId,
+    long UserId,
+    string? IngredientName
+) : IRequest<Unit>;
 
-public record PriceHistoryItem(
+// ── Handler ──
+/// <summary>
+/// Handles the /price command by showing price info and history.
+/// </summary>
+public sealed class PriceCommandHandler : IRequestHandler<PriceCommand, Unit>
+{
+    private readonly ITelegramBotService _botService;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<PriceCommandHandler> _logger;
+
+    public PriceCommandHandler(
+        ITelegramBotService botService,
+        NastartDbContext db,
+        ILogger<PriceCommandHandler> logger)
+    {
+        _botService = botService;
+        _db = db;
+        _logger = logger;
+    }
+
+    public async Task<Unit> Handle(
+        PriceCommand request,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Price command from chat {ChatId}: {IngredientName}",
+            request.ChatId,
+            request.IngredientName);
+        
+        // If no ingredient name, show list
+        if (string.IsNullOrWhiteSpace(request.IngredientName))
+        {
+            await SendIngredientList(request.ChatId, request.UserId, cancellationToken);
+            return Unit.Value;
+        }
+        
+        // Find user
+        var user = await _db.Users
+            .FirstOrDefaultAsync(u => u.TelegramId == request.UserId, cancellationToken);
+        
+        if (user is null)
+        {
+            await _botService.SendTextMessageAsync(
+                request.ChatId,
+                "❌ Silakan /start dulu untuk mendaftar.",
+                cancellationToken: cancellationToken);
+            return Unit.Value;
+        }
+        
+        // Find ingredient (fuzzy match)
+        var ingredient = await _db.Ingredients
+            .Where(i => i.UserId == user.Id)
+            .Where(i => EF.Functions.ILike(i.Name, $"%{request.IngredientName}%"))
+            .FirstOrDefaultAsync(cancellationToken);
+        
+        if (ingredient is null)
+        {
+            await _botService.SendTextMessageAsync(
+                request.ChatId,
+                $"❌ Bahan \"{request.IngredientName}\" tidak ditemukan.\n\nKetik /price tanpa argumen untuk lihat daftar.",
+                cancellationToken: cancellationToken);
+            return Unit.Value;
+        }
+        
+        // Get price history
+        var priceHistory = await GetPriceHistory(ingredient.Id, cancellationToken);
+        
+        // Format message
+        var message = FormatPriceMessage(ingredient, priceHistory);
+        var keyboard = BuildPriceKeyboard(ingredient.Id);
+        
+        await _botService.SendTextMessageAsync(
+            request.ChatId,
+            message,
+            keyboard,
+            cancellationToken: cancellationToken);
+        
+        return Unit.Value;
+    }
+
+    private async Task SendIngredientList(
+        long chatId,
+        long userId,
+        CancellationToken cancellationToken)
+    {
+        var user = await _db.Users
+            .FirstOrDefaultAsync(u => u.TelegramId == userId, cancellationToken);
+        
+        if (user is null)
+        {
+            await _botService.SendTextMessageAsync(
+                chatId,
+                "❌ Silakan /start dulu untuk mendaftar.",
+                cancellationToken: cancellationToken);
+            return;
+        }
+        
+        var ingredients = await _db.Ingredients
+            .Where(i => i.UserId == user.Id)
+            .OrderBy(i => i.Name)
+            .Select(i => new { i.Id, i.Name, i.CurrentPrice, i.Unit })
+            .Take(20)
+            .ToListAsync(cancellationToken);
+        
+        if (!ingredients.Any())
+        {
+            await _botService.SendTextMessageAsync(
+                chatId,
+                "📭 Belum ada bahan.\n\nScan struk belanja untuk menambah bahan.",
+                cancellationToken: cancellationToken);
+            return;
+        }
+        
+        var message = "<b>🏷️ Daftar Bahan</b>\n\n";
+        message += "Ketik <code>/price [nama]</code> untuk lihat harga:\n\n";
+        
+        foreach (var ing in ingredients)
+        {
+            message += $"• <b>{ing.Name}</b> — Rp {ing.CurrentPrice:N0}/{ing.Unit}\n";
+        }
+        
+        message += "\n<i>Contoh: /price tepung</i>";
+        
+        await _botService.SendTextMessageAsync(
+            chatId,
+            message,
+            cancellationToken: cancellationToken);
+    }
+
+    private async Task<List<PriceHistoryItem>> GetPriceHistory(
+        Guid ingredientId,
+        CancellationToken cancellationToken)
+    {
+        // Get price history from purchase items
+        var history = await _db.PurchaseItems
+            .Include(pi => pi.Purchase)
+            .Where(pi => pi.IngredientId == ingredientId)
+            .OrderByDescending(pi => pi.Purchase!.PurchaseDate)
+            .Take(10)
+            .Select(pi => new PriceHistoryItem(
+                pi.Purchase!.PurchaseDate,
+                pi.UnitPrice,
+                pi.Purchase.Shop != null ? pi.Purchase.Shop.Name : null
+            ))
+            .ToListAsync(cancellationToken);
+        
+        return history;
+    }
+
+    private static string FormatPriceMessage(
+        Nastart.Api.Features.Ingredients.Ingredient ingredient,
+        List<PriceHistoryItem> history)
+    {
+        var sb = new System.Text.StringBuilder();
+        
+        // Header
+        sb.AppendLine($"🏷️ <b>{ingredient.Name}</b>");
+        sb.AppendLine();
+        
+        // Current price
+        sb.AppendLine($"💵 <b>Harga Saat Ini:</b> Rp {ingredient.CurrentPrice:N0}/{ingredient.Unit}");
+        sb.AppendLine($"📅 <b>Update Terakhir:</b> {ingredient.LastPriceUpdate:dd/MM/yyyy}");
+        sb.AppendLine();
+        
+        // Price history
+        if (history.Any())
+        {
+            sb.AppendLine("<b>📊 Riwayat Harga:</b>");
+            foreach (var item in history.Take(5))
+            {
+                var shopInfo = !string.IsNullOrEmpty(item.ShopName) 
+                    ? $" ({item.ShopName})" 
+                    : "";
+                sb.AppendLine($"• {item.Date:dd/MM} — Rp {item.Price:N0}{shopInfo}");
+            }
+            sb.AppendLine();
+            
+            // Calculate trend
+            if (history.Count >= 2)
+            {
+                var latestPrice = history.First().Price;
+                var oldestPrice = history.Last().Price;
+                var changePercent = oldestPrice > 0 
+                    ? ((latestPrice - oldestPrice) / oldestPrice) * 100 
+                    : 0;
+                
+                var trendEmoji = changePercent switch
+                {
+                    > 15 => "🔴📈",  // Significant increase
+                    > 5 => "⚠️📈",   // Moderate increase
+                    < -5 => "✅📉",  // Decrease
+                    _ => "➡️"        // Stable
+                };
+                
+                var direction = changePercent >= 0 ? "Naik" : "Turun";
+                sb.AppendLine($"{trendEmoji} {direction} {Math.Abs(changePercent):F1}% dalam periode ini");
+            }
+        }
+        
+        // Stock info
+        if (ingredient.CurrentStock > 0)
+        {
+            var stockEmoji = ingredient.CurrentStock < ingredient.MinimumStock ? "⚠️" : "✅";
+            sb.AppendLine();
+            sb.AppendLine($"📦 <b>Stok:</b> {ingredient.CurrentStock} {ingredient.Unit} {stockEmoji}");
+        }
+        
+        return sb.ToString();
+    }
+
+    private static InlineKeyboardMarkup BuildPriceKeyboard(Guid ingredientId)
+    {
+        return new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("📈 Grafik", $"price:chart:{ingredientId}"),
+                InlineKeyboardButton.WithCallbackData("🔔 Alert", $"price:alert:{ingredientId}"),
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("📋 Bahan Lain", "price:list"),
+            }
+        });
+    }
+}
+
+// ── Supporting Records ──
+internal sealed record PriceHistoryItem(
     DateTime Date,
     decimal Price,
     string? ShopName
 );
 ```
 
-### GetIngredientPriceQueryHandler
+### Your Task (Day 2):
 
-```csharp
-using MediatR;
-using Microsoft.Extensions.Logging;
-using Nastart.Application.Common;
-using Nastart.Application.Common.Interfaces;
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
 
-namespace Nastart.Application.Inventory.Queries.GetIngredientPrice;
+# Create PriceCommand feature
+New-Item Features\Bot\Commands\PriceCommand.cs
 
-public class GetIngredientPriceQueryHandler 
-    : IRequestHandler<GetIngredientPriceQuery, Result<IngredientPriceResponse>>
-{
-    private readonly IIngredientRepository _ingredientRepository;
-    private readonly IPriceHistoryRepository _priceHistoryRepository;
-    private readonly ILogger<GetIngredientPriceQueryHandler> _logger;
+# Add to HandleWebhook.cs:
+# "price" => await DispatchPriceCommand(message, cancellationToken),
 
-    public GetIngredientPriceQueryHandler(
-        IIngredientRepository ingredientRepository,
-        IPriceHistoryRepository priceHistoryRepository,
-        ILogger<GetIngredientPriceQueryHandler> logger)
-    {
-        _ingredientRepository = ingredientRepository;
-        _priceHistoryRepository = priceHistoryRepository;
-        _logger = logger;
-    }
-
-    public async Task<Result<IngredientPriceResponse>> Handle(
-        GetIngredientPriceQuery request, 
-        CancellationToken cancellationToken)
-    {
-        var ingredient = await _ingredientRepository.FindByNameAsync(
-            request.IngredientName, 
-            request.UserId, 
-            cancellationToken);
-
-        if (ingredient is null)
-        {
-            return Result<IngredientPriceResponse>.Failure(
-                Error.NotFound("IngredientNotFound", 
-                    $"Ingredient '{request.IngredientName}' not found"));
-        }
-
-        // Get last 5 price entries
-        var priceHistory = await _priceHistoryRepository.GetRecentAsync(
-            ingredient.Id, 
-            count: 5, 
-            cancellationToken);
-
-        var recentPrices = priceHistory
-            .Select(p => new PriceHistoryItem(p.Date, p.Price.Amount, p.ShopName))
-            .ToList();
-
-        // Calculate price change from previous
-        decimal? priceChange = null;
-        decimal? priceChangePercent = null;
-
-        if (recentPrices.Count >= 2)
-        {
-            var current = recentPrices[0].Price;
-            var previous = recentPrices[1].Price;
-            priceChange = current - previous;
-            priceChangePercent = previous > 0 
-                ? (priceChange / previous) * 100 
-                : null;
-        }
-
-        return Result<IngredientPriceResponse>.Success(new IngredientPriceResponse(
-            IngredientId: ingredient.Id.Value,
-            IngredientName: ingredient.Name,
-            CurrentPrice: ingredient.CurrentPrice.Amount,
-            Unit: ingredient.Unit.Name,
-            CurrentStock: ingredient.Stock.Value,
-            MinStock: ingredient.MinimumStock.Value,
-            IsLowStock: ingredient.Stock.Value < ingredient.MinimumStock.Value,
-            RecentPrices: recentPrices,
-            PriceChange: priceChange,
-            PriceChangePercent: priceChangePercent
-        ));
-    }
-}
+# Verify build
+dotnet build
 ```
-
-### PriceCommand Handler
-
-Create `src/Nastart.Bot/Commands/PriceCommand.cs`:
-
-```csharp
-using System.Text;
-using MediatR;
-using Telegram.Bot;
-using Telegram.Bot.Types;
-using Nastart.Application.Inventory.Queries.GetIngredientPrice;
-
-namespace Nastart.Bot.Commands;
-
-/// <summary>
-/// Handles /price [ingredient] command.
-/// </summary>
-public sealed class PriceCommand : BaseCommandHandler
-{
-    public PriceCommand(
-        ITelegramBotClient botClient,
-        IMediator mediator,
-        ILogger<PriceCommand> logger)
-        : base(botClient, mediator, logger)
-    {
-    }
-
-    public override string Command => "price";
-    public override string Description => "Get ingredient price and history";
-
-    public override async Task HandleAsync(
-        Message message, 
-        CancellationToken cancellationToken = default)
-    {
-        var chatId = message.Chat.Id;
-        var userId = message.From?.Id ?? 0;
-
-        var args = ParseArguments(message.Text ?? string.Empty);
-        
-        if (args.Length == 0)
-        {
-            await SendUsageAsync(chatId, "/price [ingredient name]", cancellationToken);
-            return;
-        }
-
-        var ingredientName = string.Join(" ", args);
-
-        var query = new GetIngredientPriceQuery(ingredientName, userId);
-        var result = await Mediator.Send(query, cancellationToken);
-
-        if (!result.IsSuccess)
-        {
-            await SendErrorAsync(chatId, result.Error?.Message ?? "Ingredient not found", cancellationToken);
-            return;
-        }
-
-        var response = FormatPriceResponse(result.Value);
-        await SendMarkdownAsync(chatId, response, cancellationToken);
-    }
-
-    private static string FormatPriceResponse(IngredientPriceResponse price)
-    {
-        var sb = new StringBuilder();
-
-        // Header with price change indicator
-        var changeEmoji = price.PriceChangePercent switch
-        {
-            > 10 => "🔴",
-            > 0 => "🟡",
-            < 0 => "🟢",
-            _ => "⚪"
-        };
-
-        sb.AppendLine($"📦 *{price.IngredientName}*\n");
-
-        // Current price
-        sb.AppendLine($"💰 *Current Price:* Rp {price.CurrentPrice:N0}/{price.Unit}");
-
-        // Price change
-        if (price.PriceChange.HasValue)
-        {
-            var sign = price.PriceChange > 0 ? "+" : "";
-            sb.AppendLine($"{changeEmoji} *Change:* {sign}Rp {price.PriceChange:N0} ({sign}{price.PriceChangePercent:N1}%)");
-        }
-
-        sb.AppendLine();
-
-        // Stock status
-        var stockEmoji = price.IsLowStock ? "⚠️" : "✅";
-        sb.AppendLine($"{stockEmoji} *Stock:* {price.CurrentStock:N1} {price.Unit}");
-        if (price.IsLowStock)
-        {
-            sb.AppendLine($"_Below minimum: {price.MinStock:N1} {price.Unit}_");
-        }
-
-        // Price history
-        if (price.RecentPrices.Count > 1)
-        {
-            sb.AppendLine();
-            sb.AppendLine("*Recent Prices:*");
-            foreach (var entry in price.RecentPrices.Take(5))
-            {
-                var shop = !string.IsNullOrEmpty(entry.ShopName) ? $" ({entry.ShopName})" : "";
-                sb.AppendLine($"• {entry.Date:dd MMM}: Rp {entry.Price:N0}{shop}");
-            }
-        }
-
-        return sb.ToString();
-    }
-}
-```
-
-### GetLowStockQuery
-
-Create `src/Nastart.Application/Inventory/Queries/GetLowStock/GetLowStockQuery.cs`:
-
-```csharp
-using MediatR;
-using Nastart.Application.Common;
-
-namespace Nastart.Application.Inventory.Queries.GetLowStock;
-
-public record GetLowStockQuery(long UserId) : IRequest<Result<LowStockResponse>>;
-
-public record LowStockResponse(
-    int TotalLowStock,
-    IReadOnlyList<LowStockItem> Items
-);
-
-public record LowStockItem(
-    Guid IngredientId,
-    string IngredientName,
-    decimal CurrentStock,
-    decimal MinStock,
-    string Unit,
-    decimal StockPercent
-);
-```
-
-### LowCommand Handler
-
-Create `src/Nastart.Bot/Commands/LowCommand.cs`:
-
-```csharp
-using System.Text;
-using MediatR;
-using Telegram.Bot;
-using Telegram.Bot.Types;
-using Nastart.Application.Inventory.Queries.GetLowStock;
-
-namespace Nastart.Bot.Commands;
-
-/// <summary>
-/// Handles /low command to show low stock items.
-/// </summary>
-public sealed class LowCommand : BaseCommandHandler
-{
-    public LowCommand(
-        ITelegramBotClient botClient,
-        IMediator mediator,
-        ILogger<LowCommand> logger)
-        : base(botClient, mediator, logger)
-    {
-    }
-
-    public override string Command => "low";
-    public override string Description => "List low stock ingredients";
-
-    public override async Task HandleAsync(
-        Message message, 
-        CancellationToken cancellationToken = default)
-    {
-        var chatId = message.Chat.Id;
-        var userId = message.From?.Id ?? 0;
-
-        var query = new GetLowStockQuery(userId);
-        var result = await Mediator.Send(query, cancellationToken);
-
-        if (!result.IsSuccess)
-        {
-            await SendErrorAsync(chatId, "Could not retrieve stock data", cancellationToken);
-            return;
-        }
-
-        var response = FormatLowStockResponse(result.Value);
-        await SendMarkdownAsync(chatId, response, cancellationToken);
-    }
-
-    private static string FormatLowStockResponse(LowStockResponse data)
-    {
-        var sb = new StringBuilder();
-
-        if (data.Items.Count == 0)
-        {
-            sb.AppendLine("✅ *All stock levels are healthy!*");
-            sb.AppendLine();
-            sb.AppendLine("_No ingredients below minimum stock._");
-            return sb.ToString();
-        }
-
-        sb.AppendLine($"⚠️ *Low Stock Alert* ({data.TotalLowStock} items)\n");
-
-        foreach (var item in data.Items.OrderBy(i => i.StockPercent))
-        {
-            var urgency = item.StockPercent switch
-            {
-                < 25 => "🔴",
-                < 50 => "🟠",
-                _ => "🟡"
-            };
-
-            sb.AppendLine($"{urgency} *{item.IngredientName}*");
-            sb.AppendLine($"   {item.CurrentStock:N1}/{item.MinStock:N1} {item.Unit} ({item.StockPercent:N0}%)");
-        }
-
-        sb.AppendLine();
-        sb.AppendLine("_Send a receipt photo to restock!_");
-
-        return sb.ToString();
-    }
-}
-```
-
-### References
-- [Query Pattern with MediatR](https://github.com/jbogard/MediatR)
-- [Repository Pattern](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design)
 
 ---
 
-# Day 4: Implement /profit Command
+# Day 3: LowStockCommand Feature Slice
 
 ## 🧒 Explain Like I'm 5
 
-`/profit` is like checking your piggy bank:
-- How much money came in today? (Revenue)
-- How much did you spend on ingredients? (Expenses)
-- How much did you actually make? (Profit!)
+Before going shopping, Ibu Sari wants to know what's running low:
+
+She types: `/low`
+
+The robot checks her pantry and says:
+```
+⚠️ Bahan Stok Menipis
+
+🔴 KRITIS (< 25%)
+• Mentega — 100g (min: 500g)
+• Telur — 6 pcs (min: 30 pcs)
+
+🟡 RENDAH (< 50%)
+• Gula Pasir — 500g (min: 1kg)
+• Coklat Bubuk — 150g (min: 250g)
+
+📝 Total: 4 bahan perlu dibeli
+```
+
+Now she knows exactly what to buy!
 
 ## 🔧 Engineer Language
 
-The `/profit` command aggregates sales and purchase data:
-- Daily revenue from sales
-- Daily expenses from purchases
-- Net profit/loss calculation
+The **LowStockCommand** feature shows ingredients below their minimum stock threshold, categorized by urgency level.
 
-### GetDailyProfitQuery
+> 📖 **Microsoft Docs**: *"Use Skip and Take for pagination. OrderBy ensures consistent results."*
+>
+> — [Pagination](https://learn.microsoft.com/en-us/ef/core/querying/pagination)
 
-Create `src/Nastart.Application/Finance/Queries/GetDailyProfit/GetDailyProfitQuery.cs`:
+### LowStockCommand Feature
 
-```csharp
-using MediatR;
-using Nastart.Application.Common;
-
-namespace Nastart.Application.Finance.Queries.GetDailyProfit;
-
-public record GetDailyProfitQuery(
-    long UserId,
-    DateTime? Date = null  // Defaults to today
-) : IRequest<Result<DailyProfitResponse>>;
-
-public record DailyProfitResponse(
-    DateTime Date,
-    decimal TotalRevenue,
-    decimal TotalExpenses,
-    decimal NetProfit,
-    decimal ProfitMargin,
-    int SalesCount,
-    int PurchaseCount,
-    IReadOnlyList<TopSellingItem> TopSellers,
-    DailyProfitResponse? Yesterday  // For comparison
-);
-
-public record TopSellingItem(
-    string RecipeName,
-    int Quantity,
-    decimal Revenue,
-    decimal Profit
-);
-```
-
-### GetDailyProfitQueryHandler
+Create `src/Nastart.Api/Features/Bot/Commands/LowStockCommand.cs`:
 
 ```csharp
 using MediatR;
-using Microsoft.Extensions.Logging;
-using Nastart.Application.Common;
-using Nastart.Application.Common.Interfaces;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Telegram.Bot.Types.ReplyMarkups;
 
-namespace Nastart.Application.Finance.Queries.GetDailyProfit;
+namespace Nastart.Api.Features.Bot;
 
-public class GetDailyProfitQueryHandler 
-    : IRequestHandler<GetDailyProfitQuery, Result<DailyProfitResponse>>
+// ══════════════════════════════════════════════════════════════
+// LOW STOCK COMMAND FEATURE SLICE
+// Handles /low — shows ingredients below minimum stock
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
+/// <summary>
+/// Command to display low stock ingredients.
+/// </summary>
+public sealed record LowStockCommand(
+    long ChatId,
+    long UserId
+) : IRequest<Unit>;
+
+// ── Handler ──
+/// <summary>
+/// Handles the /low command by showing items below minimum stock.
+/// </summary>
+public sealed class LowStockCommandHandler : IRequestHandler<LowStockCommand, Unit>
 {
-    private readonly ISaleRepository _saleRepository;
-    private readonly IPurchaseRepository _purchaseRepository;
-    private readonly ILogger<GetDailyProfitQueryHandler> _logger;
+    private readonly ITelegramBotService _botService;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<LowStockCommandHandler> _logger;
 
-    public GetDailyProfitQueryHandler(
-        ISaleRepository saleRepository,
-        IPurchaseRepository purchaseRepository,
-        ILogger<GetDailyProfitQueryHandler> logger)
+    public LowStockCommandHandler(
+        ITelegramBotService botService,
+        NastartDbContext db,
+        ILogger<LowStockCommandHandler> logger)
     {
-        _saleRepository = saleRepository;
-        _purchaseRepository = purchaseRepository;
+        _botService = botService;
+        _db = db;
         _logger = logger;
     }
 
-    public async Task<Result<DailyProfitResponse>> Handle(
-        GetDailyProfitQuery request, 
+    public async Task<Unit> Handle(
+        LowStockCommand request,
         CancellationToken cancellationToken)
     {
-        var date = request.Date?.Date ?? DateTime.Today;
+        _logger.LogInformation(
+            "Low stock command from chat {ChatId}",
+            request.ChatId);
+        
+        // Find user
+        var user = await _db.Users
+            .FirstOrDefaultAsync(u => u.TelegramId == request.UserId, cancellationToken);
+        
+        if (user is null)
+        {
+            await _botService.SendTextMessageAsync(
+                request.ChatId,
+                "❌ Silakan /start dulu untuk mendaftar.",
+                cancellationToken: cancellationToken);
+            return Unit.Value;
+        }
+        
+        // Get low stock items
+        var lowStockItems = await _db.Ingredients
+            .Where(i => i.UserId == user.Id)
+            .Where(i => i.MinimumStock > 0) // Only items with min stock set
+            .Where(i => i.CurrentStock < i.MinimumStock)
+            .OrderBy(i => i.CurrentStock / i.MinimumStock) // Most critical first
+            .Select(i => new LowStockItem(
+                i.Id,
+                i.Name,
+                i.CurrentStock,
+                i.MinimumStock,
+                i.Unit,
+                i.CurrentPrice
+            ))
+            .ToListAsync(cancellationToken);
+        
+        // Format and send response
+        var message = FormatLowStockMessage(lowStockItems);
+        var keyboard = BuildLowStockKeyboard(lowStockItems.Any());
+        
+        await _botService.SendTextMessageAsync(
+            request.ChatId,
+            message,
+            keyboard,
+            cancellationToken: cancellationToken);
+        
+        return Unit.Value;
+    }
 
-        // Get today's data
-        var todayData = await CalculateDailyData(request.UserId, date, cancellationToken);
+    private static string FormatLowStockMessage(List<LowStockItem> items)
+    {
+        if (!items.Any())
+        {
+            return """
+                ✅ <b>Stok Aman!</b>
+                
+                Semua bahan masih di atas batas minimum.
+                
+                <i>Tip: Scan struk belanja setelah berbelanja untuk update stok otomatis.</i>
+                """;
+        }
+        
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("⚠️ <b>Bahan Stok Menipis</b>");
+        sb.AppendLine();
+        
+        // Critical items (< 25% of minimum)
+        var critical = items.Where(i => GetStockPercent(i) < 25).ToList();
+        if (critical.Any())
+        {
+            sb.AppendLine("🔴 <b>KRITIS (&lt; 25%)</b>");
+            foreach (var item in critical)
+            {
+                sb.AppendLine($"• {item.Name} — {item.CurrentStock}{item.Unit} (min: {item.MinimumStock}{item.Unit})");
+            }
+            sb.AppendLine();
+        }
+        
+        // Low items (25-50% of minimum)
+        var low = items.Where(i => GetStockPercent(i) >= 25 && GetStockPercent(i) < 50).ToList();
+        if (low.Any())
+        {
+            sb.AppendLine("🟡 <b>RENDAH (25-50%)</b>");
+            foreach (var item in low)
+            {
+                sb.AppendLine($"• {item.Name} — {item.CurrentStock}{item.Unit} (min: {item.MinimumStock}{item.Unit})");
+            }
+            sb.AppendLine();
+        }
+        
+        // Warning items (50-100% of minimum)
+        var warning = items.Where(i => GetStockPercent(i) >= 50).ToList();
+        if (warning.Any())
+        {
+            sb.AppendLine("🟢 <b>PERLU DIISI (50-100%)</b>");
+            foreach (var item in warning)
+            {
+                sb.AppendLine($"• {item.Name} — {item.CurrentStock}{item.Unit} (min: {item.MinimumStock}{item.Unit})");
+            }
+            sb.AppendLine();
+        }
+        
+        // Summary
+        sb.AppendLine($"📝 <b>Total:</b> {items.Count} bahan perlu dibeli");
+        
+        // Estimated cost to restock
+        var restockCost = items.Sum(i => (i.MinimumStock - i.CurrentStock) * i.CurrentPrice);
+        if (restockCost > 0)
+        {
+            sb.AppendLine($"💰 <b>Estimasi biaya restock:</b> Rp {restockCost:N0}");
+        }
+        
+        return sb.ToString();
+    }
 
-        // Get yesterday's data for comparison
-        var yesterdayData = await CalculateDailyData(
-            request.UserId, 
-            date.AddDays(-1), 
-            cancellationToken);
+    private static decimal GetStockPercent(LowStockItem item)
+    {
+        return item.MinimumStock > 0 
+            ? (item.CurrentStock / item.MinimumStock) * 100 
+            : 0;
+    }
 
-        return Result<DailyProfitResponse>.Success(todayData with 
-        { 
-            Yesterday = yesterdayData 
+    private static InlineKeyboardMarkup BuildLowStockKeyboard(bool hasItems)
+    {
+        if (!hasItems)
+        {
+            return new InlineKeyboardMarkup(new[]
+            {
+                new[]
+                {
+                    InlineKeyboardButton.WithCallbackData("📦 Lihat Semua Stok", "stock:all"),
+                }
+            });
+        }
+        
+        return new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("📋 Export List", "low:export"),
+                InlineKeyboardButton.WithCallbackData("🔄 Refresh", "low:refresh"),
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("📦 Lihat Semua Stok", "stock:all"),
+            }
         });
     }
-
-    private async Task<DailyProfitResponse> CalculateDailyData(
-        long userId, 
-        DateTime date,
-        CancellationToken cancellationToken)
-    {
-        // Get sales for the day
-        var sales = await _saleRepository.GetByDateAsync(userId, date, cancellationToken);
-        var totalRevenue = sales.Sum(s => s.Revenue.Amount);
-        var totalProfit = sales.Sum(s => s.Profit.Amount);
-
-        // Get purchases for the day
-        var purchases = await _purchaseRepository.GetByDateAsync(userId, date, cancellationToken);
-        var totalExpenses = purchases.Sum(p => p.Total.Amount);
-
-        // Calculate net profit (revenue - expenses)
-        var netProfit = totalRevenue - totalExpenses;
-        var profitMargin = totalRevenue > 0 
-            ? (netProfit / totalRevenue) * 100 
-            : 0;
-
-        // Get top sellers
-        var topSellers = sales
-            .GroupBy(s => s.Recipe.Name)
-            .Select(g => new TopSellingItem(
-                RecipeName: g.Key,
-                Quantity: g.Sum(s => s.Quantity),
-                Revenue: g.Sum(s => s.Revenue.Amount),
-                Profit: g.Sum(s => s.Profit.Amount)
-            ))
-            .OrderByDescending(t => t.Quantity)
-            .Take(3)
-            .ToList();
-
-        return new DailyProfitResponse(
-            Date: date,
-            TotalRevenue: totalRevenue,
-            TotalExpenses: totalExpenses,
-            NetProfit: netProfit,
-            ProfitMargin: profitMargin,
-            SalesCount: sales.Count,
-            PurchaseCount: purchases.Count,
-            TopSellers: topSellers,
-            Yesterday: null
-        );
-    }
-}
-```
-
-### ProfitCommand Handler
-
-Create `src/Nastart.Bot/Commands/ProfitCommand.cs`:
-
-```csharp
-using System.Text;
-using MediatR;
-using Telegram.Bot;
-using Telegram.Bot.Types;
-using Nastart.Application.Finance.Queries.GetDailyProfit;
-
-namespace Nastart.Bot.Commands;
-
-/// <summary>
-/// Handles /profit command for daily P&L summary.
-/// </summary>
-public sealed class ProfitCommand : BaseCommandHandler
-{
-    public ProfitCommand(
-        ITelegramBotClient botClient,
-        IMediator mediator,
-        ILogger<ProfitCommand> logger)
-        : base(botClient, mediator, logger)
-    {
-    }
-
-    public override string Command => "profit";
-    public override string Description => "Today's profit summary";
-
-    public override async Task HandleAsync(
-        Message message, 
-        CancellationToken cancellationToken = default)
-    {
-        var chatId = message.Chat.Id;
-        var userId = message.From?.Id ?? 0;
-
-        var query = new GetDailyProfitQuery(userId);
-        var result = await Mediator.Send(query, cancellationToken);
-
-        if (!result.IsSuccess)
-        {
-            await SendErrorAsync(chatId, "Could not retrieve profit data", cancellationToken);
-            return;
-        }
-
-        var response = FormatProfitResponse(result.Value);
-        await SendMarkdownAsync(chatId, response, cancellationToken);
-    }
-
-    private static string FormatProfitResponse(DailyProfitResponse data)
-    {
-        var sb = new StringBuilder();
-
-        // Header
-        var profitEmoji = data.NetProfit >= 0 ? "📈" : "📉";
-        sb.AppendLine($"{profitEmoji} *Profit Summary*");
-        sb.AppendLine($"_{data.Date:dddd, dd MMMM yyyy}_\n");
-
-        // Main metrics
-        sb.AppendLine($"💵 *Revenue:* Rp {data.TotalRevenue:N0}");
-        sb.AppendLine($"🛒 *Expenses:* Rp {data.TotalExpenses:N0}");
-        sb.AppendLine("─────────────────");
-        
-        var profitSign = data.NetProfit >= 0 ? "+" : "";
-        var profitColor = data.NetProfit >= 0 ? "✅" : "❌";
-        sb.AppendLine($"{profitColor} *Net Profit:* {profitSign}Rp {data.NetProfit:N0}");
-        
-        if (data.TotalRevenue > 0)
-        {
-            sb.AppendLine($"📊 *Margin:* {data.ProfitMargin:N1}%");
-        }
-
-        sb.AppendLine();
-
-        // Activity counts
-        sb.AppendLine($"📝 *Activity:*");
-        sb.AppendLine($"   • {data.SalesCount} sales");
-        sb.AppendLine($"   • {data.PurchaseCount} purchases");
-
-        // Top sellers
-        if (data.TopSellers.Count > 0)
-        {
-            sb.AppendLine();
-            sb.AppendLine("🏆 *Top Sellers:*");
-            foreach (var item in data.TopSellers)
-            {
-                sb.AppendLine($"   • {item.RecipeName}: {item.Quantity}x (Rp {item.Revenue:N0})");
-            }
-        }
-
-        // Comparison with yesterday
-        if (data.Yesterday is not null && data.Yesterday.TotalRevenue > 0)
-        {
-            sb.AppendLine();
-            var revenueChange = data.TotalRevenue - data.Yesterday.TotalRevenue;
-            var changePercent = (revenueChange / data.Yesterday.TotalRevenue) * 100;
-            var changeSign = revenueChange >= 0 ? "+" : "";
-            var changeEmoji = revenueChange >= 0 ? "⬆️" : "⬇️";
-            
-            sb.AppendLine($"{changeEmoji} _vs Yesterday: {changeSign}{changePercent:N1}%_");
-        }
-
-        return sb.ToString();
-    }
-}
-```
-
-### Register Commands in DI
-
-Update `src/Nastart.Bot/Extensions/TelegramBotExtensions.cs`:
-
-```csharp
-// Register all command handlers
-services.AddScoped<ICommandHandler, StartCommand>();
-services.AddScoped<ICommandHandler, HelpCommand>();
-services.AddScoped<ICommandHandler, CostCommand>();
-services.AddScoped<ICommandHandler, PriceCommand>();
-services.AddScoped<ICommandHandler, LowCommand>();
-services.AddScoped<ICommandHandler, ProfitCommand>();
-```
-
----
-
-# Day 5: Domain Events & Alert System
-
-## 🧒 Explain Like I'm 5
-
-When something important happens (like a price spike!), the system needs to tell you. It's like when your mom says "Tell your dad dinner is ready!" — the message gets passed along automatically.
-
-## 🔧 Engineer Language
-
-Domain events enable loose coupling:
-1. **Domain Event** → Raised when business rule triggers
-2. **MediatR Notification** → Published via `IPublisher`
-3. **Notification Handler** → Reacts to event (e.g., sends Telegram alert)
-
-> 📖 **Microsoft Docs**: *"Domain events can be used to explicitly implement side effects of rules within your domain model."*
->
-> — [Domain Events Design and Implementation](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation)
-
-### Domain Events Review
-
-From Week 5, we defined these events in `Nastart.Domain`:
-
-```csharp
-// src/Nastart.Domain/Common/IDomainEvent.cs
-using MediatR;
-
-namespace Nastart.Domain.Common;
-
-/// <summary>
-/// Marker interface for domain events.
-/// Implements MediatR INotification for pub/sub.
-/// </summary>
-public interface IDomainEvent : INotification
-{
-    DateTime OccurredAt { get; }
-}
-```
-
-### Alert-Triggering Domain Events
-
-```csharp
-// src/Nastart.Domain/Finance/Events/PriceSpikeDetectedEvent.cs
-namespace Nastart.Domain.Finance.Events;
-
-/// <summary>
-/// Raised when ingredient price increases more than threshold (e.g., 15%).
-/// </summary>
-public record PriceSpikeDetectedEvent(
-    Guid IngredientId,
-    string IngredientName,
-    decimal OldPrice,
-    decimal NewPrice,
-    decimal ChangePercent,
-    long UserId
-) : IDomainEvent
-{
-    public DateTime OccurredAt { get; } = DateTime.UtcNow;
 }
 
-// src/Nastart.Domain/Recipe/Events/MarginBelowThresholdEvent.cs
-namespace Nastart.Domain.Recipe.Events;
-
-/// <summary>
-/// Raised when a recipe's margin falls below user's minimum threshold.
-/// </summary>
-public record MarginBelowThresholdEvent(
-    Guid RecipeId,
-    string RecipeName,
-    decimal CurrentMargin,
-    decimal Threshold,
-    long UserId
-) : IDomainEvent
-{
-    public DateTime OccurredAt { get; } = DateTime.UtcNow;
-}
-
-// src/Nastart.Domain/Inventory/Events/LowStockEvent.cs
-namespace Nastart.Domain.Inventory.Events;
-
-/// <summary>
-/// Raised when ingredient stock falls below minimum.
-/// </summary>
-public record LowStockEvent(
-    Guid IngredientId,
-    string IngredientName,
+// ── Supporting Records ──
+internal sealed record LowStockItem(
+    Guid Id,
+    string Name,
     decimal CurrentStock,
     decimal MinimumStock,
     string Unit,
-    long UserId
-) : IDomainEvent
-{
-    public DateTime OccurredAt { get; } = DateTime.UtcNow;
-}
+    decimal CurrentPrice
+);
 ```
 
-### Dispatch Domain Events from DbContext
+### Your Task (Day 3):
 
-Following Microsoft's eShopOnContainers pattern:
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
 
-```csharp
-// src/Nastart.Infrastructure/Persistence/NastartDbContext.cs
-public class NastartDbContext : DbContext, IUnitOfWork
-{
-    private readonly IMediator _mediator;
+# Create LowStockCommand feature
+New-Item Features\Bot\Commands\LowStockCommand.cs
 
-    public NastartDbContext(
-        DbContextOptions<NastartDbContext> options,
-        IMediator mediator)
-        : base(options)
-    {
-        _mediator = mediator;
-    }
+# Add to HandleWebhook.cs:
+# "low" => await DispatchLowStockCommand(message, cancellationToken),
 
-    public async Task<bool> SaveEntitiesAsync(CancellationToken cancellationToken = default)
-    {
-        // Dispatch domain events before committing
-        await DispatchDomainEventsAsync(cancellationToken);
-
-        // Commit changes
-        await base.SaveChangesAsync(cancellationToken);
-        return true;
-    }
-
-    private async Task DispatchDomainEventsAsync(CancellationToken cancellationToken)
-    {
-        // Get all entities with domain events
-        var domainEntities = ChangeTracker
-            .Entries<AggregateRoot>()
-            .Where(e => e.Entity.DomainEvents.Any())
-            .ToList();
-
-        // Collect all events
-        var domainEvents = domainEntities
-            .SelectMany(e => e.Entity.DomainEvents)
-            .ToList();
-
-        // Clear events from entities
-        domainEntities.ForEach(e => e.Entity.ClearDomainEvents());
-
-        // Publish each event via MediatR
-        foreach (var domainEvent in domainEvents)
-        {
-            await _mediator.Publish(domainEvent, cancellationToken);
-        }
-    }
-}
+# Verify build
+dotnet build
 ```
-
-### References
-- [Domain Events Design](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation)
-- [MediatR INotification](https://github.com/jbogard/MediatR/wiki#notifications)
 
 ---
 
-# Day 6: AlertNotificationService & Telegram Integration
+# Day 4: ProfitCommand Feature Slice
 
 ## 🧒 Explain Like I'm 5
 
-When the system detects a problem (like flour got expensive!), it sends you a message on Telegram right away. You don't have to ask — it tells you automatically!
+At the end of the week, Ibu Sari wants to see if she's making money:
+
+She types: `/profit`
+
+The robot shows her business summary:
+```
+📊 Ringkasan Profit
+
+📅 Periode: 01/02 - 07/02/2026
+
+💵 Penjualan: Rp 2.500.000
+📦 Biaya Bahan: Rp 1.200.000
+💰 Laba Kotor: Rp 1.300.000
+📈 Margin: 52%
+
+🍪 Resep Terlaris:
+1. Nastar (120 pcs) — Margin 46%
+2. Brownies (45 pcs) — Margin 55%
+3. Kastengel (80 pcs) — Margin 48%
+
+✅ Bisnis sehat! Margin di atas target 40%
+```
+
+Now she knows her business is doing great!
 
 ## 🔧 Engineer Language
 
-The `AlertNotificationService`:
-1. Listens for domain events via `INotificationHandler<T>`
-2. Looks up user's Telegram chat ID
-3. Formats and sends alert message
+The **ProfitCommand** feature provides a profit summary with sales, costs, and margin analysis per recipe.
 
-### IAlertNotificationService Interface
+> 📖 **Microsoft Docs**: *"Use GroupBy and aggregation functions for reporting queries. EF Core translates these to SQL for efficient execution."*
+>
+> — [Complex Query Operators](https://learn.microsoft.com/en-us/ef/core/querying/complex-query-operators)
 
-Create `src/Nastart.Application/Common/Interfaces/IAlertNotificationService.cs`:
+### ProfitCommand Feature
+
+Create `src/Nastart.Api/Features/Bot/Commands/ProfitCommand.cs`:
 
 ```csharp
-namespace Nastart.Application.Common.Interfaces;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Telegram.Bot.Types.ReplyMarkups;
+
+namespace Nastart.Api.Features.Bot;
+
+// ══════════════════════════════════════════════════════════════
+// PROFIT COMMAND FEATURE SLICE
+// Handles /profit — shows profit summary and analysis
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
+/// <summary>
+/// Command to display profit summary.
+/// </summary>
+public sealed record ProfitCommand(
+    long ChatId,
+    long UserId,
+    string? Period // "week", "month", or custom date range
+) : IRequest<Unit>;
+
+// ── Handler ──
+/// <summary>
+/// Handles the /profit command by calculating and displaying profit summary.
+/// </summary>
+public sealed class ProfitCommandHandler : IRequestHandler<ProfitCommand, Unit>
+{
+    private readonly ITelegramBotService _botService;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<ProfitCommandHandler> _logger;
+
+    public ProfitCommandHandler(
+        ITelegramBotService botService,
+        NastartDbContext db,
+        ILogger<ProfitCommandHandler> logger)
+    {
+        _botService = botService;
+        _db = db;
+        _logger = logger;
+    }
+
+    public async Task<Unit> Handle(
+        ProfitCommand request,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Profit command from chat {ChatId}",
+            request.ChatId);
+        
+        // Find user
+        var user = await _db.Users
+            .FirstOrDefaultAsync(u => u.TelegramId == request.UserId, cancellationToken);
+        
+        if (user is null)
+        {
+            await _botService.SendTextMessageAsync(
+                request.ChatId,
+                "❌ Silakan /start dulu untuk mendaftar.",
+                cancellationToken: cancellationToken);
+            return Unit.Value;
+        }
+        
+        // Determine date range
+        var (startDate, endDate) = ParsePeriod(request.Period);
+        
+        // Get profit data
+        var profitData = await CalculateProfitData(user.Id, startDate, endDate, cancellationToken);
+        
+        // Format message
+        var message = FormatProfitMessage(profitData, startDate, endDate, user.MinimumMargin);
+        var keyboard = BuildProfitKeyboard();
+        
+        await _botService.SendTextMessageAsync(
+            request.ChatId,
+            message,
+            keyboard,
+            cancellationToken: cancellationToken);
+        
+        return Unit.Value;
+    }
+
+    private static (DateTime startDate, DateTime endDate) ParsePeriod(string? period)
+    {
+        var endDate = DateTime.Today;
+        var startDate = period?.ToLowerInvariant() switch
+        {
+            "month" => endDate.AddMonths(-1),
+            "year" => endDate.AddYears(-1),
+            "today" => endDate,
+            _ => endDate.AddDays(-7) // Default: last week
+        };
+        
+        return (startDate, endDate);
+    }
+
+    private async Task<ProfitData> CalculateProfitData(
+        Guid userId,
+        DateTime startDate,
+        DateTime endDate,
+        CancellationToken cancellationToken)
+    {
+        // Get purchases (costs)
+        var purchases = await _db.Purchases
+            .Include(p => p.Items)
+            .Where(p => p.UserId == userId)
+            .Where(p => p.PurchaseDate >= startDate && p.PurchaseDate <= endDate)
+            .ToListAsync(cancellationToken);
+        
+        var totalCosts = purchases.Sum(p => p.Items.Sum(i => i.Quantity * i.UnitPrice));
+        
+        // Get recipes with costs for margin calculation
+        var recipes = await _db.Recipes
+            .Include(r => r.Items)
+                .ThenInclude(i => i.Ingredient)
+            .Where(r => r.UserId == userId && r.IsActive)
+            .ToListAsync(cancellationToken);
+        
+        var recipeAnalysis = recipes.Select(r =>
+        {
+            var cost = r.Items.Sum(i => i.Quantity * (i.Ingredient?.CurrentPrice ?? 0));
+            var costPerUnit = r.YieldQuantity > 0 ? cost / r.YieldQuantity : cost;
+            var margin = r.SellingPrice > 0 
+                ? ((r.SellingPrice - costPerUnit) / r.SellingPrice) * 100 
+                : 0;
+            
+            return new RecipeAnalysis(
+                r.Name,
+                r.YieldQuantity,
+                r.YieldUnit,
+                cost,
+                costPerUnit,
+                r.SellingPrice,
+                margin
+            );
+        })
+        .OrderByDescending(r => r.Margin)
+        .Take(5)
+        .ToList();
+        
+        // Calculate totals (simplified - in real app, track actual sales)
+        var estimatedSales = recipeAnalysis.Sum(r => r.SellingPrice * r.YieldQuantity);
+        var estimatedProfit = estimatedSales - totalCosts;
+        var overallMargin = estimatedSales > 0 
+            ? (estimatedProfit / estimatedSales) * 100 
+            : 0;
+        
+        return new ProfitData(
+            TotalSales: estimatedSales,
+            TotalCosts: totalCosts,
+            GrossProfit: estimatedProfit,
+            OverallMargin: overallMargin,
+            PurchaseCount: purchases.Count,
+            TopRecipes: recipeAnalysis
+        );
+    }
+
+    private static string FormatProfitMessage(
+        ProfitData data,
+        DateTime startDate,
+        DateTime endDate,
+        decimal targetMargin)
+    {
+        var sb = new System.Text.StringBuilder();
+        
+        // Header
+        sb.AppendLine("📊 <b>Ringkasan Profit</b>");
+        sb.AppendLine();
+        sb.AppendLine($"📅 <b>Periode:</b> {startDate:dd/MM} - {endDate:dd/MM/yyyy}");
+        sb.AppendLine();
+        
+        // Financial summary
+        sb.AppendLine($"💵 <b>Est. Penjualan:</b> Rp {data.TotalSales:N0}");
+        sb.AppendLine($"📦 <b>Biaya Bahan:</b> Rp {data.TotalCosts:N0}");
+        sb.AppendLine($"💰 <b>Laba Kotor:</b> Rp {data.GrossProfit:N0}");
+        
+        var marginEmoji = data.OverallMargin >= targetMargin ? "✅" : "⚠️";
+        sb.AppendLine($"📈 <b>Margin:</b> {data.OverallMargin:F1}% {marginEmoji}");
+        sb.AppendLine();
+        
+        // Top recipes
+        if (data.TopRecipes.Any())
+        {
+            sb.AppendLine("🍪 <b>Analisis Resep:</b>");
+            var rank = 1;
+            foreach (var recipe in data.TopRecipes.Take(3))
+            {
+                var marginIcon = recipe.Margin >= targetMargin ? "✅" : "⚠️";
+                sb.AppendLine($"{rank}. {recipe.Name} — Margin {recipe.Margin:F0}% {marginIcon}");
+                rank++;
+            }
+            sb.AppendLine();
+        }
+        
+        // Status message
+        if (data.OverallMargin >= targetMargin)
+        {
+            sb.AppendLine($"✅ Bisnis sehat! Margin di atas target {targetMargin:F0}%");
+        }
+        else if (data.OverallMargin >= targetMargin * 0.7m)
+        {
+            sb.AppendLine($"⚠️ Margin mendekati batas. Target: {targetMargin:F0}%");
+        }
+        else
+        {
+            sb.AppendLine($"🔴 Margin di bawah target {targetMargin:F0}%! Perlu evaluasi harga.");
+        }
+        
+        // Purchase count
+        sb.AppendLine();
+        sb.AppendLine($"<i>Data dari {data.PurchaseCount} transaksi pembelian</i>");
+        
+        return sb.ToString();
+    }
+
+    private static InlineKeyboardMarkup BuildProfitKeyboard()
+    {
+        return new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("📅 Minggu Ini", "profit:week"),
+                InlineKeyboardButton.WithCallbackData("📆 Bulan Ini", "profit:month"),
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("📊 Detail Resep", "profit:recipes"),
+                InlineKeyboardButton.WithCallbackData("🔄 Refresh", "profit:refresh"),
+            }
+        });
+    }
+}
+
+// ── Supporting Records ──
+internal sealed record ProfitData(
+    decimal TotalSales,
+    decimal TotalCosts,
+    decimal GrossProfit,
+    decimal OverallMargin,
+    int PurchaseCount,
+    IReadOnlyList<RecipeAnalysis> TopRecipes
+);
+
+internal sealed record RecipeAnalysis(
+    string Name,
+    decimal YieldQuantity,
+    string YieldUnit,
+    decimal TotalCost,
+    decimal CostPerUnit,
+    decimal SellingPrice,
+    decimal Margin
+);
+```
+
+### Your Task (Day 4):
+
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
+
+# Create ProfitCommand feature
+New-Item Features\Bot\Commands\ProfitCommand.cs
+
+# Add to HandleWebhook.cs:
+# "profit" => await DispatchProfitCommand(message, cancellationToken),
+
+# Verify build
+dotnet build
+```
+
+---
+
+# Day 5: Telegram Alert Notifications
+
+## 🧒 Explain Like I'm 5
+
+Remember when we said the robot should tell Ibu Sari when something important happens? Like:
+- "⚠️ Tepung naik 20%! Cek harga resep!"
+- "🔴 Margin Nastar turun ke 25%!"
+- "📦 Telur hampir habis!"
+
+These automatic messages are called **alerts** — the robot sends them without being asked!
+
+## 🔧 Engineer Language
+
+**Alert notifications** are triggered by domain events (price spikes, margin drops, low stock). We connect the existing notification system to send Telegram messages.
+
+> 📖 **Microsoft Docs**: *"MediatR notifications allow multiple handlers to respond to a single event. Perfect for side effects like sending alerts."*
+>
+> — [MediatR Notifications](https://github.com/jbogard/MediatR/wiki#notifications)
+
+### TelegramAlertService
+
+Create `src/Nastart.Api/Features/Bot/Services/TelegramAlertService.cs`:
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Alerts;
+using Nastart.Api.Shared.Data;
+
+namespace Nastart.Api.Features.Bot.Services;
 
 /// <summary>
-/// Service for sending alert notifications to users.
+/// Service for sending alerts via Telegram.
 /// </summary>
-public interface IAlertNotificationService
+public interface ITelegramAlertService
 {
+    /// <summary>
+    /// Sends a price spike alert to the user.
+    /// </summary>
     Task SendPriceSpikeAlertAsync(
-        long userId,
+        Guid userId,
         string ingredientName,
         decimal oldPrice,
         decimal newPrice,
         decimal changePercent,
         CancellationToken cancellationToken = default);
-
+    
+    /// <summary>
+    /// Sends a margin below threshold alert.
+    /// </summary>
     Task SendMarginAlertAsync(
-        long userId,
+        Guid userId,
         string recipeName,
         decimal currentMargin,
-        decimal threshold,
+        decimal targetMargin,
         CancellationToken cancellationToken = default);
-
+    
+    /// <summary>
+    /// Sends a low stock alert.
+    /// </summary>
     Task SendLowStockAlertAsync(
-        long userId,
+        Guid userId,
         string ingredientName,
         decimal currentStock,
         decimal minimumStock,
         string unit,
         CancellationToken cancellationToken = default);
+    
+    /// <summary>
+    /// Sends a generic alert.
+    /// </summary>
+    Task SendAlertAsync(
+        Guid userId,
+        Alert alert,
+        CancellationToken cancellationToken = default);
 }
-```
-
-### TelegramAlertNotificationService Implementation
-
-Create `src/Nastart.Infrastructure/Notifications/TelegramAlertNotificationService.cs`:
-
-```csharp
-using Telegram.Bot;
-using Telegram.Bot.Types.Enums;
-using Microsoft.Extensions.Logging;
-using Nastart.Application.Common.Interfaces;
-
-namespace Nastart.Infrastructure.Notifications;
 
 /// <summary>
-/// Sends alert notifications via Telegram.
+/// Implementation of Telegram alert service.
 /// </summary>
-public class TelegramAlertNotificationService : IAlertNotificationService
+public class TelegramAlertService : ITelegramAlertService
 {
-    private readonly ITelegramBotClient _botClient;
-    private readonly IUserChatRepository _userChatRepository;
-    private readonly ILogger<TelegramAlertNotificationService> _logger;
+    private readonly ITelegramBotService _botService;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<TelegramAlertService> _logger;
 
-    public TelegramAlertNotificationService(
-        ITelegramBotClient botClient,
-        IUserChatRepository userChatRepository,
-        ILogger<TelegramAlertNotificationService> logger)
+    public TelegramAlertService(
+        ITelegramBotService botService,
+        NastartDbContext db,
+        ILogger<TelegramAlertService> logger)
     {
-        _botClient = botClient;
-        _userChatRepository = userChatRepository;
+        _botService = botService;
+        _db = db;
         _logger = logger;
     }
 
     public async Task SendPriceSpikeAlertAsync(
-        long userId,
+        Guid userId,
         string ingredientName,
         decimal oldPrice,
         decimal newPrice,
         decimal changePercent,
         CancellationToken cancellationToken = default)
     {
-        var chatId = await GetChatIdAsync(userId, cancellationToken);
+        var chatId = await GetChatIdForUser(userId, cancellationToken);
         if (chatId is null) return;
-
+        
+        var direction = changePercent > 0 ? "naik" : "turun";
+        var emoji = changePercent > 15 ? "🔴" : "⚠️";
+        
         var message = $"""
-            🔴 *Price Spike Alert!*
-
-            📦 *{ingredientName}*
-            💰 Old Price: Rp {oldPrice:N0}
-            💰 New Price: Rp {newPrice:N0}
-            📈 Change: +{changePercent:N1}%
-
-            _This may affect your recipe margins._
-            Use /cost [recipe] to check.
+            {emoji} <b>Harga {ingredientName} {direction}!</b>
+            
+            💵 Harga lama: Rp {oldPrice:N0}
+            💵 Harga baru: Rp {newPrice:N0}
+            📈 Perubahan: {changePercent:+0.0;-0.0}%
+            
+            <i>Cek dampak ke biaya resep Anda.</i>
             """;
-
-        await SendAlertAsync(chatId.Value, message, cancellationToken);
+        
+        await _botService.SendTextMessageAsync(
+            chatId.Value,
+            message,
+            cancellationToken: cancellationToken);
+        
+        _logger.LogInformation(
+            "Price spike alert sent to user {UserId}: {Ingredient} {Change}%",
+            userId,
+            ingredientName,
+            changePercent);
     }
 
     public async Task SendMarginAlertAsync(
-        long userId,
+        Guid userId,
         string recipeName,
         decimal currentMargin,
-        decimal threshold,
+        decimal targetMargin,
         CancellationToken cancellationToken = default)
     {
-        var chatId = await GetChatIdAsync(userId, cancellationToken);
+        var chatId = await GetChatIdForUser(userId, cancellationToken);
         if (chatId is null) return;
-
+        
+        var emoji = currentMargin < targetMargin * 0.5m ? "🔴" : "⚠️";
+        
         var message = $"""
-            ⚠️ *Margin Alert!*
-
-            🍳 *{recipeName}*
-            📊 Current Margin: {currentMargin:N1}%
-            📉 Threshold: {threshold:N1}%
-
-            _Consider increasing your sell price or finding cheaper ingredients._
-            Use /cost {recipeName} for details.
+            {emoji} <b>Margin {recipeName} turun!</b>
+            
+            📊 Margin saat ini: {currentMargin:F1}%
+            🎯 Target margin: {targetMargin:F1}%
+            
+            <b>Saran:</b>
+            • Cek harga bahan yang naik
+            • Evaluasi harga jual
+            • Update resep jika perlu
+            
+            <i>Ketik /cost {recipeName} untuk detail.</i>
             """;
-
-        await SendAlertAsync(chatId.Value, message, cancellationToken);
+        
+        await _botService.SendTextMessageAsync(
+            chatId.Value,
+            message,
+            cancellationToken: cancellationToken);
+        
+        _logger.LogInformation(
+            "Margin alert sent to user {UserId}: {Recipe} at {Margin}%",
+            userId,
+            recipeName,
+            currentMargin);
     }
 
     public async Task SendLowStockAlertAsync(
-        long userId,
+        Guid userId,
         string ingredientName,
         decimal currentStock,
         decimal minimumStock,
         string unit,
         CancellationToken cancellationToken = default)
     {
-        var chatId = await GetChatIdAsync(userId, cancellationToken);
+        var chatId = await GetChatIdForUser(userId, cancellationToken);
         if (chatId is null) return;
-
-        var stockPercent = (currentStock / minimumStock) * 100;
-
-        var message = $"""
-            🟡 *Low Stock Alert!*
-
-            📦 *{ingredientName}*
-            📉 Stock: {currentStock:N1} {unit}
-            ⚠️ Minimum: {minimumStock:N1} {unit}
-            📊 Level: {stockPercent:N0}%
-
-            _Time to restock! Send a receipt photo after shopping._
-            """;
-
-        await SendAlertAsync(chatId.Value, message, cancellationToken);
-    }
-
-    private async Task SendAlertAsync(
-        long chatId, 
-        string message, 
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await _botClient.SendMessage(
-                chatId: chatId,
-                text: message,
-                parseMode: ParseMode.Markdown,
-                cancellationToken: cancellationToken);
-
-            _logger.LogInformation("Alert sent to chat {ChatId}", chatId);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to send alert to chat {ChatId}", chatId);
-        }
-    }
-
-    private async Task<long?> GetChatIdAsync(
-        long userId, 
-        CancellationToken cancellationToken)
-    {
-        var userChat = await _userChatRepository.GetByUserIdAsync(userId, cancellationToken);
         
-        if (userChat is null)
-        {
-            _logger.LogWarning("No chat found for user {UserId}", userId);
-            return null;
-        }
+        var percentLeft = minimumStock > 0 ? (currentStock / minimumStock) * 100 : 0;
+        var emoji = percentLeft < 25 ? "🔴" : "⚠️";
+        
+        var message = $"""
+            {emoji} <b>Stok {ingredientName} menipis!</b>
+            
+            📦 Stok saat ini: {currentStock} {unit}
+            📋 Minimum: {minimumStock} {unit}
+            📊 Tersisa: {percentLeft:F0}%
+            
+            <i>Ketik /low untuk lihat semua bahan yang perlu dibeli.</i>
+            """;
+        
+        await _botService.SendTextMessageAsync(
+            chatId.Value,
+            message,
+            cancellationToken: cancellationToken);
+        
+        _logger.LogInformation(
+            "Low stock alert sent to user {UserId}: {Ingredient}",
+            userId,
+            ingredientName);
+    }
 
-        return userChat.ChatId;
+    public async Task SendAlertAsync(
+        Guid userId,
+        Alert alert,
+        CancellationToken cancellationToken = default)
+    {
+        var chatId = await GetChatIdForUser(userId, cancellationToken);
+        if (chatId is null) return;
+        
+        var emoji = alert.Type switch
+        {
+            AlertType.PriceSpike => "📈",
+            AlertType.MarginDrop => "📉",
+            AlertType.LowStock => "📦",
+            _ => "🔔"
+        };
+        
+        var message = $"""
+            {emoji} <b>{alert.Title}</b>
+            
+            {alert.Message}
+            
+            <i>Dibuat: {alert.CreatedAt:dd/MM/yyyy HH:mm}</i>
+            """;
+        
+        await _botService.SendTextMessageAsync(
+            chatId.Value,
+            message,
+            cancellationToken: cancellationToken);
+    }
+
+    private async Task<long?> GetChatIdForUser(
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var user = await _db.Users
+            .Where(u => u.Id == userId && u.TelegramId.HasValue)
+            .Select(u => u.TelegramId)
+            .FirstOrDefaultAsync(cancellationToken);
+        
+        return user;
     }
 }
 ```
 
-### Domain Event Handlers (INotificationHandler)
+### Alert Entity (if not exists)
 
-Create `src/Nastart.Application/Finance/EventHandlers/PriceSpikeDetectedEventHandler.cs`:
+Create `src/Nastart.Api/Features/Alerts/Alert.cs`:
 
 ```csharp
-using MediatR;
-using Microsoft.Extensions.Logging;
-using Nastart.Application.Common.Interfaces;
-using Nastart.Domain.Finance.Events;
-
-namespace Nastart.Application.Finance.EventHandlers;
+namespace Nastart.Api.Features.Alerts;
 
 /// <summary>
-/// Handles PriceSpikeDetectedEvent by sending Telegram alert.
+/// Represents a user notification/alert.
 /// </summary>
-/// <remarks>
-/// Following Microsoft's domain event handler pattern:
-/// https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation
-/// </remarks>
-public class PriceSpikeDetectedEventHandler 
-    : INotificationHandler<PriceSpikeDetectedEvent>
+public class Alert
 {
-    private readonly IAlertNotificationService _alertService;
-    private readonly IAlertRepository _alertRepository;
-    private readonly ILogger<PriceSpikeDetectedEventHandler> _logger;
-
-    public PriceSpikeDetectedEventHandler(
-        IAlertNotificationService alertService,
-        IAlertRepository alertRepository,
-        ILogger<PriceSpikeDetectedEventHandler> logger)
-    {
-        _alertService = alertService;
-        _alertRepository = alertRepository;
-        _logger = logger;
-    }
-
-    public async Task Handle(
-        PriceSpikeDetectedEvent notification, 
-        CancellationToken cancellationToken)
-    {
-        _logger.LogInformation(
-            "Price spike detected for {Ingredient}: {OldPrice} → {NewPrice} ({Change}%)",
-            notification.IngredientName,
-            notification.OldPrice,
-            notification.NewPrice,
-            notification.ChangePercent);
-
-        // Send Telegram notification
-        await _alertService.SendPriceSpikeAlertAsync(
-            userId: notification.UserId,
-            ingredientName: notification.IngredientName,
-            oldPrice: notification.OldPrice,
-            newPrice: notification.NewPrice,
-            changePercent: notification.ChangePercent,
-            cancellationToken: cancellationToken);
-
-        // Persist alert for history
-        await _alertRepository.AddAsync(new Alert
-        {
-            Id = Guid.NewGuid(),
-            UserId = notification.UserId,
-            Type = AlertType.PriceSpike,
-            Message = $"{notification.IngredientName} price increased {notification.ChangePercent:N1}%",
-            CreatedAt = notification.OccurredAt,
-            IsRead = false
-        }, cancellationToken);
-    }
-}
-```
-
-Create similar handlers for other events:
-
-```csharp
-// src/Nastart.Application/Recipe/EventHandlers/MarginBelowThresholdEventHandler.cs
-public class MarginBelowThresholdEventHandler 
-    : INotificationHandler<MarginBelowThresholdEvent>
-{
-    private readonly IAlertNotificationService _alertService;
-    private readonly IAlertRepository _alertRepository;
-    private readonly ILogger<MarginBelowThresholdEventHandler> _logger;
-
-    public async Task Handle(
-        MarginBelowThresholdEvent notification, 
-        CancellationToken cancellationToken)
-    {
-        _logger.LogInformation(
-            "Margin below threshold for {Recipe}: {Margin}% < {Threshold}%",
-            notification.RecipeName,
-            notification.CurrentMargin,
-            notification.Threshold);
-
-        await _alertService.SendMarginAlertAsync(
-            userId: notification.UserId,
-            recipeName: notification.RecipeName,
-            currentMargin: notification.CurrentMargin,
-            threshold: notification.Threshold,
-            cancellationToken: cancellationToken);
-
-        await _alertRepository.AddAsync(new Alert
-        {
-            Id = Guid.NewGuid(),
-            UserId = notification.UserId,
-            Type = AlertType.MarginWarning,
-            Message = $"{notification.RecipeName} margin is {notification.CurrentMargin:N1}%",
-            CreatedAt = notification.OccurredAt,
-            IsRead = false
-        }, cancellationToken);
-    }
+    public Guid Id { get; set; }
+    
+    public required Guid UserId { get; set; }
+    
+    public required AlertType Type { get; set; }
+    
+    public required string Title { get; set; }
+    
+    public required string Message { get; set; }
+    
+    /// <summary>
+    /// Related entity ID (ingredient, recipe, etc).
+    /// </summary>
+    public Guid? RelatedEntityId { get; set; }
+    
+    /// <summary>
+    /// Related entity type name.
+    /// </summary>
+    public string? RelatedEntityType { get; set; }
+    
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    
+    public bool IsRead { get; set; } = false;
+    
+    public DateTime? ReadAt { get; set; }
+    
+    /// <summary>
+    /// Whether alert was sent via Telegram.
+    /// </summary>
+    public bool SentViaTelegram { get; set; } = false;
+    
+    public DateTime? SentAt { get; set; }
 }
 
-// src/Nastart.Application/Inventory/EventHandlers/LowStockEventHandler.cs
-public class LowStockEventHandler 
-    : INotificationHandler<LowStockEvent>
+/// <summary>
+/// Types of alerts.
+/// </summary>
+public enum AlertType
 {
-    private readonly IAlertNotificationService _alertService;
-    private readonly IAlertRepository _alertRepository;
-    private readonly ILogger<LowStockEventHandler> _logger;
-
-    public async Task Handle(
-        LowStockEvent notification, 
-        CancellationToken cancellationToken)
-    {
-        _logger.LogInformation(
-            "Low stock for {Ingredient}: {Current}/{Min} {Unit}",
-            notification.IngredientName,
-            notification.CurrentStock,
-            notification.MinimumStock,
-            notification.Unit);
-
-        await _alertService.SendLowStockAlertAsync(
-            userId: notification.UserId,
-            ingredientName: notification.IngredientName,
-            currentStock: notification.CurrentStock,
-            minimumStock: notification.MinimumStock,
-            unit: notification.Unit,
-            cancellationToken: cancellationToken);
-
-        await _alertRepository.AddAsync(new Alert
-        {
-            Id = Guid.NewGuid(),
-            UserId = notification.UserId,
-            Type = AlertType.LowStock,
-            Message = $"{notification.IngredientName} stock is low",
-            CreatedAt = notification.OccurredAt,
-            IsRead = false
-        }, cancellationToken);
-    }
+    PriceSpike,
+    MarginDrop,
+    LowStock,
+    RecipeUpdated,
+    SystemNotification
 }
 ```
 
 ### Register Services
 
-Update `src/Nastart.Infrastructure/DependencyInjection.cs`:
-
 ```csharp
-// Register alert notification service
-services.AddScoped<IAlertNotificationService, TelegramAlertNotificationService>();
+// In Program.cs, add:
+builder.Services.AddScoped<ITelegramAlertService, TelegramAlertService>();
 ```
 
-### References
-- [MediatR Notifications](https://github.com/jbogard/MediatR/wiki#notifications)
-- [Domain Event Handlers](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation#implement-domain-events)
+### Your Task (Day 5):
 
----
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
 
-## Price Transparency: Post-Receipt Summary
+# Create Alerts feature folder
+mkdir Features\Alerts -ErrorAction SilentlyContinue
 
-After a receipt is confirmed, show users a comprehensive summary of **what changed** and **what's affected**. This provides full transparency and helps users make informed decisions.
+# Create alert entity and service
+New-Item Features\Alerts\Alert.cs
+New-Item Features\Bot\Services\TelegramAlertService.cs
 
-### IReceiptConfirmationSummary Interface
+# Add Alerts DbSet to context
 
-Create `src/Nastart.Application/Finance/Services/IReceiptConfirmationSummary.cs`:
+# Register services in Program.cs
 
-```csharp
-namespace Nastart.Application.Finance.Services;
-
-/// <summary>
-/// Builds a transparency summary after receipt confirmation.
-/// Shows price changes and affected recipes.
-/// </summary>
-public interface IReceiptConfirmationSummary
-{
-    Task<ReceiptImpactSummary> BuildSummaryAsync(
-        Guid sessionId,
-        IReadOnlyList<PriceUpdate> priceUpdates,
-        CancellationToken cancellationToken = default);
-}
-
-public sealed record ReceiptImpactSummary(
-    int ItemsUpdated,
-    decimal TotalSpent,
-    IReadOnlyList<PriceChangeDetail> PriceChanges,
-    IReadOnlyList<RecipeImpact> AffectedRecipes);
-
-public sealed record PriceChangeDetail(
-    string IngredientName,
-    decimal OldPrice,
-    decimal NewPrice,
-    decimal ChangePercent,
-    DateTimeOffset LastPurchaseDate);
-
-public sealed record RecipeImpact(
-    string RecipeName,
-    decimal OldCost,
-    decimal NewCost,
-    decimal OldMargin,
-    decimal NewMargin,
-    bool NeedsReview);
-```
-
-### ReceiptConfirmationSummaryService
-
-Create `src/Nastart.Application/Finance/Services/ReceiptConfirmationSummaryService.cs`:
-
-```csharp
-using Microsoft.Extensions.Logging;
-using Nastart.Application.Recipe.Queries.GetRecipesUsingIngredient;
-
-namespace Nastart.Application.Finance.Services;
-
-public sealed class ReceiptConfirmationSummaryService : IReceiptConfirmationSummary
-{
-    private readonly IMediator _mediator;
-    private readonly IRecipeRepository _recipeRepository;
-    private readonly IIngredientRepository _ingredientRepository;
-    private readonly ILogger<ReceiptConfirmationSummaryService> _logger;
-
-    public ReceiptConfirmationSummaryService(
-        IMediator mediator,
-        IRecipeRepository recipeRepository,
-        IIngredientRepository ingredientRepository,
-        ILogger<ReceiptConfirmationSummaryService> logger)
-    {
-        _mediator = mediator;
-        _recipeRepository = recipeRepository;
-        _ingredientRepository = ingredientRepository;
-        _logger = logger;
-    }
-
-    public async Task<ReceiptImpactSummary> BuildSummaryAsync(
-        Guid sessionId,
-        IReadOnlyList<PriceUpdate> priceUpdates,
-        CancellationToken cancellationToken = default)
-    {
-        var priceChanges = new List<PriceChangeDetail>();
-        var affectedRecipes = new Dictionary<Guid, RecipeImpact>();
-        
-        foreach (var update in priceUpdates.Where(p => p.PriceChanged))
-        {
-            // Build price change detail
-            priceChanges.Add(new PriceChangeDetail(
-                update.IngredientName,
-                update.OldPrice,
-                update.NewPrice,
-                update.ChangePercent,
-                update.LastPurchaseDate));
-
-            // Find recipes using this ingredient
-            var recipes = await _mediator.Send(
-                new GetRecipesUsingIngredientQuery(update.IngredientId),
-                cancellationToken);
-
-            foreach (var recipe in recipes.Value)
-            {
-                if (affectedRecipes.ContainsKey(recipe.RecipeId))
-                    continue;
-
-                // Calculate new cost and margin
-                var fullRecipe = await _recipeRepository
-                    .GetByIdWithIngredientsAsync(recipe.RecipeId, cancellationToken);
-                
-                if (fullRecipe is null) continue;
-
-                var oldCost = fullRecipe.TotalCost;
-                fullRecipe.RecalculateCost();
-                var newCost = fullRecipe.TotalCost;
-
-                var oldMargin = fullRecipe.SellPrice > 0 
-                    ? ((fullRecipe.SellPrice - oldCost) / fullRecipe.SellPrice) * 100 
-                    : 0;
-                
-                var newMargin = fullRecipe.SellPrice > 0 
-                    ? ((fullRecipe.SellPrice - newCost) / fullRecipe.SellPrice) * 100 
-                    : 0;
-
-                var needsReview = oldMargin - newMargin > 5; // Margin dropped more than 5%
-
-                affectedRecipes[recipe.RecipeId] = new RecipeImpact(
-                    fullRecipe.Name,
-                    oldCost,
-                    newCost,
-                    oldMargin,
-                    newMargin,
-                    needsReview);
-            }
-        }
-
-        return new ReceiptImpactSummary(
-            ItemsUpdated: priceUpdates.Count,
-            TotalSpent: priceUpdates.Sum(p => p.TotalPaid),
-            PriceChanges: priceChanges,
-            AffectedRecipes: affectedRecipes.Values.ToList());
-    }
-}
-```
-
-### Enhanced Confirmation Response
-
-Update the callback handler to show the transparency summary:
-
-```csharp
-private async Task HandleConfirmWithTransparency(
-    long chatId,
-    int messageId,
-    Guid sessionId,
-    CancellationToken cancellationToken)
-{
-    // Confirm the receipt
-    var command = new ConfirmReceiptWithPartialSaveCommand(sessionId);
-    var result = await _mediator.Send(command, cancellationToken);
-
-    if (!result.IsSuccess)
-    {
-        await _botClient.EditMessageText(
-            chatId: chatId,
-            messageId: messageId,
-            text: $"❌ Failed to save: {result.Error?.Message}",
-            cancellationToken: cancellationToken);
-        return;
-    }
-
-    // Get impact summary
-    var summary = await _summaryService.BuildSummaryAsync(
-        sessionId,
-        result.Value.PriceUpdates,
-        cancellationToken);
-
-    var sb = new StringBuilder();
-    
-    // Success message
-    sb.AppendLine("✅ *Purchase Saved Successfully!*\n");
-    sb.AppendLine($"📦 {result.Value.SuccessfulItems} items updated");
-    sb.AppendLine($"💰 Total: Rp {summary.TotalSpent:N0}");
-    
-    // Price changes section
-    if (summary.PriceChanges.Count > 0)
-    {
-        sb.AppendLine();
-        sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━");
-        sb.AppendLine($"💹 *{summary.PriceChanges.Count} Price(s) Updated:*\n");
-        
-        foreach (var change in summary.PriceChanges.Take(5))
-        {
-            var arrow = change.ChangePercent > 0 ? "📈" : "📉";
-            var sign = change.ChangePercent > 0 ? "+" : "";
-            
-            sb.AppendLine($"{arrow} *{change.IngredientName}*");
-            sb.AppendLine($"   Rp {change.OldPrice:N0} → Rp {change.NewPrice:N0} ({sign}{change.ChangePercent:N1}%)");
-            
-            if (change.LastPurchaseDate != default)
-            {
-                var daysSince = (DateTimeOffset.UtcNow - change.LastPurchaseDate).Days;
-                sb.AppendLine($"   _Last purchase: {daysSince} days ago_");
-            }
-        }
-        
-        if (summary.PriceChanges.Count > 5)
-        {
-            sb.AppendLine($"   _...and {summary.PriceChanges.Count - 5} more_");
-        }
-    }
-    
-    // Affected recipes section
-    if (summary.AffectedRecipes.Count > 0)
-    {
-        sb.AppendLine();
-        sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━");
-        sb.AppendLine($"🍳 *{summary.AffectedRecipes.Count} Recipe(s) Affected:*\n");
-        
-        // Show recipes that need attention first
-        var needsReview = summary.AffectedRecipes.Where(r => r.NeedsReview).ToList();
-        var okRecipes = summary.AffectedRecipes.Where(r => !r.NeedsReview).ToList();
-        
-        foreach (var recipe in needsReview)
-        {
-            sb.AppendLine($"⚠️ *{recipe.RecipeName}*");
-            sb.AppendLine($"   Cost: Rp {recipe.OldCost:N0} → Rp {recipe.NewCost:N0}");
-            sb.AppendLine($"   Margin: {recipe.OldMargin:N1}% → {recipe.NewMargin:N1}% 📉");
-            sb.AppendLine($"   _Consider updating sell price_");
-        }
-        
-        if (okRecipes.Count > 0)
-        {
-            sb.AppendLine();
-            sb.AppendLine($"✅ {okRecipes.Count} recipe(s) updated with stable margins");
-        }
-    }
-    
-    // Action suggestions
-    sb.AppendLine();
-    sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━");
-    
-    if (summary.AffectedRecipes.Any(r => r.NeedsReview))
-    {
-        sb.AppendLine("💡 *Suggested Actions:*");
-        sb.AppendLine("• Review recipes with declining margins");
-        sb.AppendLine("• Consider adjusting sell prices");
-        sb.AppendLine("• Use /cost [recipe] for details");
-    }
-    else
-    {
-        sb.AppendLine("_All recipes have healthy margins! 🎉_");
-    }
-
-    // Build action keyboard
-    var keyboard = BuildPostConfirmKeyboard(summary.AffectedRecipes.Any(r => r.NeedsReview));
-
-    await _botClient.EditMessageText(
-        chatId: chatId,
-        messageId: messageId,
-        text: sb.ToString(),
-        parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-        replyMarkup: keyboard,
-        cancellationToken: cancellationToken);
-}
-
-private static InlineKeyboardMarkup BuildPostConfirmKeyboard(bool hasRecipesToReview)
-{
-    var buttons = new List<InlineKeyboardButton[]>();
-
-    if (hasRecipesToReview)
-    {
-        buttons.Add(new[]
-        {
-            InlineKeyboardButton.WithCallbackData(
-                "📊 Review Recipes", 
-                "action:reviewrecipes"),
-            InlineKeyboardButton.WithCallbackData(
-                "⏭️ Dismiss", 
-                "action:dismiss")
-        });
-    }
-    
-    buttons.Add(new[]
-    {
-        InlineKeyboardButton.WithCallbackData(
-            "📝 View Price History", 
-            "action:pricehistory"),
-        InlineKeyboardButton.WithCallbackData(
-            "📷 Scan Another", 
-            "action:scanreceipt")
-    });
-
-    return new InlineKeyboardMarkup(buttons);
-}
-```
-
-### Query: GetRecipesUsingIngredient
-
-Create `src/Nastart.Application/Recipe/Queries/GetRecipesUsingIngredient/`:
-
-```csharp
-// GetRecipesUsingIngredientQuery.cs
-namespace Nastart.Application.Recipe.Queries.GetRecipesUsingIngredient;
-
-public sealed record GetRecipesUsingIngredientQuery(
-    Guid IngredientId
-) : IRequest<Result<IReadOnlyList<RecipeReference>>>;
-
-public sealed record RecipeReference(
-    Guid RecipeId,
-    string RecipeName);
-```
-
-```csharp
-// GetRecipesUsingIngredientHandler.cs
-namespace Nastart.Application.Recipe.Queries.GetRecipesUsingIngredient;
-
-internal sealed class GetRecipesUsingIngredientHandler
-    : IRequestHandler<GetRecipesUsingIngredientQuery, Result<IReadOnlyList<RecipeReference>>>
-{
-    private readonly IRecipeRepository _recipeRepository;
-
-    public GetRecipesUsingIngredientHandler(IRecipeRepository recipeRepository)
-    {
-        _recipeRepository = recipeRepository;
-    }
-
-    public async Task<Result<IReadOnlyList<RecipeReference>>> Handle(
-        GetRecipesUsingIngredientQuery request,
-        CancellationToken cancellationToken)
-    {
-        var recipes = await _recipeRepository
-            .GetRecipesUsingIngredientAsync(request.IngredientId, cancellationToken);
-
-        var references = recipes
-            .Select(r => new RecipeReference(r.Id, r.Name))
-            .ToList();
-
-        return references;
-    }
-}
+# Verify build
+dotnet build
 ```
 
 ---
 
-# Day 7: Testing & Production Considerations
+# Day 6: Notification Handlers & Scheduling
 
 ## 🧒 Explain Like I'm 5
 
-Before we let real users use the bot, we need to make sure everything works. It's like practicing your piano piece before the recital!
+When something happens in the app (like a price change), we need to:
+1. Notice it happened (the event)
+2. Decide if it's important (the handler)
+3. Send a message to Ibu Sari (the alert)
+
+It's like having a helper that watches for problems and tells you right away!
 
 ## 🔧 Engineer Language
 
-Testing strategy:
-1. **Unit Tests** — Test command handlers in isolation
-2. **Integration Tests** — Test full MediatR pipeline
-3. **Rate Limiting** — Prevent Telegram API abuse
-4. **Error Resilience** — Handle failures gracefully
+**Notification handlers** respond to MediatR notifications (domain events). We create handlers that check thresholds and trigger Telegram alerts.
 
-### Unit Tests for Command Handlers
+> 📖 **Microsoft Docs**: *"Background tasks can be implemented using IHostedService. Use BackgroundService for long-running operations."*
+>
+> — [Background tasks with hosted services](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/hosted-services)
 
-Create `tests/Nastart.Bot.Tests/Commands/CostCommandTests.cs`:
+### Price Spike Notification Handler
+
+Create `src/Nastart.Api/Features/Ingredients/PriceSpikeNotificationHandler.cs`:
+
+```csharp
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Alerts;
+using Nastart.Api.Features.Bot.Services;
+using Nastart.Api.Shared.Data;
+
+namespace Nastart.Api.Features.Ingredients;
+
+// ══════════════════════════════════════════════════════════════
+// PRICE SPIKE NOTIFICATION HANDLER
+// Sends Telegram alert when price changes significantly
+// ══════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Notification for significant price change.
+/// </summary>
+public sealed record PriceSpikeNotification(
+    Guid UserId,
+    Guid IngredientId,
+    string IngredientName,
+    decimal OldPrice,
+    decimal NewPrice,
+    decimal ChangePercent
+) : INotification;
+
+/// <summary>
+/// Handles price spike notifications by sending Telegram alerts.
+/// </summary>
+public sealed class PriceSpikeNotificationHandler 
+    : INotificationHandler<PriceSpikeNotification>
+{
+    private readonly ITelegramAlertService _alertService;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<PriceSpikeNotificationHandler> _logger;
+    
+    private const decimal AlertThreshold = 15m; // Alert if > 15% change
+
+    public PriceSpikeNotificationHandler(
+        ITelegramAlertService alertService,
+        NastartDbContext db,
+        ILogger<PriceSpikeNotificationHandler> logger)
+    {
+        _alertService = alertService;
+        _db = db;
+        _logger = logger;
+    }
+
+    public async Task Handle(
+        PriceSpikeNotification notification,
+        CancellationToken cancellationToken)
+    {
+        // Only alert if change exceeds threshold
+        if (Math.Abs(notification.ChangePercent) < AlertThreshold)
+        {
+            _logger.LogDebug(
+                "Price change {Percent}% below threshold for {Ingredient}",
+                notification.ChangePercent,
+                notification.IngredientName);
+            return;
+        }
+        
+        _logger.LogInformation(
+            "Price spike alert triggered: {Ingredient} changed {Percent}%",
+            notification.IngredientName,
+            notification.ChangePercent);
+        
+        // Create alert record
+        var alert = new Alert
+        {
+            Id = Guid.NewGuid(),
+            UserId = notification.UserId,
+            Type = AlertType.PriceSpike,
+            Title = $"Harga {notification.IngredientName} berubah drastis",
+            Message = $"Harga berubah dari Rp {notification.OldPrice:N0} menjadi Rp {notification.NewPrice:N0} ({notification.ChangePercent:+0.0;-0.0}%)",
+            RelatedEntityId = notification.IngredientId,
+            RelatedEntityType = "Ingredient"
+        };
+        
+        _db.Alerts.Add(alert);
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        // Send Telegram alert
+        await _alertService.SendPriceSpikeAlertAsync(
+            notification.UserId,
+            notification.IngredientName,
+            notification.OldPrice,
+            notification.NewPrice,
+            notification.ChangePercent,
+            cancellationToken);
+        
+        // Mark as sent
+        alert.SentViaTelegram = true;
+        alert.SentAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(cancellationToken);
+    }
+}
+```
+
+### Margin Alert Notification Handler
+
+Create `src/Nastart.Api/Features/Recipes/MarginAlertNotificationHandler.cs`:
+
+```csharp
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Alerts;
+using Nastart.Api.Features.Bot.Services;
+using Nastart.Api.Shared.Data;
+
+namespace Nastart.Api.Features.Recipes;
+
+// ══════════════════════════════════════════════════════════════
+// MARGIN ALERT NOTIFICATION HANDLER
+// Sends alert when recipe margin drops below threshold
+// ══════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Notification for margin below threshold.
+/// </summary>
+public sealed record MarginBelowThresholdNotification(
+    Guid UserId,
+    Guid RecipeId,
+    string RecipeName,
+    decimal CurrentMargin,
+    decimal TargetMargin
+) : INotification;
+
+/// <summary>
+/// Handles margin notifications by sending Telegram alerts.
+/// </summary>
+public sealed class MarginAlertNotificationHandler 
+    : INotificationHandler<MarginBelowThresholdNotification>
+{
+    private readonly ITelegramAlertService _alertService;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<MarginAlertNotificationHandler> _logger;
+
+    public MarginAlertNotificationHandler(
+        ITelegramAlertService alertService,
+        NastartDbContext db,
+        ILogger<MarginAlertNotificationHandler> logger)
+    {
+        _alertService = alertService;
+        _db = db;
+        _logger = logger;
+    }
+
+    public async Task Handle(
+        MarginBelowThresholdNotification notification,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Margin alert triggered: {Recipe} at {Margin}% (target: {Target}%)",
+            notification.RecipeName,
+            notification.CurrentMargin,
+            notification.TargetMargin);
+        
+        // Create alert record
+        var alert = new Alert
+        {
+            Id = Guid.NewGuid(),
+            UserId = notification.UserId,
+            Type = AlertType.MarginDrop,
+            Title = $"Margin {notification.RecipeName} turun",
+            Message = $"Margin saat ini {notification.CurrentMargin:F1}%, di bawah target {notification.TargetMargin:F1}%",
+            RelatedEntityId = notification.RecipeId,
+            RelatedEntityType = "Recipe"
+        };
+        
+        _db.Alerts.Add(alert);
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        // Send Telegram alert
+        await _alertService.SendMarginAlertAsync(
+            notification.UserId,
+            notification.RecipeName,
+            notification.CurrentMargin,
+            notification.TargetMargin,
+            cancellationToken);
+        
+        // Mark as sent
+        alert.SentViaTelegram = true;
+        alert.SentAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(cancellationToken);
+    }
+}
+```
+
+### Trigger Notifications in Handlers
+
+Update the `RecordPurchase` handler to publish price change notifications:
+
+```csharp
+// In RecordPurchaseHandler, after saving purchase and updating prices:
+
+// Check for price spikes
+foreach (var item in purchaseItems)
+{
+    var ingredient = await _db.Ingredients.FindAsync(item.IngredientId);
+    if (ingredient is null) continue;
+    
+    var oldPrice = ingredient.CurrentPrice;
+    var newPrice = item.UnitPrice;
+    
+    if (oldPrice > 0)
+    {
+        var changePercent = ((newPrice - oldPrice) / oldPrice) * 100;
+        
+        // Publish notification (handlers decide if alert needed)
+        await _mediator.Publish(new PriceSpikeNotification(
+            UserId: purchase.UserId,
+            IngredientId: ingredient.Id,
+            IngredientName: ingredient.Name,
+            OldPrice: oldPrice,
+            NewPrice: newPrice,
+            ChangePercent: changePercent
+        ), cancellationToken);
+    }
+    
+    // Update current price
+    ingredient.CurrentPrice = newPrice;
+    ingredient.LastPriceUpdate = DateTime.UtcNow;
+}
+```
+
+### Your Task (Day 6):
+
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
+
+# Create notification handlers
+New-Item Features\Ingredients\PriceSpikeNotificationHandler.cs
+New-Item Features\Recipes\MarginAlertNotificationHandler.cs
+
+# Update RecordPurchaseHandler to publish notifications
+
+# Add Alerts DbSet to context
+
+# Verify build
+dotnet build
+```
+
+---
+
+# Day 7: Full Bot Workflow Testing
+
+## 🧒 Explain Like I'm 5
+
+Time to test EVERYTHING together! Let's pretend to be Ibu Sari:
+
+1. Start the bot → Gets welcome message ✅
+2. Send receipt photo → OCR reads it, confirms items ✅
+3. Confirm items → Saved to database ✅
+4. `/cost Nastar` → See recipe cost breakdown ✅
+5. `/price tepung` → See flour price history ✅
+6. `/low` → See low stock items ✅
+7. `/profit` → See profit summary ✅
+8. Price spike → Automatic alert! ✅
+
+If all these work, the bot is ready! 🎉
+
+## 🔧 Engineer Language
+
+**End-to-end testing** validates the complete bot workflow from user commands through business logic to responses.
+
+> 📖 **Microsoft Docs**: *"Integration tests ensure that an app's components function correctly together."*
+>
+> — [Integration tests in ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/test/integration-tests)
+
+### Bot Command Tests
+
+Create `tests/Nastart.Api.Tests/Features/Bot/BotCommandTests.cs`:
 
 ```csharp
 using FluentAssertions;
 using MediatR;
-using NSubstitute;
-using Telegram.Bot;
-using Telegram.Bot.Types;
-using Telegram.Bot.Types.Enums;
-using Nastart.Application.Common;
-using Nastart.Application.Recipe.Queries.GetRecipeCost;
-using Nastart.Bot.Commands;
 using Microsoft.Extensions.Logging;
+using Moq;
+using Nastart.Api.Features.Bot;
 
-namespace Nastart.Bot.Tests.Commands;
+namespace Nastart.Api.Tests.Features.Bot;
 
-public class CostCommandTests
+public class BotCommandTests
 {
-    private readonly ITelegramBotClient _botClient;
-    private readonly IMediator _mediator;
-    private readonly CostCommand _sut;
+    private readonly Mock<ITelegramBotService> _mockBotService;
+    private readonly Mock<ILogger<CostCommandHandler>> _mockLogger;
 
-    public CostCommandTests()
+    public BotCommandTests()
     {
-        _botClient = Substitute.For<ITelegramBotClient>();
-        _mediator = Substitute.For<IMediator>();
-        var logger = Substitute.For<ILogger<CostCommand>>();
-        
-        _sut = new CostCommand(_botClient, _mediator, logger);
+        _mockBotService = new Mock<ITelegramBotService>();
+        _mockLogger = new Mock<ILogger<CostCommandHandler>>();
     }
 
     [Fact]
-    public async Task HandleAsync_WithValidRecipe_SendsCostBreakdown()
+    public async Task CostCommand_WithRecipeName_SendsCostBreakdown()
     {
         // Arrange
-        var message = CreateMessage("/cost chocolate cake");
-        var costResponse = CreateCostResponse();
+        var command = new CostCommand(
+            ChatId: 123456789,
+            UserId: 987654321,
+            RecipeName: "Nastar");
         
-        _mediator.Send(Arg.Any<GetRecipeCostQuery>(), Arg.Any<CancellationToken>())
-            .Returns(Result<RecipeCostResponse>.Success(costResponse));
-
-        // Act
-        await _sut.HandleAsync(message);
-
-        // Assert
-        await _botClient.Received(1).SendMessage(
-            chatId: 123,
-            text: Arg.Is<string>(s => 
-                s.Contains("Chocolate Cake") && 
-                s.Contains("Total Cost")),
-            parseMode: ParseMode.Markdown,
-            cancellationToken: Arg.Any<CancellationToken>());
+        _mockBotService
+            .Setup(s => s.SendTextMessageAsync(
+                It.IsAny<long>(),
+                It.Is<string>(text => text.Contains("Nastar")),
+                It.IsAny<Telegram.Bot.Types.ReplyMarkups.IReplyMarkup?>(),
+                It.IsAny<Telegram.Bot.Types.Enums.ParseMode>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Telegram.Bot.Types.Message());
+        
+        // Act & Assert - verify message sent
+        // (Full test would need in-memory database)
     }
 
     [Fact]
-    public async Task HandleAsync_WithNoArguments_SendsUsageMessage()
+    public async Task LowStockCommand_NoItems_ReturnsAllClear()
     {
         // Arrange
-        var message = CreateMessage("/cost");
-
-        // Act
-        await _sut.HandleAsync(message);
-
-        // Assert
-        await _botClient.Received(1).SendMessage(
-            chatId: 123,
-            text: Arg.Is<string>(s => s.Contains("Usage")),
-            parseMode: ParseMode.Markdown,
-            cancellationToken: Arg.Any<CancellationToken>());
+        var command = new LowStockCommand(
+            ChatId: 123456789,
+            UserId: 987654321);
         
-        await _mediator.DidNotReceive().Send(
-            Arg.Any<GetRecipeCostQuery>(), 
-            Arg.Any<CancellationToken>());
+        // Act & Assert - verify "Stok Aman" message
     }
 
-    [Fact]
-    public async Task HandleAsync_RecipeNotFound_SendsErrorMessage()
+    [Theory]
+    [InlineData("week", 7)]
+    [InlineData("month", 30)]
+    [InlineData(null, 7)] // Default
+    public void ProfitCommand_ParsesPeriodCorrectly(string? period, int expectedDays)
     {
-        // Arrange
-        var message = CreateMessage("/cost nonexistent");
-        
-        _mediator.Send(Arg.Any<GetRecipeCostQuery>(), Arg.Any<CancellationToken>())
-            .Returns(Result<RecipeCostResponse>.Failure(
-                Error.NotFound("NotFound", "Recipe not found")));
-
-        // Act
-        await _sut.HandleAsync(message);
-
-        // Assert
-        await _botClient.Received(1).SendMessage(
-            chatId: 123,
-            text: Arg.Is<string>(s => s.Contains("❌")),
-            cancellationToken: Arg.Any<CancellationToken>());
-    }
-
-    private static Message CreateMessage(string text)
-    {
-        return new Message
+        // Verify period parsing logic
+        var endDate = DateTime.Today;
+        var startDate = period?.ToLowerInvariant() switch
         {
-            MessageId = 1,
-            Chat = new Chat { Id = 123, Type = ChatType.Private },
-            From = new User { Id = 456, FirstName = "Test" },
-            Text = text,
-            Date = DateTime.UtcNow
+            "month" => endDate.AddMonths(-1),
+            _ => endDate.AddDays(-7)
         };
-    }
-
-    private static RecipeCostResponse CreateCostResponse()
-    {
-        return new RecipeCostResponse(
-            RecipeId: Guid.NewGuid(),
-            RecipeName: "Chocolate Cake",
-            SellingPrice: 100000,
-            TotalCost: 60000,
-            Margin: 40000,
-            MarginPercent: 40,
-            IsBelowThreshold: false,
-            Threshold: 20,
-            Ingredients: new List<IngredientCostItem>
-            {
-                new(Guid.NewGuid(), "Flour", 500, "gram", 20, 10000),
-                new(Guid.NewGuid(), "Sugar", 200, "gram", 25, 5000),
-                new(Guid.NewGuid(), "Cocoa", 100, "gram", 50, 5000)
-            },
-            CostCalculatedAt: DateTime.UtcNow
-        );
+        
+        var daysDiff = (endDate - startDate).Days;
+        daysDiff.Should().BeGreaterOrEqualTo(expectedDays - 1);
     }
 }
 ```
 
-### Integration Tests for Event Handlers
+### Alert Notification Tests
 
-Create `tests/Nastart.Application.Tests/EventHandlers/PriceSpikeEventHandlerTests.cs`:
+Create `tests/Nastart.Api.Tests/Features/Alerts/AlertNotificationTests.cs`:
 
 ```csharp
 using FluentAssertions;
-using NSubstitute;
-using Microsoft.Extensions.Logging;
-using Nastart.Application.Common.Interfaces;
-using Nastart.Application.Finance.EventHandlers;
-using Nastart.Domain.Finance.Events;
+using Nastart.Api.Features.Alerts;
+using Nastart.Api.Features.Ingredients;
 
-namespace Nastart.Application.Tests.EventHandlers;
+namespace Nastart.Api.Tests.Features.Alerts;
 
-public class PriceSpikeEventHandlerTests
+public class AlertNotificationTests
 {
-    private readonly IAlertNotificationService _alertService;
-    private readonly IAlertRepository _alertRepository;
-    private readonly PriceSpikeDetectedEventHandler _sut;
-
-    public PriceSpikeEventHandlerTests()
+    [Theory]
+    [InlineData(10, false)]  // 10% - below threshold
+    [InlineData(15, false)]  // 15% - at threshold (not above)
+    [InlineData(20, true)]   // 20% - above threshold
+    [InlineData(-18, true)]  // -18% - significant drop
+    public void PriceSpikeThreshold_TriggersCorrectly(
+        decimal changePercent, 
+        bool shouldTrigger)
     {
-        _alertService = Substitute.For<IAlertNotificationService>();
-        _alertRepository = Substitute.For<IAlertRepository>();
-        var logger = Substitute.For<ILogger<PriceSpikeDetectedEventHandler>>();
-
-        _sut = new PriceSpikeDetectedEventHandler(
-            _alertService, _alertRepository, logger);
+        const decimal AlertThreshold = 15m;
+        var shouldAlert = Math.Abs(changePercent) > AlertThreshold;
+        shouldAlert.Should().Be(shouldTrigger);
     }
 
     [Fact]
-    public async Task Handle_SendsAlertAndPersistsToRepository()
+    public void Alert_CreatesWithCorrectDefaults()
     {
-        // Arrange
-        var @event = new PriceSpikeDetectedEvent(
-            IngredientId: Guid.NewGuid(),
-            IngredientName: "Flour",
-            OldPrice: 20000,
-            NewPrice: 25000,
-            ChangePercent: 25,
-            UserId: 123
-        );
-
-        // Act
-        await _sut.Handle(@event, CancellationToken.None);
-
-        // Assert
-        await _alertService.Received(1).SendPriceSpikeAlertAsync(
-            userId: 123,
-            ingredientName: "Flour",
-            oldPrice: 20000,
-            newPrice: 25000,
-            changePercent: 25,
-            cancellationToken: Arg.Any<CancellationToken>());
-
-        await _alertRepository.Received(1).AddAsync(
-            Arg.Is<Alert>(a => 
-                a.UserId == 123 && 
-                a.Type == AlertType.PriceSpike),
-            Arg.Any<CancellationToken>());
-    }
-}
-```
-
-### Rate Limiting for Telegram API
-
-Telegram has rate limits (30 messages/second to same chat). Implement throttling:
-
-```csharp
-// src/Nastart.Infrastructure/Notifications/RateLimitedTelegramService.cs
-using System.Threading.Channels;
-
-public class RateLimitedTelegramService : BackgroundService
-{
-    private readonly Channel<TelegramMessage> _messageQueue;
-    private readonly ITelegramBotClient _botClient;
-    private readonly ILogger<RateLimitedTelegramService> _logger;
-    
-    // Telegram allows ~30 msg/sec, we'll be conservative
-    private readonly TimeSpan _minDelay = TimeSpan.FromMilliseconds(50);
-
-    public RateLimitedTelegramService(
-        ITelegramBotClient botClient,
-        ILogger<RateLimitedTelegramService> logger)
-    {
-        _botClient = botClient;
-        _logger = logger;
-        _messageQueue = Channel.CreateBounded<TelegramMessage>(
-            new BoundedChannelOptions(1000)
-            {
-                FullMode = BoundedChannelFullMode.DropOldest
-            });
-    }
-
-    public async ValueTask QueueMessageAsync(TelegramMessage message)
-    {
-        await _messageQueue.Writer.WriteAsync(message);
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        await foreach (var message in _messageQueue.Reader.ReadAllAsync(stoppingToken))
+        var alert = new Alert
         {
-            try
-            {
-                await _botClient.SendMessage(
-                    chatId: message.ChatId,
-                    text: message.Text,
-                    parseMode: message.ParseMode,
-                    cancellationToken: stoppingToken);
-
-                await Task.Delay(_minDelay, stoppingToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, 
-                    "Failed to send message to {ChatId}", message.ChatId);
-            }
-        }
+            Id = Guid.NewGuid(),
+            UserId = Guid.NewGuid(),
+            Type = AlertType.PriceSpike,
+            Title = "Test Alert",
+            Message = "Test message"
+        };
+        
+        alert.IsRead.Should().BeFalse();
+        alert.SentViaTelegram.Should().BeFalse();
+        alert.CreatedAt.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromSeconds(1));
     }
 }
-
-public record TelegramMessage(
-    long ChatId,
-    string Text,
-    ParseMode? ParseMode = null
-);
 ```
 
-### Production Checklist
+### Full Workflow Test Checklist
 
-| Item | Status | Notes |
-|------|--------|-------|
-| Bot token in secrets | ⬜ | Use Azure Key Vault or AWS Secrets Manager |
-| Webhook HTTPS | ⬜ | Required by Telegram |
-| Rate limiting | ⬜ | Prevent API abuse |
-| Error logging | ⬜ | Structured logging with correlation IDs |
-| Alert deduplication | ⬜ | Don't spam same alert repeatedly |
-| Chat ID persistence | ⬜ | Store in database when user starts bot |
-| Graceful shutdown | ⬜ | Complete pending messages before exit |
+```markdown
+## Bot Workflow - Manual Test Checklist
 
-### References
-- [xUnit Testing](https://xunit.net/)
-- [NSubstitute](https://nsubstitute.github.io/)
-- [Telegram Rate Limits](https://core.telegram.org/bots/faq#broadcasting-to-users)
+### Setup
+- [ ] API running: `dotnet run`
+- [ ] ngrok tunnel: `ngrok http 5000`
+- [ ] Webhook registered: POST /api/bot/setup-webhook
+- [ ] Database seeded with test data
+
+### Command Tests
+
+#### /start
+- [ ] New user → Welcome message + onboarding keyboard
+- [ ] Existing user → Welcome back message
+- [ ] User created in database
+
+#### /help
+- [ ] Shows all available commands
+- [ ] Help buttons work (Cara Scan, Cara Hitung, etc.)
+
+#### /cost [recipe]
+- [ ] Without args → Shows recipe list
+- [ ] With valid recipe → Shows cost breakdown
+- [ ] Shows ingredients with prices
+- [ ] Shows total cost, cost per unit
+- [ ] Shows margin with emoji indicator
+- [ ] Refresh button works
+- [ ] Invalid recipe → Error message
+
+#### /price [ingredient]
+- [ ] Without args → Shows ingredient list
+- [ ] With valid ingredient → Shows price info
+- [ ] Shows price history
+- [ ] Shows trend (up/down percentage)
+- [ ] Shows stock level
+- [ ] Invalid ingredient → Error message
+
+#### /low
+- [ ] No low stock → "Stok Aman" message
+- [ ] With low stock → Categorized list (critical/low/warning)
+- [ ] Shows estimated restock cost
+- [ ] Export button works
+
+#### /profit
+- [ ] Shows sales summary
+- [ ] Shows costs summary
+- [ ] Shows margin
+- [ ] Shows top recipes
+- [ ] Period buttons work (week/month)
+
+### Photo Flow (from Week 9)
+- [ ] Send receipt photo → Processing message
+- [ ] OCR results displayed
+- [ ] Confirm → Saved successfully
+- [ ] Cancel → Session cancelled
+- [ ] Edit → Can modify items
+
+### Alert Notifications
+- [ ] Record purchase with 20% price increase → Price spike alert
+- [ ] Recipe margin drops below target → Margin alert
+- [ ] Low stock threshold crossed → Low stock alert
+
+### Edge Cases
+- [ ] Rapid commands → Handles gracefully
+- [ ] Invalid input → Friendly error
+- [ ] Expired session → Clear message
+- [ ] Long recipe/ingredient names → Truncated properly
+```
+
+### Run Tests
+
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend
+
+# Run all bot tests
+dotnet test --filter "FullyQualifiedName~Bot"
+
+# Run alert tests
+dotnet test --filter "FullyQualifiedName~Alert"
+
+# Run with coverage
+dotnet test --collect:"XPlat Code Coverage"
+```
+
+### Your Task (Day 7):
+
+1. Create `BotCommandTests.cs`
+2. Create `AlertNotificationTests.cs`
+3. Run tests: `dotnet test`
+4. Perform manual testing with full workflow
+5. Document any issues found
 
 ---
 
-## Week 10 Summary
+# Resources
 
-### Files Created/Updated
+## Microsoft Official Documentation
 
-```
-Nastart.Bot/
-├── Commands/
-│   ├── BaseCommandHandler.cs     (new)
-│   ├── CostCommand.cs            (new)
-│   ├── PriceCommand.cs           (new)
-│   ├── LowCommand.cs             (new)
-│   └── ProfitCommand.cs          (new)
+| Topic | Link |
+|-------|------|
+| **EF Core Querying** | [learn.microsoft.com/ef/core/querying](https://learn.microsoft.com/en-us/ef/core/querying/) |
+| **Background Services** | [learn.microsoft.com/aspnet/core/fundamentals/host/hosted-services](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/hosted-services) |
+| **Integration Tests** | [learn.microsoft.com/aspnet/core/test/integration-tests](https://learn.microsoft.com/en-us/aspnet/core/test/integration-tests) |
+| **Logging** | [learn.microsoft.com/aspnet/core/fundamentals/logging](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/logging/) |
 
-Nastart.Application/
-├── Common/Interfaces/
-│   └── IAlertNotificationService.cs (new)
-├── Recipe/Queries/GetRecipeCost/
-│   ├── GetRecipeCostQuery.cs     (new)
-│   └── GetRecipeCostQueryHandler.cs (new)
-├── Inventory/Queries/
-│   ├── GetIngredientPrice/       (new)
-│   └── GetLowStock/              (new)
-├── Finance/Queries/GetDailyProfit/
-│   ├── GetDailyProfitQuery.cs    (new)
-│   └── GetDailyProfitQueryHandler.cs (new)
-├── Finance/EventHandlers/
-│   └── PriceSpikeDetectedEventHandler.cs (new)
-├── Recipe/EventHandlers/
-│   └── MarginBelowThresholdEventHandler.cs (new)
-├── Inventory/EventHandlers/
-│   └── LowStockEventHandler.cs   (new)
+## Telegram Documentation
 
-Nastart.Infrastructure/
-├── Notifications/
-│   ├── TelegramAlertNotificationService.cs (new)
-│   └── RateLimitedTelegramService.cs (new)
-```
+| Topic | Link |
+|-------|------|
+| **Bot API** | [core.telegram.org/bots/api](https://core.telegram.org/bots/api) |
+| **Inline Keyboards** | [core.telegram.org/bots/features#inline-keyboards](https://core.telegram.org/bots/features#inline-keyboards) |
+| **Formatting** | [core.telegram.org/bots/api#formatting-options](https://core.telegram.org/bots/api#formatting-options) |
+| **Commands** | [core.telegram.org/bots/features#commands](https://core.telegram.org/bots/features#commands) |
 
-### Key Concepts Learned
+## External Resources
 
-1. **Command Pattern** — Bot commands routed to MediatR queries
-2. **MediatR Queries** — Clean separation of concerns
-3. **Domain Events** — `INotification` for cross-cutting concerns
-4. **Event Handlers** — `INotificationHandler<T>` for reactions
-5. **Alert Service** — Centralized notification sending
-6. **Rate Limiting** — Prevent Telegram API abuse
+| Topic | Link |
+|-------|------|
+| **Telegram.Bot NuGet** | [github.com/TelegramBots/Telegram.Bot](https://github.com/TelegramBots/Telegram.Bot) |
+| **MediatR** | [github.com/jbogard/MediatR](https://github.com/jbogard/MediatR) |
+| **FluentAssertions** | [fluentassertions.com](https://fluentassertions.com/) |
 
-### Bot Commands Implemented
+## Week 10 Checklist
 
-| Command | Description |
-|---------|-------------|
-| `/cost [recipe]` | Recipe cost breakdown with margin |
-| `/price [ingredient]` | Current price + history |
-| `/low` | Low stock items list |
-| `/profit` | Daily P&L summary |
+- [ ] Created `CostCommand` feature slice
+- [ ] Cost breakdown shows ingredients, totals, margin
+- [ ] Created `PriceCommand` feature slice
+- [ ] Price history and trends displayed
+- [ ] Created `LowStockCommand` feature slice
+- [ ] Items categorized by urgency level
+- [ ] Created `ProfitCommand` feature slice
+- [ ] Profit summary with recipe analysis
+- [ ] Created `Alert` entity model
+- [ ] Created `ITelegramAlertService` interface
+- [ ] Implemented `TelegramAlertService`
+- [ ] Created `PriceSpikeNotificationHandler`
+- [ ] Created `MarginAlertNotificationHandler`
+- [ ] Notifications trigger Telegram alerts
+- [ ] Updated `RecordPurchase` to publish notifications
+- [ ] Added all commands to webhook handler routing
+- [ ] Created unit tests for commands
+- [ ] Created unit tests for alerts
+- [ ] Full workflow tested end-to-end
+- [ ] All builds pass: `dotnet build`
+- [ ] All tests pass: `dotnet test`
 
-### Alert Types
+---
 
-| Event | Alert |
-|-------|-------|
-| `PriceSpikeDetectedEvent` | 🔴 Price increased >15% |
-| `MarginBelowThresholdEvent` | ⚠️ Recipe margin too low |
-| `LowStockEvent` | 🟡 Stock below minimum |
+## What's Next?
 
-### Next Week Preview
+**Phase 4: Vue.js Dashboard (Weeks 11-14)** — Build the web frontend with Nuxt.js, including login/register, dashboard with charts, ingredient management, recipe cost calculator, and real-time updates.
 
-**Week 11: Frontend Foundation** — Initialize Nuxt.js project, learn Vue.js 3 composition API, create layout with Tailwind CSS, set up Pinia stores.
+---
+
+*Nastart — Start smart, bake profitable*

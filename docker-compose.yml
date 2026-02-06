@@ -1,4 +1,5 @@
 # Docker Compose for Nastart development environment
+# See: docs/lessons/week-11-containerization.md for detailed explanations
 
 services:
   # ==========================================
@@ -9,9 +10,9 @@ services:
     container_name: nastart-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: nastart
-      POSTGRES_PASSWORD: nastart_dev_password
-      POSTGRES_DB: nastart
+      POSTGRES_USER: ${POSTGRES_USER:-nastart}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nastart_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-nastart}
     ports:
       - "5432:5432"
     volumes:
@@ -34,6 +35,37 @@ services:
           memory: 512M
 
   # ==========================================
+  # PaddleOCR Python Microservice
+  # ==========================================
+  ocr-service:
+    build:
+      context: ./ocr-service
+      dockerfile: Dockerfile
+    container_name: nastart-ocr
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OCR_LANG=${OCR_LANG:-id}
+    ports:
+      - "8001:8001"
+    networks:
+      - nastart-backend
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8001/health').raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+  # ==========================================
   # .NET API Service
   # ==========================================
   api:
@@ -46,14 +78,21 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:8080
-      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=nastart;Username=nastart;Password=nastart_dev_password
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-nastart};Username=${POSTGRES_USER:-nastart};Password=${POSTGRES_PASSWORD:-nastart_dev_password}
+      - OcrService__BaseUrl=http://ocr-service:8001
+      - Telegram__BotToken=${TELEGRAM_BOT_TOKEN}
+      - Telegram__WebhookUrl=${TELEGRAM_WEBHOOK_URL}
+      - Telegram__SecretToken=${TELEGRAM_SECRET_TOKEN}
     ports:
-      - "5001:8080"
+      - "5000:8080"
     depends_on:
       postgres:
         condition: service_healthy
+      ocr-service:
+        condition: service_healthy
     networks:
       - nastart-backend
+      - nastart-frontend
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s
@@ -69,8 +108,73 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # ==========================================
+  # Telegram Bot Worker Service (Optional)
+  # Uncomment when Nastart.Bot project is ready
+  # ==========================================
+  # bot:
+  #   build:
+  #     context: ./backend
+  #     dockerfile: src/Nastart.Bot/Dockerfile
+  #     target: runtime
+  #   container_name: nastart-bot
+  #   restart: unless-stopped
+  #   environment:
+  #     - DOTNET_ENVIRONMENT=Development
+  #     - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-nastart};Username=${POSTGRES_USER:-nastart};Password=${POSTGRES_PASSWORD:-nastart_dev_password}
+  #     - Telegram__BotToken=${TELEGRAM_BOT_TOKEN}
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     api:
+  #       condition: service_healthy
+  #   networks:
+  #     - nastart-backend
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '0.25'
+  #         memory: 256M
+  #       reservations:
+  #         cpus: '0.1'
+  #         memory: 128M
+
+  # ==========================================
+  # Nuxt 4 Frontend (Optional)
+  # Uncomment when frontend is ready
+  # ==========================================
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #     target: runtime
+  #   container_name: nastart-frontend
+  #   restart: unless-stopped
+  #   environment:
+  #     - NUXT_PUBLIC_API_URL=http://api:8080
+  #   ports:
+  #     - "3000:3000"
+  #   depends_on:
+  #     api:
+  #       condition: service_healthy
+  #   networks:
+  #     - nastart-frontend
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 30s
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '0.5'
+  #         memory: 512M
+
 networks:
   nastart-backend:
+    driver: bridge
+  nastart-frontend:
     driver: bridge
 
 volumes:

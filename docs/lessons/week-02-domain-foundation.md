@@ -1,291 +1,303 @@
-# Week 2: Domain Layer Foundation 🏗️
+# Week 2: Feature Building Blocks 🏗️
 
-> **Goal**: Build the reusable building blocks for your entire domain model — Entity, AggregateRoot, ValueObject, and your first real aggregate: `Ingredient`.
+> **Goal**: Build reusable building blocks for your features — Models, DTOs, Result pattern, MediatR notifications, and your first real feature slice: `CreateIngredient`.
 
 ---
 
 ## Table of Contents
-1. [Day 1: The SeedWork Pattern](#day-1-the-seedwork-pattern)
-2. [Day 2: Entity Base Class](#day-2-entity-base-class)
-3. [Day 3: Value Objects](#day-3-value-objects)
-4. [Day 4: Domain Events](#day-4-domain-events)
-5. [Day 5: Aggregate Root Pattern](#day-5-aggregate-root-pattern)
-6. [Day 6: Building the Ingredient Aggregate](#day-6-building-the-ingredient-aggregate)
-7. [Day 7: Unit Testing Your Domain](#day-7-unit-testing-your-domain)
+1. [Day 1: Feature Folder Structure](#day-1-feature-folder-structure)
+2. [Day 2: Models & Database Entities](#day-2-models--database-entities)
+3. [Day 3: C# Records for Feature Data](#day-3-c-records-for-feature-data)
+4. [Day 4: MediatR Notifications for Side Effects](#day-4-mediatr-notifications-for-side-effects)
+5. [Day 5: The Feature Slice Pattern](#day-5-the-feature-slice-pattern)
+6. [Day 6: Building the CreateIngredient Feature](#day-6-building-the-createingredient-feature)
+7. [Day 7: Testing Your Feature Slices](#day-7-testing-your-feature-slices)
 8. [Resources](#resources) *(Microsoft Official Docs Verified)*
 
 ---
 
-# Day 1: The SeedWork Pattern
+# Day 1: Feature Folder Structure
 
 ## 🧒 Explain Like I'm 5
 
-Imagine you're building many different LEGO houses. Instead of making a new door from scratch every time, you have a **special box of door pieces** that work for ALL houses!
+Imagine you're organizing your toys. Instead of putting all dolls in one box, all cars in another, and all accessories in a third (making it hard to find everything for playtime), you put everything for "Playing Store" in one box — the cash register, play money, toy food, all together!
 
-**SeedWork** is like that special box. It has pieces that every part of your app needs:
-- Base classes for all your "things" (entities)
-- Rules for comparing things
-- Ways to send messages between parts
+In **Vertical Slice Architecture**, we organize code the same way — everything for one feature lives together:
+- The request (what the user wants)
+- The handler (the code that does it)
+- The response (what we send back)
 
 ## 🔧 Engineer Language
 
-**SeedWork** (also called "Common" or "SharedKernel") is a folder containing reusable base classes and interfaces that form the foundation of your domain model. The term was popularized by Martin Fowler.
+**Vertical Slice Architecture** organizes code by feature, not by layer. Each "slice" contains everything needed to handle one user request — from the API endpoint down to the database query.
 
-> 📖 **Microsoft Docs**: *"The folder for these types of classes is called SeedWork and not something like Framework. It's called SeedWork because the folder contains just a small subset of reusable classes that cannot really be considered a framework."*
-> 
-> — [Seedwork base classes and interfaces](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/seedwork-domain-model-base-classes-interfaces)
+> 📖 **Microsoft Docs**: *"Minimal APIs are designed to create HTTP APIs with minimal dependencies. They're ideal for microservices and apps that want to include only the minimum files, features, and dependencies in ASP.NET Core."*
+>
+> — [Minimal APIs overview](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/overview)
 
-### What Goes in SeedWork:
-
-| File | Purpose |
-|------|---------|
-| `Entity.cs` | Base class for all entities with ID and equality |
-| `AggregateRoot.cs` | Marker interface + base for aggregate roots |
-| `ValueObject.cs` | Base class for value objects |
-| `IDomainEvent.cs` | Interface for domain events |
-| `IRepository.cs` | Generic repository interface |
-| `IUnitOfWork.cs` | Unit of work pattern interface |
-| `Enumeration.cs` | Base for smart enums (optional) |
-
-### Folder Structure:
+### Feature-Based Folder Structure:
 
 ```
-src/Nastart.Domain/
-├── Common/                    # ← This is your SeedWork folder
-│   ├── Entity.cs
-│   ├── AggregateRoot.cs
-│   ├── IAggregateRoot.cs
-│   ├── ValueObject.cs
-│   ├── IDomainEvent.cs
-│   ├── IRepository.cs
-│   └── IUnitOfWork.cs
-├── Inventory/
-│   ├── Aggregates/
-│   │   └── Ingredient.cs
-│   ├── ValueObjects/
-│   │   └── Money.cs
-│   └── Events/
-│       └── PriceChangedEvent.cs
-└── ...
+src/Nastart.Api/
+├── Features/
+│   ├── Ingredients/
+│   │   ├── CreateIngredient.cs          # Command + Handler + Endpoint
+│   │   ├── GetIngredient.cs             # Query + Handler + Endpoint
+│   │   ├── GetIngredients.cs            # Query + Handler + Endpoint
+│   │   ├── UpdateIngredientPrice.cs     # Command + Handler + Endpoint
+│   │   ├── Ingredient.cs                # Entity model
+│   │   └── IngredientsEndpoints.cs      # Route group registration
+│   │
+│   ├── Recipes/
+│   │   ├── CreateRecipe.cs
+│   │   ├── GetRecipeCost.cs
+│   │   ├── Recipe.cs
+│   │   └── RecipesEndpoints.cs
+│   │
+│   └── Purchases/
+│       ├── RecordPurchase.cs
+│       ├── ScanReceipt.cs
+│       ├── Purchase.cs
+│       └── PurchasesEndpoints.cs
+│
+├── Shared/                               # Cross-cutting concerns
+│   ├── Data/
+│   │   └── NastartDbContext.cs
+│   ├── Models/
+│   │   ├── Result.cs
+│   │   └── PagedResult.cs
+│   └── Behaviors/
+│       ├── ValidationBehavior.cs
+│       └── LoggingBehavior.cs
+│
+├── Program.cs
+└── Nastart.Api.csproj
 ```
+
+### Why This Structure?
+
+| Traditional Layers | Vertical Slices |
+|-------------------|-----------------|
+| Changes span multiple folders | Changes in one folder |
+| Hard to delete features | Delete folder = delete feature |
+| Abstractions for abstraction's sake | Concrete implementations |
+| Repository, Service, Controller, etc. | Everything in one place |
 
 ### Your Task (Day 1):
 
 ```powershell
-cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Domain
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
 
-# Create folder structure
-mkdir Common
-mkdir Inventory\Aggregates
-mkdir Inventory\ValueObjects
-mkdir Inventory\Events
-mkdir Recipe\Aggregates
-mkdir Finance\Aggregates
-mkdir Finance\Events
+# Create feature-based folder structure
+mkdir Features\Ingredients
+mkdir Features\Recipes
+mkdir Features\Purchases
+mkdir Features\Alerts
+mkdir Shared\Data
+mkdir Shared\Models
+mkdir Shared\Behaviors
 
-# Remove placeholder file
+# Remove any placeholder files
 Remove-Item Class1.cs -ErrorAction SilentlyContinue
 ```
 
 ---
 
-# Day 2: Entity Base Class
+# Day 2: Models & Database Entities
 
 ## 🧒 Explain Like I'm 5
 
-Every person has a unique ID number (like a student ID). Even if two people have the same name, they're DIFFERENT people because their IDs are different.
+Every app needs to remember things — like a notebook. In our app, we need to remember:
+- **Ingredients** (flour, sugar, eggs)
+- **Recipes** (chocolate cake, cookies)
+- **Purchases** (what we bought and when)
 
-In our app, **Entities** are "things" with an ID:
-- **Ingredient** with ID 123 is DIFFERENT from Ingredient with ID 456
-- Even if both are called "Flour", they're tracked separately
+We create **models** — blueprints that describe what each thing looks like.
 
 ## 🔧 Engineer Language
 
-An **Entity** is a domain object that has:
-1. **Identity** — A unique identifier that persists over time
-2. **Lifecycle** — It can be created, modified, and deleted
-3. **Equality by ID** — Two entities are equal if their IDs match
+**Entity models** represent database tables. In Vertical Slice Architecture, models live inside their feature folders, close to where they're used. We use EF Core conventions and keep models simple.
 
-> 📖 **Microsoft Docs**: *"An entity is an object with a unique identity that persists over time. For example, in a banking application, customers and accounts would be entities."*
+> 📖 **Microsoft Docs**: *"Entity Framework Core uses a set of conventions to determine how the model maps to a database. You can override or supplement the conventions using configuration."*
 >
-> — [Tactical DDD Patterns](https://learn.microsoft.com/en-us/azure/architecture/microservices/model/tactical-ddd#overview-of-the-tactical-patterns)
+> — [Creating and Configuring a Model](https://learn.microsoft.com/en-us/ef/core/modeling/)
 
-### Entity Base Class (from eShopOnContainers):
+### The Ingredient Entity:
 
-Create `src/Nastart.Domain/Common/Entity.cs`:
+Create `src/Nastart.Api/Features/Ingredients/Ingredient.cs`:
 
 ```csharp
-using MediatR;
-
-namespace Nastart.Domain.Common;
+namespace Nastart.Api.Features.Ingredients;
 
 /// <summary>
-/// Base class for all domain entities.
-/// Provides ID, equality, and domain event support.
+/// Represents an ingredient tracked in inventory.
+/// Entity model for database persistence with EF Core.
 /// </summary>
 /// <remarks>
-/// Based on Microsoft's eShopOnContainers reference implementation.
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/seedwork-domain-model-base-classes-interfaces
+/// Following Minimal API conventions — entities are simple POCOs.
+/// Business logic is in feature handlers, not in entity classes.
+/// See: https://learn.microsoft.com/en-us/ef/core/modeling/
 /// </remarks>
-public abstract class Entity
+public class Ingredient
 {
-    private int? _requestedHashCode;
-    private List<INotification>? _domainEvents;
+    public Guid Id { get; set; }
+    public required string Name { get; set; }
+    public required string Unit { get; set; }
+    public decimal CurrentPrice { get; set; }
+    public string Currency { get; set; } = "IDR";
+    public decimal StockQuantity { get; set; }
+    public decimal MinimumStock { get; set; }
+    public int? CategoryId { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? UpdatedAt { get; set; }
+    
+    // Navigation property
+    public Category? Category { get; set; }
+}
 
-    /// <summary>
-    /// Unique identifier for the entity.
-    /// Using int for simplicity — can change to Guid if needed.
-    /// </summary>
-    public virtual int Id { get; protected set; }
-
-    /// <summary>
-    /// Domain events raised by this entity.
-    /// Will be dispatched after the entity is persisted.
-    /// </summary>
-    public IReadOnlyCollection<INotification>? DomainEvents => _domainEvents?.AsReadOnly();
-
-    /// <summary>
-    /// Adds a domain event to be dispatched after persistence.
-    /// </summary>
-    public void AddDomainEvent(INotification eventItem)
-    {
-        _domainEvents ??= [];
-        _domainEvents.Add(eventItem);
-    }
-
-    /// <summary>
-    /// Removes a domain event.
-    /// </summary>
-    public void RemoveDomainEvent(INotification eventItem)
-    {
-        _domainEvents?.Remove(eventItem);
-    }
-
-    /// <summary>
-    /// Clears all domain events. Called after events are dispatched.
-    /// </summary>
-    public void ClearDomainEvents()
-    {
-        _domainEvents?.Clear();
-    }
-
-    /// <summary>
-    /// Returns true if the entity has not been persisted yet.
-    /// </summary>
-    public bool IsTransient() => Id == default;
-
-    /// <summary>
-    /// Equality is based on ID, not reference.
-    /// Two entities with the same ID are considered equal.
-    /// </summary>
-    public override bool Equals(object? obj)
-    {
-        if (obj is not Entity entity)
-            return false;
-
-        if (ReferenceEquals(this, obj))
-            return true;
-
-        if (GetType() != entity.GetType())
-            return false;
-
-        if (entity.IsTransient() || IsTransient())
-            return false;
-
-        return entity.Id == Id;
-    }
-
-    /// <summary>
-    /// Hash code is based on ID for consistency with Equals.
-    /// </summary>
-    public override int GetHashCode()
-    {
-        if (IsTransient())
-            return base.GetHashCode();
-
-        _requestedHashCode ??= Id.GetHashCode() ^ 31;
-        return _requestedHashCode.Value;
-    }
-
-    public static bool operator ==(Entity? left, Entity? right)
-    {
-        if (left is null)
-            return right is null;
-        return left.Equals(right);
-    }
-
-    public static bool operator !=(Entity? left, Entity? right)
-    {
-        return !(left == right);
-    }
+/// <summary>
+/// Category for grouping ingredients.
+/// </summary>
+public class Category
+{
+    public int Id { get; set; }
+    public required string Name { get; set; }
+    public ICollection<Ingredient> Ingredients { get; set; } = [];
 }
 ```
 
-### .NET 10 Modern Features Used:
+### .NET 10 Features Used:
 
 | Feature | Usage |
 |---------|-------|
-| **File-scoped namespace** | `namespace Nastart.Domain.Common;` |
-| **Collection expressions** | `_domainEvents ??= [];` |
-| **Nullable reference types** | `List<INotification>?` |
-| **Pattern matching** | `obj is not Entity entity` |
-| **Target-typed new** | Implicit type on `[]` |
+| **File-scoped namespace** | `namespace Nastart.Api.Features.Ingredients;` |
+| **Required members** | `required string Name` ensures initialization |
+| **Collection expressions** | `Ingredients { get; set; } = [];` |
+| **Nullable reference types** | `Category? Category` |
 
-### Install MediatR Package:
+### Install EF Core Packages:
 
 ```powershell
-cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Domain
-dotnet add package MediatR.Contracts
-```
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
 
-> ⚠️ **Note**: We only add `MediatR.Contracts` to the Domain layer (just the interfaces). The full `MediatR` package goes in the Application layer.
+# EF Core with PostgreSQL provider
+dotnet add package Microsoft.EntityFrameworkCore
+dotnet add package Npgsql.EntityFrameworkCore.PostgreSQL
+dotnet add package Microsoft.EntityFrameworkCore.Design
+```
 
 ### Your Task (Day 2):
 
-1. Create `Entity.cs` in `Common/` folder
-2. Install `MediatR.Contracts` package
+1. Create `Ingredient.cs` in `Features/Ingredients/` folder
+2. Install EF Core packages
 3. Verify build: `dotnet build`
 
 ---
 
-# Day 3: Value Objects
+# Day 3: C# Records for Feature Data
 
 ## 🧒 Explain Like I'm 5
 
-Think about money. A $10 bill in your pocket is the SAME as a $10 bill in my pocket — they're both worth $10! We don't care WHICH specific bill it is.
+When you order at a restaurant, you give the waiter a list: "I want pizza with extra cheese." That list is like a **request** — it tells the kitchen exactly what to make.
 
-**Value Objects** are things where we only care about the VALUE, not which specific one:
-- `$10.00` equals `$10.00` (same amount = same value)
-- `500 grams` equals `500 grams`
-- `"Indonesian Rupiah"` equals `"Indonesian Rupiah"`
+When they bring your food, they also bring the receipt — that's like a **response**, telling you what you got.
+
+In our app, we use special "lists" called **records** for:
+- **Requests** — What the user wants to do
+- **Responses** — What we send back
+- **Data containers** — Like money amounts or quantities
 
 ## 🔧 Engineer Language
 
-A **Value Object** is:
-1. **Defined by its attributes** — No separate identity
-2. **Immutable** — Cannot be changed after creation
-3. **Equality by value** — Two value objects are equal if all properties match
+**C# Records** are perfect for DTOs (Data Transfer Objects) in feature slices:
+- **Immutable by default** — Data set at construction, never changed
+- **Built-in equality** — Two records with same values are equal
+- **Concise syntax** — Less boilerplate code
+- **With-expressions** — Easy to create modified copies
 
-> 📖 **Microsoft Docs**: *"A value object is an object with no conceptual identity that describes a domain aspect. These are objects that you instantiate to represent design elements that only concern you temporarily. You care about what they are, not who they are."*
+> 📖 **Microsoft Docs**: *"Records provide built-in functionality for encapsulating data. You use record types when you want value equality and minimal mutability."*
 >
-> — [Design a microservice domain model](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model)
+> — [Records (C# reference)](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record)
 
-### Two Approaches in .NET 10:
-
-| Approach | Best For | Pros | Cons |
-|----------|----------|------|------|
-| **C# record** | Simple value objects | Built-in equality, immutable, concise | Less control |
-| **ValueObject base class** | Complex value objects | Full control, validation | More code |
-
-### Approach 1: Using C# Records (Recommended for Simple Cases)
+### Request and Response Records:
 
 ```csharp
-// Simple value objects as records — .NET 10 idiomatic approach
-namespace Nastart.Domain.Inventory.ValueObjects;
+using MediatR;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Ingredients;
+
+// ── Commands (Write Operations) ──
+
+/// <summary>
+/// Command to create a new ingredient.
+/// Implements IRequest for MediatR handling.
+/// </summary>
+public sealed record CreateIngredientCommand(
+    string Name,
+    string Unit,
+    decimal InitialPrice,
+    decimal MinimumStock,
+    int? CategoryId = null
+) : IRequest<Result<IngredientResponse>>;
+
+/// <summary>
+/// Command to update an ingredient's price.
+/// </summary>
+public sealed record UpdateIngredientPriceCommand(
+    Guid IngredientId,
+    decimal NewPrice
+) : IRequest<Result<IngredientResponse>>;
+
+
+// ── Queries (Read Operations) ──
+
+/// <summary>
+/// Query to get an ingredient by ID.
+/// </summary>
+public sealed record GetIngredientQuery(
+    Guid Id
+) : IRequest<Result<IngredientResponse>>;
+
+/// <summary>
+/// Query to get all ingredients with optional filtering.
+/// </summary>
+public sealed record GetIngredientsQuery(
+    string? SearchTerm = null,
+    int? CategoryId = null,
+    bool? LowStockOnly = null
+) : IRequest<Result<IReadOnlyList<IngredientResponse>>>;
+
+
+// ── Responses (DTOs) ──
+
+/// <summary>
+/// Response DTO for ingredient data.
+/// </summary>
+public sealed record IngredientResponse(
+    Guid Id,
+    string Name,
+    string Unit,
+    decimal CurrentPrice,
+    string Currency,
+    decimal StockQuantity,
+    decimal MinimumStock,
+    bool IsLowStock,
+    int? CategoryId,
+    string? CategoryName
+);
+```
+
+### Data Records (Value-Like Objects):
+
+Create `src/Nastart.Api/Shared/Models/Money.cs`:
+
+```csharp
+namespace Nastart.Api.Shared.Models;
 
 /// <summary>
 /// Represents a monetary amount with currency.
-/// Immutable value object using C# record.
+/// Immutable data container using C# record.
 /// </summary>
 public sealed record Money(decimal Amount, string Currency = "IDR")
 {
@@ -317,181 +329,19 @@ public sealed record Money(decimal Amount, string Currency = "IDR")
 }
 
 /// <summary>
-/// Represents a unit of measurement with conversion capabilities.
-/// Supports automatic conversion between compatible units.
-/// </summary>
-/// <remarks>
-/// UX Enhancement: Auto-converts between compatible units (g→kg, ml→L)
-/// to prevent calculation errors when receipt uses different units than DB.
-/// </remarks>
-public sealed record Unit(string Name)
-{
-    // Standard units
-    public static Unit Kilogram => new("kg");
-    public static Unit Gram => new("g");
-    public static Unit Liter => new("L");
-    public static Unit Milliliter => new("mL");
-    public static Unit Pieces => new("pcs");
-    public static Unit Ons => new("ons"); // Indonesian: 100g
-
-    /// <summary>
-    /// Conversion table for compatible units.
-    /// Key: (FromUnit, ToUnit), Value: multiplication factor
-    /// </summary>
-    private static readonly Dictionary<(string, string), decimal> ConversionTable = new()
-    {
-        // Mass conversions
-        [("g", "kg")] = 0.001m,
-        [("kg", "g")] = 1000m,
-        [("ons", "g")] = 100m,
-        [("g", "ons")] = 0.01m,
-        [("ons", "kg")] = 0.1m,
-        [("kg", "ons")] = 10m,
-        
-        // Volume conversions
-        [("mL", "L")] = 0.001m,
-        [("L", "mL")] = 1000m,
-        [("cc", "mL")] = 1m,
-        [("mL", "cc")] = 1m,
-    };
-
-    /// <summary>
-    /// Unit compatibility groups - units that can be converted to each other.
-    /// </summary>
-    private static readonly Dictionary<string, string[]> CompatibilityGroups = new()
-    {
-        ["mass"] = ["kg", "g", "ons"],
-        ["volume"] = ["L", "mL", "cc"],
-        ["count"] = ["pcs", "butir", "buah", "lembar"],
-    };
-
-    /// <summary>
-    /// Checks if this unit can be converted to another unit.
-    /// </summary>
-    public bool IsCompatibleWith(Unit other)
-    {
-        if (Name == other.Name) return true;
-        
-        foreach (var group in CompatibilityGroups.Values)
-        {
-            if (group.Contains(Name, StringComparer.OrdinalIgnoreCase) &&
-                group.Contains(other.Name, StringComparer.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// Gets the conversion factor from this unit to another.
-    /// Returns null if units are not compatible.
-    /// </summary>
-    public decimal? GetConversionFactor(Unit targetUnit)
-    {
-        if (Name == targetUnit.Name) return 1m;
-        
-        var key = (Name.ToLowerInvariant(), targetUnit.Name.ToLowerInvariant());
-        return ConversionTable.TryGetValue(key, out var factor) ? factor : null;
-    }
-
-    /// <summary>
-    /// Normalizes Indonesian unit abbreviations to standard form.
-    /// </summary>
-    public static Unit Normalize(string unitText)
-    {
-        var normalized = unitText.Trim().ToLowerInvariant() switch
-        {
-            "kilogram" or "kilo" => "kg",
-            "gram" or "gr" or "grm" => "g",
-            "liter" or "ltr" or "lt" => "L",
-            "mililiter" or "mil" => "mL",
-            "pieces" or "pcs" or "pc" or "bh" or "buah" => "pcs",
-            "butir" or "btr" => "pcs",  // eggs
-            "lembar" or "lbr" => "pcs", // sheets
-            "ons" or "oz" => "ons",
-            var s => s
-        };
-        return new Unit(normalized);
-    }
-
-    public override string ToString() => Name;
-}
-
-/// <summary>
 /// Represents a quantity with a unit of measurement.
-/// Supports automatic conversion between compatible units.
 /// </summary>
-public sealed record Quantity(decimal Value, Unit Unit)
+public sealed record Quantity(decimal Value, string Unit)
 {
-    public static Quantity Zero(Unit unit) => new(0, unit);
-    public static Quantity Kilograms(decimal value) => new(value, Unit.Kilogram);
-    public static Quantity Grams(decimal value) => new(value, Unit.Gram);
-    public static Quantity Liters(decimal value) => new(value, Unit.Liter);
-    public static Quantity Milliliters(decimal value) => new(value, Unit.Milliliter);
-    public static Quantity Pieces(decimal value) => new(value, Unit.Pieces);
-
-    /// <summary>
-    /// Adds another quantity, auto-converting if units are compatible.
-    /// </summary>
-    /// <exception cref="InvalidOperationException">If units are incompatible.</exception>
-    public Quantity Add(Quantity other)
-    {
-        if (Unit.Name == other.Unit.Name)
-            return this with { Value = Value + other.Value };
-        
-        // Try to convert other to this unit
-        var factor = other.Unit.GetConversionFactor(Unit);
-        if (factor.HasValue)
-        {
-            var convertedValue = other.Value * factor.Value;
-            return this with { Value = Value + convertedValue };
-        }
-        
-        throw new InvalidOperationException(
-            $"Cannot add {other.Unit.Name} to {Unit.Name}. Units are not compatible.");
-    }
-
-    /// <summary>
-    /// Subtracts another quantity, auto-converting if units are compatible.
-    /// </summary>
-    public Quantity Subtract(Quantity other)
-    {
-        if (Unit.Name == other.Unit.Name)
-            return this with { Value = Value - other.Value };
-        
-        var factor = other.Unit.GetConversionFactor(Unit);
-        if (factor.HasValue)
-        {
-            var convertedValue = other.Value * factor.Value;
-            return this with { Value = Value - convertedValue };
-        }
-        
-        throw new InvalidOperationException(
-            $"Cannot subtract {other.Unit.Name} from {Unit.Name}. Units are not compatible.");
-    }
-
-    /// <summary>
-    /// Converts this quantity to a target unit.
-    /// </summary>
-    public Quantity ConvertTo(Unit targetUnit)
-    {
-        if (Unit.Name == targetUnit.Name)
-            return this;
-        
-        var factor = Unit.GetConversionFactor(targetUnit);
-        if (!factor.HasValue)
-        {
-            throw new InvalidOperationException(
-                $"Cannot convert {Unit.Name} to {targetUnit.Name}.");
-        }
-        
-        return new Quantity(Value * factor.Value, targetUnit);
-    }
+    public static Quantity Zero(string unit) => new(0, unit);
+    public static Quantity Kilograms(decimal value) => new(value, "kg");
+    public static Quantity Grams(decimal value) => new(value, "g");
+    public static Quantity Liters(decimal value) => new(value, "L");
+    public static Quantity Pieces(decimal value) => new(value, "pcs");
 
     public bool IsEmpty => Value <= 0;
 
-    public override string ToString() => $"{Value:N2} {Unit.Name}";
+    public override string ToString() => $"{Value:N2} {Unit}";
 }
 
 /// <summary>
@@ -510,156 +360,86 @@ public sealed record Percentage(decimal Value)
 }
 ```
 
-### Approach 2: ValueObject Base Class (For Complex Cases)
+### The Result Pattern:
 
-Create `src/Nastart.Domain/Common/ValueObject.cs`:
+Create `src/Nastart.Api/Shared/Models/Result.cs`:
 
 ```csharp
-namespace Nastart.Domain.Common;
+namespace Nastart.Api.Shared.Models;
 
 /// <summary>
-/// Base class for value objects that need complex equality logic.
-/// Use C# records for simple value objects instead.
+/// Represents the result of an operation that can succeed or fail.
+/// Use instead of exceptions for expected failures.
 /// </summary>
 /// <remarks>
-/// Based on Microsoft's eShopOnContainers implementation.
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/implement-value-objects
+/// This pattern is common in Minimal APIs to avoid throwing exceptions
+/// for validation errors or not-found scenarios.
+/// See: https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/responses
 /// </remarks>
-public abstract class ValueObject
+public class Result<T>
 {
+    public bool IsSuccess { get; }
+    public bool IsFailure => !IsSuccess;
+    public T? Value { get; }
+    public Error? Error { get; }
+
+    private Result(T value)
+    {
+        IsSuccess = true;
+        Value = value;
+        Error = null;
+    }
+
+    private Result(Error error)
+    {
+        IsSuccess = false;
+        Value = default;
+        Error = error;
+    }
+
+    public static Result<T> Success(T value) => new(value);
+    public static Result<T> Failure(Error error) => new(error);
+    
+    public static implicit operator Result<T>(T value) => Success(value);
+    public static implicit operator Result<T>(Error error) => Failure(error);
+
     /// <summary>
-    /// Returns the components used for equality comparison.
-    /// Override in derived classes to specify which properties to compare.
+    /// Pattern match on success or failure.
     /// </summary>
-    protected abstract IEnumerable<object?> GetEqualityComponents();
+    public TResult Match<TResult>(
+        Func<T, TResult> onSuccess,
+        Func<Error, TResult> onFailure)
+        => IsSuccess ? onSuccess(Value!) : onFailure(Error!);
+}
 
-    public override bool Equals(object? obj)
-    {
-        if (obj is null || obj.GetType() != GetType())
-            return false;
-
-        var other = (ValueObject)obj;
-        return GetEqualityComponents().SequenceEqual(other.GetEqualityComponents());
-    }
-
-    public override int GetHashCode()
-    {
-        return GetEqualityComponents()
-            .Select(x => x?.GetHashCode() ?? 0)
-            .Aggregate((x, y) => x ^ y);
-    }
-
-    public static bool operator ==(ValueObject? left, ValueObject? right)
-    {
-        if (left is null)
-            return right is null;
-        return left.Equals(right);
-    }
-
-    public static bool operator !=(ValueObject? left, ValueObject? right)
-    {
-        return !(left == right);
-    }
+/// <summary>
+/// Represents an error with a code and message.
+/// </summary>
+public sealed record Error(string Code, string Message)
+{
+    public static Error NotFound(string code, string message) => new(code, message);
+    public static Error Validation(string code, string message) => new(code, message);
+    public static Error Conflict(string code, string message) => new(code, message);
 }
 ```
 
-### Example Using ValueObject Base Class:
+### Install MediatR Package:
 
-```csharp
-using Nastart.Domain.Common;
-
-namespace Nastart.Domain.Inventory.ValueObjects;
-
-/// <summary>
-/// Represents a physical address.
-/// Uses ValueObject base class for complex equality.
-/// </summary>
-public class Address : ValueObject
-{
-    public string Street { get; private set; }
-    public string City { get; private set; }
-    public string Province { get; private set; }
-    public string PostalCode { get; private set; }
-
-    // Private constructor for EF Core
-    private Address() 
-    { 
-        Street = string.Empty;
-        City = string.Empty;
-        Province = string.Empty;
-        PostalCode = string.Empty;
-    }
-
-    public Address(string street, string city, string province, string postalCode)
-    {
-        Street = street ?? throw new ArgumentNullException(nameof(street));
-        City = city ?? throw new ArgumentNullException(nameof(city));
-        Province = province ?? throw new ArgumentNullException(nameof(province));
-        PostalCode = postalCode ?? throw new ArgumentNullException(nameof(postalCode));
-    }
-
-    protected override IEnumerable<object?> GetEqualityComponents()
-    {
-        yield return Street;
-        yield return City;
-        yield return Province;
-        yield return PostalCode;
-    }
-
-    public override string ToString() => $"{Street}, {City}, {Province} {PostalCode}";
-}
-```
-
-### Strongly-Typed IDs (Modern Pattern):
-
-```csharp
-namespace Nastart.Domain.Inventory.ValueObjects;
-
-/// <summary>
-/// Strongly-typed ID for Ingredient entity.
-/// Prevents mixing up IDs from different entities.
-/// </summary>
-public readonly record struct IngredientId(Guid Value)
-{
-    public static IngredientId New() => new(Guid.NewGuid());
-    public static IngredientId Empty => new(Guid.Empty);
-    
-    public override string ToString() => Value.ToString();
-}
-
-/// <summary>
-/// Strongly-typed ID for Recipe entity.
-/// </summary>
-public readonly record struct RecipeId(Guid Value)
-{
-    public static RecipeId New() => new(Guid.NewGuid());
-    public static RecipeId Empty => new(Guid.Empty);
-    
-    public override string ToString() => Value.ToString();
-}
-
-/// <summary>
-/// Strongly-typed ID for Purchase entity.
-/// </summary>
-public readonly record struct PurchaseId(Guid Value)
-{
-    public static PurchaseId New() => new(Guid.NewGuid());
-    public static PurchaseId Empty => new(Guid.Empty);
-    
-    public override string ToString() => Value.ToString();
-}
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
+dotnet add package MediatR
 ```
 
 ### Your Task (Day 3):
 
-1. Create `ValueObject.cs` in `Common/` folder
-2. Create `Money.cs`, `Quantity.cs`, `Percentage.cs` in `Inventory/ValueObjects/`
-3. Create `IngredientId.cs`, `RecipeId.cs`, `PurchaseId.cs` for strongly-typed IDs
+1. Create request/response records in feature folder
+2. Create `Money.cs`, `Quantity.cs`, `Result.cs` in `Shared/Models/`
+3. Install `MediatR` package
 4. Verify build: `dotnet build`
 
 ---
 
-# Day 4: Domain Events
+# Day 4: MediatR Notifications for Side Effects
 
 ## 🧒 Explain Like I'm 5
 
@@ -669,567 +449,599 @@ Imagine you're at a birthday party. When the cake arrives, someone SHOUTS:
 
 Everyone hears it! Some people come to take photos, some get plates ready, some start singing. They all REACT to the announcement.
 
-**Domain Events** are those announcements:
-- `PriceChangedEvent` — "The flour price changed!"
-- `LowStockEvent` — "We're running low on sugar!"
-- `MarginBelowThresholdEvent` — "Warning! Cookies profit is too low!"
+**MediatR Notifications** are those announcements:
+- `PriceChangedNotification` — "The flour price changed!"
+- `LowStockNotification` — "We're running low on sugar!"
+- `MarginBelowThresholdNotification` — "Warning! Cookies profit is too low!"
 
 Different parts of the app HEAR these announcements and react.
 
 ## 🔧 Engineer Language
 
-A **Domain Event** is:
-1. **Something that happened** — Past tense naming (`OrderPlaced`, not `PlaceOrder`)
-2. **Immutable** — Cannot be changed after creation
-3. **Published after state change** — Raised when aggregate state changes
-4. **Handled by event handlers** — Other parts of system react to it
+A **MediatR Notification** triggers side effects after a feature handler completes its main work. Multiple handlers can respond to the same notification.
 
-> 📖 **Microsoft Docs**: *"Use domain events to explicitly implement side effects of changes within your domain. In other words, and using DDD terminology, use domain events to explicitly implement side effects across multiple aggregates."*
+In Vertical Slice Architecture:
+1. **Feature handler** does the main work (e.g., update price)
+2. **Publishes notification** to signal what happened
+3. **Notification handlers** react (e.g., recalculate recipes, send alerts)
+
+> 📖 **Microsoft Docs**: *"MediatR is a library that simplifies CQRS patterns and decouples request processing. It supports notifications where multiple handlers can respond to a single event."*
 >
-> — [Domain events: Design and implementation](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation)
+> — [Use MediatR to reduce coupling](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-application-layer-implementation-web-api#use-mediatr-to-reduce-coupling-between-command-handlers)
 
-### Domain Event Interface:
+### Notification Records:
 
-Create `src/Nastart.Domain/Common/IDomainEvent.cs`:
+Create `src/Nastart.Api/Features/Ingredients/IngredientNotifications.cs`:
 
 ```csharp
 using MediatR;
 
-namespace Nastart.Domain.Common;
+namespace Nastart.Api.Features.Ingredients;
 
 /// <summary>
-/// Marker interface for domain events.
-/// Implements INotification for MediatR dispatching.
-/// </summary>
-/// <remarks>
-/// Domain events are dispatched after the aggregate is persisted,
-/// ensuring eventual consistency.
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation
-/// </remarks>
-public interface IDomainEvent : INotification
-{
-    /// <summary>
-    /// When the event occurred.
-    /// </summary>
-    DateTime OccurredOn { get; }
-}
-```
-
-### Base Domain Event:
-
-```csharp
-namespace Nastart.Domain.Common;
-
-/// <summary>
-/// Base class for all domain events with common properties.
-/// </summary>
-public abstract record DomainEventBase : IDomainEvent
-{
-    public DateTime OccurredOn { get; } = DateTime.UtcNow;
-}
-```
-
-### Nastart Domain Events:
-
-Create `src/Nastart.Domain/Inventory/Events/PriceChangedEvent.cs`:
-
-```csharp
-using Nastart.Domain.Common;
-using Nastart.Domain.Inventory.ValueObjects;
-
-namespace Nastart.Domain.Inventory.Events;
-
-/// <summary>
-/// Raised when an ingredient's price changes.
+/// Published when an ingredient's price changes.
 /// Triggers recipe cost recalculation.
 /// </summary>
-public sealed record PriceChangedEvent(
-    IngredientId IngredientId,
+public sealed record PriceChangedNotification(
+    Guid IngredientId,
     string IngredientName,
-    Money OldPrice,
-    Money NewPrice,
-    decimal PercentageChange
-) : DomainEventBase
+    decimal OldPrice,
+    decimal NewPrice,
+    decimal PercentageChange,
+    DateTime OccurredAt
+) : INotification
 {
     /// <summary>
     /// Returns true if this is a significant price increase (>15%).
     /// </summary>
     public bool IsPriceSpike => PercentageChange > 15;
 }
-```
-
-Create `src/Nastart.Domain/Inventory/Events/PriceSpikeDetectedEvent.cs`:
-
-```csharp
-using Nastart.Domain.Common;
-using Nastart.Domain.Inventory.ValueObjects;
-
-namespace Nastart.Domain.Inventory.Events;
 
 /// <summary>
-/// Raised when a price spike is detected (>15% increase).
+/// Published when ingredient stock falls below minimum threshold.
+/// </summary>
+public sealed record LowStockNotification(
+    Guid IngredientId,
+    string IngredientName,
+    decimal CurrentStock,
+    decimal MinimumStock,
+    string Unit,
+    DateTime OccurredAt
+) : INotification;
+
+/// <summary>
+/// Published when a price spike is detected (>15% increase).
 /// Triggers alert creation and notification.
 /// </summary>
-public sealed record PriceSpikeDetectedEvent(
-    IngredientId IngredientId,
+public sealed record PriceSpikeNotification(
+    Guid IngredientId,
     string IngredientName,
-    Money OldPrice,
-    Money NewPrice,
-    decimal PercentageIncrease
-) : DomainEventBase;
+    decimal OldPrice,
+    decimal NewPrice,
+    decimal PercentageIncrease,
+    DateTime OccurredAt
+) : INotification;
 ```
 
-Create `src/Nastart.Domain/Inventory/Events/LowStockEvent.cs`:
+### Notification Handlers:
+
+Create `src/Nastart.Api/Features/Ingredients/NotificationHandlers/PriceChangedHandler.cs`:
 
 ```csharp
-using Nastart.Domain.Common;
-using Nastart.Domain.Inventory.ValueObjects;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
 
-namespace Nastart.Domain.Inventory.Events;
+namespace Nastart.Api.Features.Ingredients.NotificationHandlers;
 
 /// <summary>
-/// Raised when ingredient stock falls below minimum threshold.
+/// Handles PriceChangedNotification by recalculating affected recipe costs.
 /// </summary>
-public sealed record LowStockEvent(
-    IngredientId IngredientId,
-    string IngredientName,
-    Quantity CurrentStock,
-    Quantity MinimumStock
-) : DomainEventBase;
+public class RecalculateRecipeCostsHandler : INotificationHandler<PriceChangedNotification>
+{
+    private readonly NastartDbContext _db;
+    private readonly ILogger<RecalculateRecipeCostsHandler> _logger;
+
+    public RecalculateRecipeCostsHandler(
+        NastartDbContext db,
+        ILogger<RecalculateRecipeCostsHandler> logger)
+    {
+        _db = db;
+        _logger = logger;
+    }
+
+    public async Task Handle(PriceChangedNotification notification, CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Recalculating recipes affected by price change: {IngredientName} ({OldPrice} → {NewPrice})",
+            notification.IngredientName,
+            notification.OldPrice,
+            notification.NewPrice);
+
+        // Find recipes that use this ingredient and recalculate
+        // Implementation depends on your Recipe feature structure
+    }
+}
+
+/// <summary>
+/// Handles PriceSpikeNotification by creating an alert.
+/// </summary>
+public class CreatePriceSpikeAlertHandler : INotificationHandler<PriceSpikeNotification>
+{
+    private readonly NastartDbContext _db;
+    private readonly ILogger<CreatePriceSpikeAlertHandler> _logger;
+
+    public CreatePriceSpikeAlertHandler(
+        NastartDbContext db,
+        ILogger<CreatePriceSpikeAlertHandler> logger)
+    {
+        _db = db;
+        _logger = logger;
+    }
+
+    public async Task Handle(PriceSpikeNotification notification, CancellationToken cancellationToken)
+    {
+        _logger.LogWarning(
+            "Price spike detected: {IngredientName} increased by {Percentage:N1}%",
+            notification.IngredientName,
+            notification.PercentageIncrease);
+
+        // Create alert in database
+        // Implementation depends on your Alert feature structure
+    }
+}
 ```
 
-### How Events Flow:
+### How Notifications Flow in VSA:
 
 ```
-┌─────────────────┐     ┌────────────────┐     ┌─────────────────┐
-│  Ingredient     │     │  MediatR       │     │  Event Handlers │
-│  Aggregate      │────▶│  Dispatcher    │────▶│                 │
-│                 │     │                │     │ • UpdateRecipes │
-│ AddDomainEvent( │     │ Publish(event) │     │ • SendAlert     │
-│   PriceChanged) │     │                │     │ • LogHistory    │
-└─────────────────┘     └────────────────┘     └─────────────────┘
+┌─────────────────────────┐     ┌────────────────┐     ┌───────────────────────────┐
+│  UpdatePriceHandler     │     │  MediatR       │     │  Notification Handlers    │
+│  (Feature Slice)        │────▶│  Publish()     │────▶│                           │
+│                         │     │                │     │ • RecalculateRecipeCosts  │
+│ _mediator.Publish(      │     │                │     │ • CreatePriceSpikeAlert   │
+│   new PriceChanged...)  │     │                │     │ • SendTelegramNotification│
+└─────────────────────────┘     └────────────────┘     └───────────────────────────┘
 ```
 
 ### Your Task (Day 4):
 
-1. Create `IDomainEvent.cs` and `DomainEventBase.cs` in `Common/`
-2. Create `PriceChangedEvent.cs`, `PriceSpikeDetectedEvent.cs`, `LowStockEvent.cs`
+1. Create `IngredientNotifications.cs` with notification records
+2. Create notification handlers in `NotificationHandlers/` subfolder
 3. Verify build: `dotnet build`
 
 ---
 
-# Day 5: Aggregate Root Pattern
+# Day 5: The Feature Slice Pattern
 
 ## 🧒 Explain Like I'm 5
 
-Imagine a **treasure chest** full of gold coins and jewels:
-- The **chest** is the boss (aggregate root)
-- You can only ADD or REMOVE treasure through the chest
-- You can't reach in and secretly take a coin — the chest controls everything!
+When you order at a restaurant:
+1. You tell the waiter what you want (**Request**)
+2. The kitchen makes your food (**Handler**)
+3. The waiter brings your meal (**Response**)
+
+Each dish is a complete "slice" — from order to delivery!
 
 In our app:
-- `Ingredient` is a treasure chest
-- It controls its own price, stock, and history
-- Other parts of the app can't change things directly — they ASK the Ingredient to do it
+- **Request** = What the user wants (e.g., "Create an ingredient called Flour")
+- **Handler** = The code that does the work
+- **Response** = What we send back (e.g., the created ingredient's details)
 
 ## 🔧 Engineer Language
 
-An **Aggregate Root** is:
-1. **Entry point** — Only way to access child entities
-2. **Consistency guardian** — Ensures all invariants are satisfied
-3. **Transaction boundary** — One aggregate = one transaction
-4. **Event publisher** — Raises domain events for state changes
+A **Feature Slice** contains everything needed for one user action:
 
-> 📖 **Microsoft Docs**: *"The purpose of an aggregate root is to ensure the consistency of the aggregate; it should be the only entry point for updates to the aggregate through methods or operations in the aggregate root class."*
+| Component | Purpose | Example |
+|-----------|---------|---------|
+| **Request** | What the user wants | `CreateIngredientCommand` |
+| **Handler** | Processes the request | `CreateIngredientHandler` |
+| **Response** | Data returned | `IngredientResponse` |
+| **Endpoint** | HTTP route | `POST /api/ingredients` |
+| **Validator** | Input validation | `CreateIngredientValidator` |
+
+> 📖 **Microsoft Docs**: *"Route handlers are methods that execute when a request matches a specific route. Minimal APIs allow you to define route handlers as inline lambdas or as method groups."*
 >
-> — [Design a microservice domain model](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model#the-domain-entity-pattern)
+> — [Route handlers in Minimal APIs](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/route-handlers)
 
-### Aggregate Root Interface:
-
-Create `src/Nastart.Domain/Common/IAggregateRoot.cs`:
+### Anatomy of a Feature Slice:
 
 ```csharp
-namespace Nastart.Domain.Common;
+// CreateIngredient.cs — Everything for this feature in ONE file
 
-/// <summary>
-/// Marker interface to identify aggregate roots.
-/// Only aggregate roots should have repositories.
-/// </summary>
-/// <remarks>
-/// This is a marker interface — it has no methods.
-/// It's used to constrain the repository generic type.
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design
-/// </remarks>
-public interface IAggregateRoot
+using FluentValidation;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Ingredients;
+
+// ── Request ──
+public sealed record CreateIngredientCommand(
+    string Name,
+    string Unit,
+    decimal InitialPrice,
+    decimal MinimumStock,
+    int? CategoryId = null
+) : IRequest<Result<IngredientResponse>>;
+
+// ── Validator ──
+public sealed class CreateIngredientValidator : AbstractValidator<CreateIngredientCommand>
 {
-}
-```
-
-### Aggregate Root Base Class:
-
-Create `src/Nastart.Domain/Common/AggregateRoot.cs`:
-
-```csharp
-namespace Nastart.Domain.Common;
-
-/// <summary>
-/// Base class for aggregate roots.
-/// Combines Entity functionality with aggregate root marker.
-/// </summary>
-public abstract class AggregateRoot : Entity, IAggregateRoot
-{
-    /// <summary>
-    /// Version for optimistic concurrency.
-    /// Incremented on each modification.
-    /// </summary>
-    public int Version { get; protected set; }
-
-    /// <summary>
-    /// Increments version for optimistic concurrency control.
-    /// Call this in methods that modify state.
-    /// </summary>
-    protected void IncrementVersion()
+    public CreateIngredientValidator()
     {
-        Version++;
+        RuleFor(x => x.Name)
+            .NotEmpty().WithMessage("Name is required")
+            .MaximumLength(100).WithMessage("Name must be 100 characters or less");
+        
+        RuleFor(x => x.Unit)
+            .NotEmpty().WithMessage("Unit is required")
+            .MaximumLength(20).WithMessage("Unit must be 20 characters or less");
+        
+        RuleFor(x => x.InitialPrice)
+            .GreaterThanOrEqualTo(0).WithMessage("Price cannot be negative");
+        
+        RuleFor(x => x.MinimumStock)
+            .GreaterThanOrEqualTo(0).WithMessage("Minimum stock cannot be negative");
     }
 }
-```
 
-### Repository Interface:
-
-Create `src/Nastart.Domain/Common/IRepository.cs`:
-
-```csharp
-namespace Nastart.Domain.Common;
-
-/// <summary>
-/// Generic repository interface for aggregate roots.
-/// Constrained to IAggregateRoot to enforce DDD rules.
-/// </summary>
-/// <remarks>
-/// Repositories are only for aggregate roots!
-/// Child entities are accessed through their aggregate root.
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design
-/// </remarks>
-public interface IRepository<T> where T : IAggregateRoot
+// ── Handler ──
+public sealed class CreateIngredientHandler 
+    : IRequestHandler<CreateIngredientCommand, Result<IngredientResponse>>
 {
-    /// <summary>
-    /// Unit of work for transaction management.
-    /// </summary>
-    IUnitOfWork UnitOfWork { get; }
+    private readonly NastartDbContext _db;
+
+    public CreateIngredientHandler(NastartDbContext db)
+    {
+        _db = db;
+    }
+
+    public async Task<Result<IngredientResponse>> Handle(
+        CreateIngredientCommand request, 
+        CancellationToken cancellationToken)
+    {
+        // Check for duplicate name
+        var exists = await _db.Ingredients
+            .AnyAsync(i => i.Name == request.Name, cancellationToken);
+        
+        if (exists)
+        {
+            return Error.Conflict("DuplicateName", 
+                $"Ingredient '{request.Name}' already exists");
+        }
+
+        // Create entity
+        var ingredient = new Ingredient
+        {
+            Id = Guid.NewGuid(),
+            Name = request.Name,
+            Unit = request.Unit,
+            CurrentPrice = request.InitialPrice,
+            MinimumStock = request.MinimumStock,
+            CategoryId = request.CategoryId,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _db.Ingredients.Add(ingredient);
+        await _db.SaveChangesAsync(cancellationToken);
+
+        // Map to response
+        return new IngredientResponse(
+            Id: ingredient.Id,
+            Name: ingredient.Name,
+            Unit: ingredient.Unit,
+            CurrentPrice: ingredient.CurrentPrice,
+            Currency: ingredient.Currency,
+            StockQuantity: ingredient.StockQuantity,
+            MinimumStock: ingredient.MinimumStock,
+            IsLowStock: ingredient.StockQuantity < ingredient.MinimumStock,
+            CategoryId: ingredient.CategoryId,
+            CategoryName: null
+        );
+    }
 }
+
+// ── Endpoint (registered in IngredientsEndpoints.cs) ──
+// POST /api/ingredients → CreateIngredientCommand → CreateIngredientHandler
 ```
 
-### Unit of Work Interface:
+### Why One File Per Feature?
 
-Create `src/Nastart.Domain/Common/IUnitOfWork.cs`:
-
-```csharp
-namespace Nastart.Domain.Common;
-
-/// <summary>
-/// Unit of Work pattern for coordinating persistence.
-/// </summary>
-public interface IUnitOfWork : IDisposable
-{
-    /// <summary>
-    /// Saves all changes made in this unit of work.
-    /// Returns the number of entities written to the database.
-    /// </summary>
-    Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Saves changes and dispatches domain events.
-    /// </summary>
-    Task<bool> SaveEntitiesAsync(CancellationToken cancellationToken = default);
-}
-```
+| Benefit | Explanation |
+|---------|-------------|
+| **Locality** | All related code is visible at once |
+| **Easy deletion** | Remove feature = delete one file |
+| **Less navigation** | No jumping between folders |
+| **Clear boundaries** | Each file is a complete unit |
 
 ### Your Task (Day 5):
 
-1. Create `IAggregateRoot.cs`, `AggregateRoot.cs` in `Common/`
-2. Create `IRepository.cs`, `IUnitOfWork.cs` in `Common/`
-3. Verify build: `dotnet build`
+1. Understand the feature slice pattern
+2. Plan your features as self-contained slices
+3. Review MediatR request/handler documentation
 
 ---
 
-# Day 6: Building the Ingredient Aggregate
+# Day 6: Building the CreateIngredient Feature
 
 ## 🧒 Explain Like I'm 5
 
-Now let's build our first REAL treasure chest — the **Ingredient**!
+Now let's build our first complete feature — **Create Ingredient**!
 
-An Ingredient knows:
-- Its **name** (like "Flour" or "Sugar")
-- Its **price** (how much it costs per kg)
-- Its **stock** (how much we have)
-- When the price **changed** (so we can track it)
-
-And it can:
-- **Update its price** (and tell everyone the price changed!)
-- **Check if stock is low** (and warn us!)
-- **Calculate if there's a price spike** (and alert us!)
+When someone wants to add a new ingredient:
+1. They send the ingredient details (name, unit, price)
+2. We check if it's valid (no blank names!)
+3. We save it to the database
+4. We send back the saved ingredient
 
 ## 🔧 Engineer Language
 
-The `Ingredient` aggregate is the central entity of the Inventory bounded context. It encapsulates:
-- Price management with spike detection
-- Stock tracking with low-stock alerts
-- Domain event publishing
+Let's build a complete vertical slice with:
+- Minimal API endpoint
+- MediatR command and handler
+- FluentValidation
+- EF Core persistence
 
-### The Ingredient Aggregate:
+### Install FluentValidation:
 
-Create `src/Nastart.Domain/Inventory/Aggregates/Ingredient.cs`:
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
+dotnet add package FluentValidation
+dotnet add package FluentValidation.DependencyInjectionExtensions
+```
+
+### The Complete CreateIngredient Feature:
+
+Create `src/Nastart.Api/Features/Ingredients/CreateIngredient.cs`:
 
 ```csharp
-using Nastart.Domain.Common;
-using Nastart.Domain.Inventory.Events;
-using Nastart.Domain.Inventory.ValueObjects;
+using FluentValidation;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
 
-namespace Nastart.Domain.Inventory.Aggregates;
+namespace Nastart.Api.Features.Ingredients;
 
+// ══════════════════════════════════════════════════════════════
+// CREATE INGREDIENT FEATURE SLICE
+// Everything needed to create an ingredient in one file
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
 /// <summary>
-/// Aggregate root representing an ingredient tracked in inventory.
+/// Command to create a new ingredient.
 /// </summary>
-/// <remarks>
-/// Following DDD principles:
-/// - All modifications go through methods (not property setters)
-/// - Business rules are encapsulated in the aggregate
-/// - Domain events are raised for significant state changes
-/// 
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model
-/// </remarks>
-public class Ingredient : AggregateRoot
+public sealed record CreateIngredientCommand(
+    string Name,
+    string Unit,
+    decimal InitialPrice,
+    decimal MinimumStock,
+    int? CategoryId = null
+) : IRequest<Result<IngredientResponse>>;
+
+// ── Response ──
+/// <summary>
+/// Response DTO for ingredient operations.
+/// </summary>
+public sealed record IngredientResponse(
+    Guid Id,
+    string Name,
+    string Unit,
+    decimal CurrentPrice,
+    string Currency,
+    decimal StockQuantity,
+    decimal MinimumStock,
+    bool IsLowStock,
+    int? CategoryId,
+    string? CategoryName
+);
+
+// ── Validator ──
+/// <summary>
+/// Validates CreateIngredientCommand input.
+/// </summary>
+public sealed class CreateIngredientValidator : AbstractValidator<CreateIngredientCommand>
 {
-    // Constants for business rules
-    private const decimal PriceSpikeThreshold = 0.15m; // 15%
-    
-    // Private fields for encapsulation (EF Core can access these)
-    private string _name = string.Empty;
-    private string _unit = string.Empty;
-    private decimal _currentPriceAmount;
-    private string _currentPriceCurrency = "IDR";
-    private decimal _stockQuantity;
-    private decimal _minimumStock;
-    private int? _categoryId;
-
-    // Protected constructor for EF Core
-    protected Ingredient() { }
-
-    /// <summary>
-    /// Creates a new Ingredient with initial values.
-    /// </summary>
-    public Ingredient(
-        string name,
-        string unit,
-        Money initialPrice,
-        Quantity minimumStock,
-        int? categoryId = null)
+    public CreateIngredientValidator()
     {
-        // Validation
-        if (string.IsNullOrWhiteSpace(name))
-            throw new ArgumentException("Ingredient name is required", nameof(name));
-        if (string.IsNullOrWhiteSpace(unit))
-            throw new ArgumentException("Unit is required", nameof(unit));
-        if (initialPrice.Amount < 0)
-            throw new ArgumentException("Price cannot be negative", nameof(initialPrice));
-
-        _name = name;
-        _unit = unit;
-        _currentPriceAmount = initialPrice.Amount;
-        _currentPriceCurrency = initialPrice.Currency;
-        _stockQuantity = 0;
-        _minimumStock = minimumStock.Value;
-        _categoryId = categoryId;
+        RuleFor(x => x.Name)
+            .NotEmpty().WithMessage("Ingredient name is required")
+            .MaximumLength(100).WithMessage("Name must be 100 characters or less");
         
-        IncrementVersion();
+        RuleFor(x => x.Unit)
+            .NotEmpty().WithMessage("Unit is required")
+            .MaximumLength(20).WithMessage("Unit must be 20 characters or less");
+        
+        RuleFor(x => x.InitialPrice)
+            .GreaterThanOrEqualTo(0).WithMessage("Price cannot be negative");
+        
+        RuleFor(x => x.MinimumStock)
+            .GreaterThanOrEqualTo(0).WithMessage("Minimum stock cannot be negative");
+    }
+}
+
+// ── Handler ──
+/// <summary>
+/// Handles CreateIngredientCommand by creating and persisting the ingredient.
+/// </summary>
+public sealed class CreateIngredientHandler 
+    : IRequestHandler<CreateIngredientCommand, Result<IngredientResponse>>
+{
+    private readonly NastartDbContext _db;
+    private readonly ILogger<CreateIngredientHandler> _logger;
+
+    public CreateIngredientHandler(NastartDbContext db, ILogger<CreateIngredientHandler> logger)
+    {
+        _db = db;
+        _logger = logger;
     }
 
-    // Public read-only properties
-    public string Name => _name;
-    public string Unit => _unit;
-    public Money CurrentPrice => new(_currentPriceAmount, _currentPriceCurrency);
-    public Quantity Stock => new(_stockQuantity, _unit);
-    public Quantity MinimumStock => new(_minimumStock, _unit);
-    public int? CategoryId => _categoryId;
-
-    /// <summary>
-    /// Returns true if current stock is below minimum threshold.
-    /// </summary>
-    public bool IsLowStock => _stockQuantity < _minimumStock;
-
-    /// <summary>
-    /// Updates the ingredient's price from a new purchase.
-    /// Detects price spikes and raises appropriate events.
-    /// </summary>
-    public void UpdatePrice(Money newPrice)
+    public async Task<Result<IngredientResponse>> Handle(
+        CreateIngredientCommand request, 
+        CancellationToken cancellationToken)
     {
-        if (newPrice.Amount < 0)
-            throw new ArgumentException("Price cannot be negative", nameof(newPrice));
+        _logger.LogInformation("Creating ingredient: {Name}", request.Name);
 
-        var oldPrice = CurrentPrice;
+        // Check for duplicate name
+        var exists = await _db.Ingredients
+            .AnyAsync(i => i.Name.ToLower() == request.Name.ToLower(), cancellationToken);
         
-        // Skip if price hasn't changed
-        if (oldPrice.Amount == newPrice.Amount && oldPrice.Currency == newPrice.Currency)
-            return;
-
-        // Calculate percentage change
-        decimal percentageChange = 0;
-        if (oldPrice.Amount > 0)
+        if (exists)
         {
-            percentageChange = ((newPrice.Amount - oldPrice.Amount) / oldPrice.Amount) * 100;
+            _logger.LogWarning("Duplicate ingredient name: {Name}", request.Name);
+            return Error.Conflict("DuplicateName", 
+                $"Ingredient '{request.Name}' already exists");
         }
 
-        // Update the price
-        _currentPriceAmount = newPrice.Amount;
-        _currentPriceCurrency = newPrice.Currency;
-        IncrementVersion();
-
-        // Raise PriceChanged event
-        AddDomainEvent(new PriceChangedEvent(
-            IngredientId: new IngredientId(Guid.Empty), // Will be set after persistence
-            IngredientName: _name,
-            OldPrice: oldPrice,
-            NewPrice: newPrice,
-            PercentageChange: percentageChange
-        ));
-
-        // Check for price spike (>15% increase)
-        if (percentageChange > PriceSpikeThreshold * 100)
+        // Validate category exists if provided
+        if (request.CategoryId.HasValue)
         {
-            AddDomainEvent(new PriceSpikeDetectedEvent(
-                IngredientId: new IngredientId(Guid.Empty),
-                IngredientName: _name,
-                OldPrice: oldPrice,
-                NewPrice: newPrice,
-                PercentageIncrease: percentageChange
-            ));
+            var categoryExists = await _db.Categories
+                .AnyAsync(c => c.Id == request.CategoryId.Value, cancellationToken);
+            
+            if (!categoryExists)
+            {
+                return Error.NotFound("CategoryNotFound", 
+                    $"Category with ID {request.CategoryId} not found");
+            }
         }
-    }
 
-    /// <summary>
-    /// Adds stock to the ingredient (from a purchase).
-    /// </summary>
-    public void AddStock(Quantity quantity)
-    {
-        if (quantity.Unit != _unit)
-            throw new InvalidOperationException($"Cannot add {quantity.Unit} to ingredient measured in {_unit}");
-        
-        if (quantity.Value < 0)
-            throw new ArgumentException("Quantity cannot be negative", nameof(quantity));
-
-        _stockQuantity += quantity.Value;
-        IncrementVersion();
-    }
-
-    /// <summary>
-    /// Removes stock from the ingredient (used in recipe production).
-    /// </summary>
-    public void RemoveStock(Quantity quantity)
-    {
-        if (quantity.Unit != _unit)
-            throw new InvalidOperationException($"Cannot remove {quantity.Unit} from ingredient measured in {_unit}");
-        
-        if (quantity.Value < 0)
-            throw new ArgumentException("Quantity cannot be negative", nameof(quantity));
-
-        if (_stockQuantity < quantity.Value)
-            throw new InvalidOperationException($"Insufficient stock. Available: {_stockQuantity} {_unit}, Requested: {quantity.Value} {_unit}");
-
-        _stockQuantity -= quantity.Value;
-        IncrementVersion();
-
-        // Check if stock is now low
-        if (IsLowStock)
+        // Create entity
+        var ingredient = new Ingredient
         {
-            AddDomainEvent(new LowStockEvent(
-                IngredientId: new IngredientId(Guid.Empty),
-                IngredientName: _name,
-                CurrentStock: Stock,
-                MinimumStock: MinimumStock
-            ));
-        }
-    }
+            Id = Guid.NewGuid(),
+            Name = request.Name.Trim(),
+            Unit = request.Unit.Trim(),
+            CurrentPrice = request.InitialPrice,
+            Currency = "IDR",
+            StockQuantity = 0,
+            MinimumStock = request.MinimumStock,
+            CategoryId = request.CategoryId,
+            CreatedAt = DateTime.UtcNow
+        };
 
-    /// <summary>
-    /// Updates the minimum stock threshold.
-    /// </summary>
-    public void SetMinimumStock(Quantity minimumStock)
-    {
-        if (minimumStock.Unit != _unit)
-            throw new InvalidOperationException($"Minimum stock unit must be {_unit}");
-        
-        _minimumStock = minimumStock.Value;
-        IncrementVersion();
-    }
+        _db.Ingredients.Add(ingredient);
+        await _db.SaveChangesAsync(cancellationToken);
 
-    /// <summary>
-    /// Updates the ingredient's category.
-    /// </summary>
-    public void SetCategory(int categoryId)
-    {
-        _categoryId = categoryId;
-        IncrementVersion();
-    }
+        _logger.LogInformation("Created ingredient {Id}: {Name}", ingredient.Id, ingredient.Name);
 
-    /// <summary>
-    /// Renames the ingredient.
-    /// </summary>
-    public void Rename(string newName)
-    {
-        if (string.IsNullOrWhiteSpace(newName))
-            throw new ArgumentException("Name cannot be empty", nameof(newName));
-        
-        _name = newName;
-        IncrementVersion();
+        // Map to response
+        return new IngredientResponse(
+            Id: ingredient.Id,
+            Name: ingredient.Name,
+            Unit: ingredient.Unit,
+            CurrentPrice: ingredient.CurrentPrice,
+            Currency: ingredient.Currency,
+            StockQuantity: ingredient.StockQuantity,
+            MinimumStock: ingredient.MinimumStock,
+            IsLowStock: true, // New ingredient has 0 stock
+            CategoryId: ingredient.CategoryId,
+            CategoryName: null
+        );
     }
 }
 ```
 
-### Key DDD Principles Applied:
+### Register the Endpoint:
 
-| Principle | Implementation |
-|-----------|----------------|
-| **Encapsulation** | Private fields, public methods |
-| **Invariants** | Validation in constructor and methods |
-| **Rich Domain Model** | Business logic in entity, not services |
-| **Domain Events** | Events raised on state changes |
-| **Immutable Value Objects** | `Money`, `Quantity` as records |
-
-### What NOT to Do (Anti-patterns):
+Create `src/Nastart.Api/Features/Ingredients/IngredientsEndpoints.cs`:
 
 ```csharp
-// ❌ WRONG — Anemic Domain Model
-public class IngredientBad
-{
-    public string Name { get; set; }  // Public setter!
-    public decimal Price { get; set; } // No encapsulation!
-}
+using MediatR;
+using Microsoft.AspNetCore.Http.HttpResults;
+using Nastart.Api.Shared.Models;
 
-// ❌ WRONG — Logic in Service
-public class IngredientService
+namespace Nastart.Api.Features.Ingredients;
+
+/// <summary>
+/// Registers all ingredient-related endpoints.
+/// </summary>
+public static class IngredientsEndpoints
 {
-    public void UpdatePrice(Ingredient ingredient, decimal newPrice)
+    public static void MapIngredientEndpoints(this IEndpointRouteBuilder app)
     {
-        // Business logic outside the entity = anemic model!
-        ingredient.Price = newPrice;
+        var group = app.MapGroup("/api/ingredients")
+            .WithTags("Ingredients")
+            .WithOpenApi();
+
+        group.MapPost("/", CreateIngredient)
+            .WithName("CreateIngredient")
+            .WithSummary("Create a new ingredient")
+            .Produces<IngredientResponse>(StatusCodes.Status201Created)
+            .ProducesValidationProblem()
+            .ProducesProblem(StatusCodes.Status409Conflict);
+    }
+
+    /// <summary>
+    /// Create a new ingredient.
+    /// </summary>
+    private static async Task<Results<Created<IngredientResponse>, Conflict<Error>, ValidationProblem>> 
+        CreateIngredient(
+            CreateIngredientCommand command,
+            IMediator mediator,
+            CancellationToken cancellationToken)
+    {
+        var result = await mediator.Send(command, cancellationToken);
+
+        return result.Match<Results<Created<IngredientResponse>, Conflict<Error>, ValidationProblem>>(
+            success => TypedResults.Created($"/api/ingredients/{success.Id}", success),
+            error => error.Code == "DuplicateName" 
+                ? TypedResults.Conflict(error)
+                : TypedResults.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    { "Error", [error.Message] }
+                })
+        );
     }
 }
+```
 
-// ✅ CORRECT — Rich Domain Model
-ingredient.UpdatePrice(new Money(15000, "IDR"));
-// Logic is INSIDE the aggregate, where it belongs!
+### Register in Program.cs:
+
+```csharp
+using Nastart.Api.Features.Ingredients;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services
+builder.Services.AddMediatR(cfg => 
+    cfg.RegisterServicesFromAssembly(typeof(Program).Assembly));
+builder.Services.AddValidatorsFromAssembly(typeof(Program).Assembly);
+builder.Services.AddDbContext<NastartDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+var app = builder.Build();
+
+// Configure pipeline
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+// Map endpoints
+app.MapIngredientEndpoints();
+
+app.Run();
 ```
 
 ### Your Task (Day 6):
 
-1. Create `Ingredient.cs` in `Inventory/Aggregates/`
-2. Ensure all Value Objects are created
-3. Verify build: `dotnet build`
+1. Install FluentValidation packages
+2. Create `CreateIngredient.cs` with all components
+3. Create `IngredientsEndpoints.cs` for route registration
+4. Update `Program.cs` to register services and endpoints
+5. Verify build: `dotnet build`
 
 ---
 
-# Day 7: Unit Testing Your Domain
+# Day 7: Testing Your Feature Slices
 
 ## 🧒 Explain Like I'm 5
 
@@ -1239,264 +1051,258 @@ Before you let people ride a new roller coaster, you TEST it first! You make sur
 - It's safe
 
 We do the same with our code:
-- Does `UpdatePrice` actually change the price?
-- Does it detect price spikes correctly?
-- Does it throw errors for bad data?
+- Does creating an ingredient actually save it?
+- Does it reject invalid data?
+- Does it handle duplicates correctly?
 
 ## 🔧 Engineer Language
 
-Unit tests verify that your domain logic works correctly in isolation. We test:
-1. **Construction** — Can we create valid entities?
-2. **Business rules** — Do methods enforce invariants?
-3. **Domain events** — Are correct events raised?
-4. **Edge cases** — Do errors occur for invalid input?
+Unit tests verify that your feature handlers work correctly. We test:
+1. **Happy path** — Normal successful operation
+2. **Validation** — Invalid input is rejected
+3. **Business rules** — Duplicates, not found, etc.
+4. **Edge cases** — Boundary conditions
 
 ### Set Up Test Project:
 
 ```powershell
 cd C:\Users\AU1833\Documents\personal\nastart\backend
 
-# Add reference to Domain project
-dotnet add tests/Nastart.Domain.Tests/Nastart.Domain.Tests.csproj reference src/Nastart.Domain/Nastart.Domain.csproj
+# Create tests folder if needed
+mkdir tests -ErrorAction SilentlyContinue
 
-# Install FluentAssertions for readable tests
-dotnet add tests/Nastart.Domain.Tests package FluentAssertions
+# Create test project
+cd tests
+dotnet new xunit -n Nastart.Api.Tests
+cd Nastart.Api.Tests
+
+# Add project reference
+dotnet add reference ../../src/Nastart.Api/Nastart.Api.csproj
+
+# Install test packages
+dotnet add package FluentAssertions
+dotnet add package Microsoft.EntityFrameworkCore.InMemory
+dotnet add package Moq
 ```
 
-### Ingredient Tests:
+### CreateIngredient Handler Tests:
 
-Create `tests/Nastart.Domain.Tests/Inventory/IngredientTests.cs`:
+Create `tests/Nastart.Api.Tests/Features/Ingredients/CreateIngredientTests.cs`:
 
 ```csharp
 using FluentAssertions;
-using Nastart.Domain.Inventory.Aggregates;
-using Nastart.Domain.Inventory.Events;
-using Nastart.Domain.Inventory.ValueObjects;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Moq;
+using Nastart.Api.Features.Ingredients;
+using Nastart.Api.Shared.Data;
 
-namespace Nastart.Domain.Tests.Inventory;
+namespace Nastart.Api.Tests.Features.Ingredients;
 
-public class IngredientTests
+public class CreateIngredientTests
 {
-    [Fact]
-    public void Constructor_WithValidData_CreatesIngredient()
+    private readonly NastartDbContext _db;
+    private readonly CreateIngredientHandler _handler;
+
+    public CreateIngredientTests()
     {
-        // Arrange
-        var name = "Flour";
-        var unit = "kg";
-        var price = new Money(15000, "IDR");
-        var minStock = new Quantity(5, "kg");
-
-        // Act
-        var ingredient = new Ingredient(name, unit, price, minStock);
-
-        // Assert
-        ingredient.Name.Should().Be(name);
-        ingredient.Unit.Should().Be(unit);
-        ingredient.CurrentPrice.Should().Be(price);
-        ingredient.MinimumStock.Should().Be(minStock);
-        ingredient.Stock.Value.Should().Be(0);
-        ingredient.IsLowStock.Should().BeTrue(); // 0 < 5
-    }
-
-    [Fact]
-    public void Constructor_WithEmptyName_ThrowsArgumentException()
-    {
-        // Arrange & Act
-        var act = () => new Ingredient(
-            name: "",
-            unit: "kg",
-            initialPrice: new Money(15000),
-            minimumStock: new Quantity(5, "kg")
-        );
-
-        // Assert
-        act.Should().Throw<ArgumentException>()
-           .WithMessage("*name*");
-    }
-
-    [Fact]
-    public void UpdatePrice_WithHigherPrice_RaisesPriceChangedEvent()
-    {
-        // Arrange
-        var ingredient = CreateTestIngredient(initialPrice: 10000);
-        var newPrice = new Money(12000, "IDR");
-
-        // Act
-        ingredient.UpdatePrice(newPrice);
-
-        // Assert
-        ingredient.CurrentPrice.Should().Be(newPrice);
-        ingredient.DomainEvents.Should().ContainSingle()
-            .Which.Should().BeOfType<PriceChangedEvent>();
-    }
-
-    [Fact]
-    public void UpdatePrice_WithPriceSpike_RaisesPriceSpikeDetectedEvent()
-    {
-        // Arrange
-        var ingredient = CreateTestIngredient(initialPrice: 10000);
-        var newPrice = new Money(15000, "IDR"); // 50% increase
-
-        // Act
-        ingredient.UpdatePrice(newPrice);
-
-        // Assert
-        ingredient.DomainEvents.Should().HaveCount(2);
-        ingredient.DomainEvents.Should().ContainSingle(e => e is PriceChangedEvent);
-        ingredient.DomainEvents.Should().ContainSingle(e => e is PriceSpikeDetectedEvent);
-    }
-
-    [Fact]
-    public void UpdatePrice_WithSamePrice_DoesNotRaiseEvent()
-    {
-        // Arrange
-        var ingredient = CreateTestIngredient(initialPrice: 10000);
-        var samePrice = new Money(10000, "IDR");
-
-        // Act
-        ingredient.UpdatePrice(samePrice);
-
-        // Assert
-        ingredient.DomainEvents.Should().BeNullOrEmpty();
-    }
-
-    [Fact]
-    public void AddStock_WithValidQuantity_IncreasesStock()
-    {
-        // Arrange
-        var ingredient = CreateTestIngredient();
-        var quantity = new Quantity(10, "kg");
-
-        // Act
-        ingredient.AddStock(quantity);
-
-        // Assert
-        ingredient.Stock.Value.Should().Be(10);
-        ingredient.IsLowStock.Should().BeFalse(); // 10 > 5
-    }
-
-    [Fact]
-    public void AddStock_WithWrongUnit_ThrowsInvalidOperationException()
-    {
-        // Arrange
-        var ingredient = CreateTestIngredient(); // unit = "kg"
-        var quantity = new Quantity(10, "L"); // wrong unit
-
-        // Act
-        var act = () => ingredient.AddStock(quantity);
-
-        // Assert
-        act.Should().Throw<InvalidOperationException>()
-           .WithMessage("*Cannot add*");
-    }
-
-    [Fact]
-    public void RemoveStock_WhenBelowMinimum_RaisesLowStockEvent()
-    {
-        // Arrange
-        var ingredient = CreateTestIngredient();
-        ingredient.AddStock(new Quantity(10, "kg")); // Stock = 10, Min = 5
+        // Use in-memory database for testing
+        var options = new DbContextOptionsBuilder<NastartDbContext>()
+            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+            .Options;
         
-        // Act
-        ingredient.RemoveStock(new Quantity(8, "kg")); // Stock = 2, below min
-
-        // Assert
-        ingredient.IsLowStock.Should().BeTrue();
-        ingredient.DomainEvents.Should().ContainSingle()
-            .Which.Should().BeOfType<LowStockEvent>();
+        _db = new NastartDbContext(options);
+        var logger = Mock.Of<ILogger<CreateIngredientHandler>>();
+        _handler = new CreateIngredientHandler(_db, logger);
     }
 
     [Fact]
-    public void RemoveStock_WithInsufficientStock_ThrowsInvalidOperationException()
+    public async Task Handle_WithValidData_CreatesIngredient()
     {
         // Arrange
-        var ingredient = CreateTestIngredient();
-        ingredient.AddStock(new Quantity(5, "kg"));
+        var command = new CreateIngredientCommand(
+            Name: "Flour",
+            Unit: "kg",
+            InitialPrice: 15000,
+            MinimumStock: 5
+        );
 
         // Act
-        var act = () => ingredient.RemoveStock(new Quantity(10, "kg"));
+        var result = await _handler.Handle(command, CancellationToken.None);
 
         // Assert
-        act.Should().Throw<InvalidOperationException>()
-           .WithMessage("*Insufficient stock*");
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Name.Should().Be("Flour");
+        result.Value.Unit.Should().Be("kg");
+        result.Value.CurrentPrice.Should().Be(15000);
+        
+        // Verify persisted
+        var saved = await _db.Ingredients.FirstOrDefaultAsync();
+        saved.Should().NotBeNull();
+        saved!.Name.Should().Be("Flour");
     }
 
-    // Helper method to reduce repetition
-    private static Ingredient CreateTestIngredient(decimal initialPrice = 15000)
+    [Fact]
+    public async Task Handle_WithDuplicateName_ReturnsConflictError()
     {
-        return new Ingredient(
-            name: "Test Flour",
-            unit: "kg",
-            initialPrice: new Money(initialPrice, "IDR"),
-            minimumStock: new Quantity(5, "kg")
+        // Arrange
+        _db.Ingredients.Add(new Ingredient
+        {
+            Id = Guid.NewGuid(),
+            Name = "Flour",
+            Unit = "kg",
+            CurrentPrice = 15000,
+            MinimumStock = 5,
+            CreatedAt = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync();
+
+        var command = new CreateIngredientCommand(
+            Name: "Flour",  // Duplicate!
+            Unit: "kg",
+            InitialPrice: 16000,
+            MinimumStock: 3
         );
+
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        // Assert
+        result.IsFailure.Should().BeTrue();
+        result.Error!.Code.Should().Be("DuplicateName");
+    }
+
+    [Fact]
+    public async Task Handle_WithInvalidCategory_ReturnsNotFoundError()
+    {
+        // Arrange
+        var command = new CreateIngredientCommand(
+            Name: "Sugar",
+            Unit: "kg",
+            InitialPrice: 12000,
+            MinimumStock: 2,
+            CategoryId: 999  // Non-existent category
+        );
+
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        // Assert
+        result.IsFailure.Should().BeTrue();
+        result.Error!.Code.Should().Be("CategoryNotFound");
+    }
+
+    [Fact]
+    public async Task Handle_TrimsNameAndUnit()
+    {
+        // Arrange
+        var command = new CreateIngredientCommand(
+            Name: "  Flour  ",  // Has spaces
+            Unit: " kg ",
+            InitialPrice: 15000,
+            MinimumStock: 5
+        );
+
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Name.Should().Be("Flour");
+        result.Value.Unit.Should().Be("kg");
     }
 }
 ```
 
-### Value Object Tests:
+### Validator Tests:
 
-Create `tests/Nastart.Domain.Tests/ValueObjects/MoneyTests.cs`:
+Create `tests/Nastart.Api.Tests/Features/Ingredients/CreateIngredientValidatorTests.cs`:
 
 ```csharp
 using FluentAssertions;
-using Nastart.Domain.Inventory.ValueObjects;
+using FluentValidation.TestHelper;
+using Nastart.Api.Features.Ingredients;
 
-namespace Nastart.Domain.Tests.ValueObjects;
+namespace Nastart.Api.Tests.Features.Ingredients;
 
-public class MoneyTests
+public class CreateIngredientValidatorTests
 {
+    private readonly CreateIngredientValidator _validator = new();
+
     [Fact]
-    public void TwoMoneyWithSameValue_AreEqual()
+    public void Validate_WithValidCommand_Passes()
     {
         // Arrange
-        var money1 = new Money(10000, "IDR");
-        var money2 = new Money(10000, "IDR");
+        var command = new CreateIngredientCommand(
+            Name: "Flour",
+            Unit: "kg",
+            InitialPrice: 15000,
+            MinimumStock: 5
+        );
+
+        // Act
+        var result = _validator.TestValidate(command);
 
         // Assert
-        money1.Should().Be(money2);
-        (money1 == money2).Should().BeTrue();
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public void Validate_WithEmptyName_Fails(string? name)
+    {
+        // Arrange
+        var command = new CreateIngredientCommand(
+            Name: name!,
+            Unit: "kg",
+            InitialPrice: 15000,
+            MinimumStock: 5
+        );
+
+        // Act
+        var result = _validator.TestValidate(command);
+
+        // Assert
+        result.ShouldHaveValidationErrorFor(x => x.Name);
     }
 
     [Fact]
-    public void Add_WithSameCurrency_ReturnsSum()
+    public void Validate_WithNegativePrice_Fails()
     {
         // Arrange
-        var money1 = new Money(10000, "IDR");
-        var money2 = new Money(5000, "IDR");
+        var command = new CreateIngredientCommand(
+            Name: "Flour",
+            Unit: "kg",
+            InitialPrice: -100,  // Negative!
+            MinimumStock: 5
+        );
 
         // Act
-        var result = money1.Add(money2);
+        var result = _validator.TestValidate(command);
 
         // Assert
-        result.Amount.Should().Be(15000);
+        result.ShouldHaveValidationErrorFor(x => x.InitialPrice);
     }
 
     [Fact]
-    public void Add_WithDifferentCurrency_ThrowsException()
+    public void Validate_WithNameTooLong_Fails()
     {
         // Arrange
-        var idr = new Money(10000, "IDR");
-        var usd = new Money(10, "USD");
+        var command = new CreateIngredientCommand(
+            Name: new string('A', 101),  // 101 characters
+            Unit: "kg",
+            InitialPrice: 15000,
+            MinimumStock: 5
+        );
 
         // Act
-        var act = () => idr.Add(usd);
+        var result = _validator.TestValidate(command);
 
         // Assert
-        act.Should().Throw<InvalidOperationException>();
-    }
-
-    [Fact]
-    public void Multiply_ReturnsCorrectAmount()
-    {
-        // Arrange
-        var money = new Money(1000, "IDR");
-
-        // Act
-        var result = money.Multiply(2.5m);
-
-        // Assert
-        result.Amount.Should().Be(2500);
+        result.ShouldHaveValidationErrorFor(x => x.Name)
+            .WithErrorMessage("Name must be 100 characters or less");
     }
 }
 ```
@@ -1513,14 +1319,14 @@ dotnet test
 dotnet test --verbosity normal
 
 # Run specific test class
-dotnet test --filter "FullyQualifiedName~IngredientTests"
+dotnet test --filter "FullyQualifiedName~CreateIngredientTests"
 ```
 
 ### Your Task (Day 7):
 
-1. Set up test project with FluentAssertions
-2. Create `IngredientTests.cs` 
-3. Create `MoneyTests.cs`
+1. Set up test project with FluentAssertions and in-memory EF Core
+2. Create `CreateIngredientTests.cs` for handler tests
+3. Create `CreateIngredientValidatorTests.cs` for validation tests
 4. Run `dotnet test` — all tests should pass!
 
 ---
@@ -1529,139 +1335,141 @@ dotnet test --filter "FullyQualifiedName~IngredientTests"
 
 > ✅ All links verified as of January 2026 using Microsoft Learn
 
-## Domain Layer Fundamentals (Microsoft Official)
+## Vertical Slice Architecture & Minimal APIs
 
 | Resource | Type | Link |
 |----------|------|------|
-| **Implement a microservice domain model with .NET** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model |
-| **Seedwork base classes and interfaces** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/seedwork-domain-model-base-classes-interfaces |
-| **Implement value objects** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/implement-value-objects |
-| **Domain events: Design and implementation** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation |
-| **Design a microservice domain model** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model |
+| **Minimal APIs overview** | MS Docs | https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/overview |
+| **Create minimal APIs** | MS Docs | https://learn.microsoft.com/en-us/aspnet/core/tutorials/min-web-api |
+| **Route handlers in Minimal APIs** | MS Docs | https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/route-handlers |
+| **Minimal API responses** | MS Docs | https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/responses |
 
-## Tactical DDD Patterns
+## MediatR & CQRS Pattern
 
 | Resource | Type | Link |
 |----------|------|------|
-| **Using tactical DDD to design microservices** | MS Docs | https://learn.microsoft.com/en-us/azure/architecture/microservices/model/tactical-ddd |
-| **Design a DDD-oriented microservice** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/ddd-oriented-microservice |
-| **Apply simplified CQRS and DDD patterns** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/apply-simplified-microservice-cqrs-ddd-patterns |
+| **Use MediatR to reduce coupling** | MS Docs | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-application-layer-implementation-web-api |
+| **CQRS pattern** | MS Docs | https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs |
+| **MediatR Library** | GitHub | https://github.com/jbogard/MediatR |
 
-## C# Language Features (for Value Objects)
+## C# Records & Modern Features
 
 | Resource | Type | Link |
 |----------|------|------|
 | **Records (C# reference)** | MS Docs | https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record |
-| **Introduction to record types in C#** | MS Docs | https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/records |
-| **How to define value equality** | MS Docs | https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/statements-expressions-operators/how-to-define-value-equality-for-a-type |
-| **Struct Design guidelines** | MS Docs | https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/struct |
+| **Introduction to record types** | MS Docs | https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/records |
+| **Required members** | MS Docs | https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/required |
+
+## Entity Framework Core
+
+| Resource | Type | Link |
+|----------|------|------|
+| **Creating and Configuring a Model** | MS Docs | https://learn.microsoft.com/en-us/ef/core/modeling/ |
+| **DbContext Lifetime** | MS Docs | https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/ |
+| **Testing with InMemory** | MS Docs | https://learn.microsoft.com/en-us/ef/core/testing/testing-without-the-database |
+
+## Validation & Testing
+
+| Resource | Type | Link |
+|----------|------|------|
+| **FluentValidation Documentation** | Docs | https://docs.fluentvalidation.net/ |
+| **Unit testing with xUnit** | MS Docs | https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-csharp-with-xunit |
+| **Best practices for unit testing** | MS Docs | https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-best-practices |
+| **FluentAssertions Documentation** | Docs | https://fluentassertions.com/introduction |
 
 ## Reference Implementation
 
 | Resource | Type | Link |
 |----------|------|------|
-| **eShopOnContainers (GitHub)** | Code | https://github.com/dotnet/eShop |
-| **eShop Ordering.Domain** | Code | https://github.com/dotnet/eShop/tree/main/src/Ordering.Domain |
-| **MediatR Library** | GitHub | https://github.com/jbogard/MediatR |
-
-## Unit Testing
-
-| Resource | Type | Link |
-|----------|------|------|
-| **Unit testing C# with xUnit** | MS Docs | https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-csharp-with-xunit |
-| **Best practices for unit testing** | MS Docs | https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-best-practices |
-| **FluentAssertions Documentation** | Docs | https://fluentassertions.com/introduction |
-
-## eBooks (Free from Microsoft)
-
-| Resource | Description | Link |
-|----------|-------------|------|
-| **.NET Microservices Architecture** | Complete DDD/CQRS guide | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/ |
-| **Architect Modern Web Apps** | Clean Architecture patterns | https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/ |
+| **eShop Reference Application** | GitHub | https://github.com/dotnet/eShop |
+| **Vertical Slice Architecture (Jimmy Bogard)** | Blog | https://www.jimmybogard.com/vertical-slice-architecture/ |
 
 ---
 
 # Week 2 Checklist
 
-- [ ] **Day 1**: Create SeedWork folder structure
-  - [ ] Create `Common/` folder in Domain project
-  - [ ] Create `Inventory/Aggregates/`, `Inventory/ValueObjects/`, `Inventory/Events/` folders
-  - [ ] Remove `Class1.cs` placeholder
+- [ ] **Day 1**: Create Feature Folder Structure
+  - [ ] Create `Features/Ingredients/`, `Features/Recipes/`, `Features/Purchases/` folders
+  - [ ] Create `Shared/Data/`, `Shared/Models/`, `Shared/Behaviors/` folders
+  - [ ] Remove placeholder files
 
-- [ ] **Day 2**: Entity Base Class
-  - [ ] Install `MediatR.Contracts` package
-  - [ ] Create `Entity.cs` with ID, equality, and domain events
+- [ ] **Day 2**: Models & Database Entities
+  - [ ] Install EF Core packages
+  - [ ] Create `Ingredient.cs` entity in Features folder
   - [ ] Verify build passes
 
-- [ ] **Day 3**: Value Objects
-  - [ ] Create `ValueObject.cs` base class
-  - [ ] Create `Money.cs` record
-  - [ ] Create `Quantity.cs` record
-  - [ ] Create `Percentage.cs` record
-  - [ ] Create strongly-typed IDs (`IngredientId`, `RecipeId`, `PurchaseId`)
+- [ ] **Day 3**: C# Records for Feature Data
+  - [ ] Install MediatR package
+  - [ ] Create request/response records
+  - [ ] Create `Money.cs`, `Quantity.cs`, `Result.cs` in Shared/Models
+  - [ ] Verify build passes
 
-- [ ] **Day 4**: Domain Events
-  - [ ] Create `IDomainEvent.cs` interface
-  - [ ] Create `DomainEventBase.cs` record
-  - [ ] Create `PriceChangedEvent.cs`
-  - [ ] Create `PriceSpikeDetectedEvent.cs`
-  - [ ] Create `LowStockEvent.cs`
+- [ ] **Day 4**: MediatR Notifications
+  - [ ] Create `IngredientNotifications.cs` with notification records
+  - [ ] Create notification handlers
+  - [ ] Verify build passes
 
-- [ ] **Day 5**: Aggregate Root
-  - [ ] Create `IAggregateRoot.cs` interface
-  - [ ] Create `AggregateRoot.cs` base class
-  - [ ] Create `IRepository.cs` interface
-  - [ ] Create `IUnitOfWork.cs` interface
+- [ ] **Day 5**: Feature Slice Pattern
+  - [ ] Understand the anatomy of a feature slice
+  - [ ] Review MediatR handler documentation
+  - [ ] Plan your features as self-contained slices
 
-- [ ] **Day 6**: Ingredient Aggregate
-  - [ ] Create `Ingredient.cs` with all business logic
-  - [ ] Implement `UpdatePrice()`, `AddStock()`, `RemoveStock()`
-  - [ ] Verify domain events are raised correctly
+- [ ] **Day 6**: CreateIngredient Feature
+  - [ ] Install FluentValidation packages
+  - [ ] Create `CreateIngredient.cs` with Command, Validator, Handler
+  - [ ] Create `IngredientsEndpoints.cs` for route registration
+  - [ ] Update `Program.cs` with service registration
+  - [ ] Verify build passes
 
-- [ ] **Day 7**: Unit Tests
-  - [ ] Add project reference and FluentAssertions
-  - [ ] Create `IngredientTests.cs`
-  - [ ] Create `MoneyTests.cs`
+- [ ] **Day 7**: Testing Feature Slices
+  - [ ] Create test project with required packages
+  - [ ] Create `CreateIngredientTests.cs` for handler tests
+  - [ ] Create `CreateIngredientValidatorTests.cs` for validation tests
   - [ ] All tests pass with `dotnet test`
 
 ---
 
 ## File Summary
 
-After completing Week 2, your Domain project should have:
+After completing Week 2, your API project should have:
 
 ```
-src/Nastart.Domain/
-├── Common/
-│   ├── Entity.cs
-│   ├── AggregateRoot.cs
-│   ├── IAggregateRoot.cs
-│   ├── ValueObject.cs
-│   ├── IDomainEvent.cs
-│   ├── DomainEventBase.cs
-│   ├── IRepository.cs
-│   └── IUnitOfWork.cs
-├── Inventory/
-│   ├── Aggregates/
-│   │   └── Ingredient.cs
-│   ├── ValueObjects/
+src/Nastart.Api/
+├── Features/
+│   ├── Ingredients/
+│   │   ├── Ingredient.cs                  # Entity model
+│   │   ├── CreateIngredient.cs            # Complete feature slice
+│   │   ├── IngredientNotifications.cs     # Notifications
+│   │   ├── NotificationHandlers/
+│   │   │   └── PriceChangedHandler.cs
+│   │   └── IngredientsEndpoints.cs        # Route registration
+│   ├── Recipes/
+│   └── Purchases/
+│
+├── Shared/
+│   ├── Data/
+│   │   └── NastartDbContext.cs
+│   ├── Models/
 │   │   ├── Money.cs
 │   │   ├── Quantity.cs
-│   │   ├── Percentage.cs
-│   │   ├── IngredientId.cs
-│   │   ├── RecipeId.cs
-│   │   └── PurchaseId.cs
-│   └── Events/
-│       ├── PriceChangedEvent.cs
-│       ├── PriceSpikeDetectedEvent.cs
-│       └── LowStockEvent.cs
-└── Nastart.Domain.csproj
+│   │   └── Result.cs
+│   └── Behaviors/
+│
+├── Program.cs
+└── Nastart.Api.csproj
+
+tests/Nastart.Api.Tests/
+├── Features/
+│   └── Ingredients/
+│       ├── CreateIngredientTests.cs
+│       └── CreateIngredientValidatorTests.cs
+└── Nastart.Api.Tests.csproj
 ```
 
 ---
 
-**Next Week**: [Week 3 - Finance Context Domain](./week-03-finance-domain.md)
+**Next Week**: [Week 3 - Finance Features](./week-03-finance-domain.md)
 
 ---
 
-*Remember: The Domain layer is the HEART of your application. Take time to get it right!* 💎
+*Remember: In Vertical Slice Architecture, each feature is a complete unit. Everything you need is in one place!* 🎯

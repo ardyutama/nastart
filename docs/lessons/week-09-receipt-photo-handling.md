@@ -1,652 +1,173 @@
-# Week 9: Receipt Photo Handling 📸
+# Week 9: Receipt Photo Handling 📷
 
-> **Goal**: Connect the Telegram bot to PaddleOCR microservice for receipt scanning, implement fuzzy ingredient matching, and create confirmation workflows with inline keyboards.
+> **Goal**: Implement the complete receipt scanning flow — receive photos from Telegram, download images, connect to OCR service, build confirmation UI with inline keyboards, and handle user confirmation/edit callbacks.
 
 ---
 
 ## Table of Contents
-1. [Day 1: Photo Handler Architecture](#day-1-photo-handler-architecture)
-2. [Day 2: Telegram File Download Service](#day-2-telegram-file-download-service)
-3. [Day 3: MediatR Integration for Photo Processing](#day-3-mediatr-integration-for-photo-processing)
-4. [Day 4: Fuzzy Ingredient Matching Service](#day-4-fuzzy-ingredient-matching-service)
-5. [Day 5: Confirmation Workflow with Inline Keyboards](#day-5-confirmation-workflow-with-inline-keyboards)
-6. [Day 6: Receipt Parsing & Price Extraction](#day-6-receipt-parsing--price-extraction)
-7. [Day 7: Testing & Error Recovery](#day-7-testing--error-recovery)
-8. [Resources](#resources)
+1. [Day 1: PhotoHandler Feature Slice](#day-1-photohandler-feature-slice)
+2. [Day 2: Download Image from Telegram](#day-2-download-image-from-telegram)
+3. [Day 3: Connect to ScanReceipt Feature](#day-3-connect-to-scanreceipt-feature)
+4. [Day 4: Build Confirmation Keyboard UI](#day-4-build-confirmation-keyboard-ui)
+5. [Day 5: Handle Confirmation Callbacks](#day-5-handle-confirmation-callbacks)
+6. [Day 6: Progress Updates & Error Handling](#day-6-progress-updates--error-handling)
+7. [Day 7: Testing Photo Flow End-to-End](#day-7-testing-photo-flow-end-to-end)
+8. [Resources](#resources) *(Microsoft Official Docs Verified)*
 
 ---
 
-## OCR Service Decision: PaddleOCR vs Azure Vision
-
-| Criteria | PaddleOCR (Local) | Azure Vision OCR |
-|----------|-------------------|------------------|
-| **Cost** | ✅ Free (open source) | 💰 Pay per transaction |
-| **Latency** | ✅ ~200ms (local) | ⚠️ ~500ms (network) |
-| **Privacy** | ✅ Data stays local | ⚠️ Data sent to cloud |
-| **Languages** | ✅ Indonesian, English | ✅ 100+ languages |
-| **Accuracy** | ✅ 95%+ for receipts | ✅ 97%+ |
-| **Setup** | ⚠️ Python microservice | ✅ Just API key |
-| **Offline** | ✅ Works offline | ❌ Requires internet |
-
-**Decision**: **PaddleOCR** is the best choice for Nastart because:
-1. Already integrated in Week 7 as a Python microservice
-2. Zero ongoing costs (important for small F&B businesses)
-3. Receipt data stays local (privacy for customer data)
-4. Indonesian language support built-in
-5. Faster local processing for better UX
-
----
-
-# Day 1: Photo Handler Architecture
+# Day 1: PhotoHandler Feature Slice
 
 ## 🧒 Explain Like I'm 5
 
-When someone sends a receipt photo to the bot 📸:
-1. The bot downloads the picture from Telegram
-2. Sends it to the OCR service (reads the text)
-3. Finds matching ingredients in your database
-4. Shows you what it found and asks "Is this correct?"
+When you take a picture of your mom's grocery receipt and send it to the robot 🤖:
+1. The robot says "Got it! Let me read this..."
+2. It sends the picture to a special machine that can READ (OCR)
+3. The machine says "I found: Flour Rp 25.000, Sugar Rp 16.000..."
+4. The robot asks "Is this correct? ✅ Yes / ❌ No"
+5. If you say Yes, it saves everything!
 
-It's like having a helper who reads your receipt and types it all in for you!
-
-## 🔧 Engineer Language
-
-The photo handling pipeline consists of:
-1. **TelegramWebhookController** → Receives update
-2. **UpdateRouter** → Routes to `PhotoHandler`
-3. **PhotoHandler** → Orchestrates the flow
-4. **TelegramFileService** → Downloads image from Telegram
-5. **ScanReceiptCommand** (MediatR) → Calls PaddleOCR + matching
-6. **ReceiptConfirmationService** → Builds confirmation UI
-
-### Photo Processing Sequence
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant T as Telegram
-    participant C as WebhookController
-    participant R as UpdateRouter
-    participant P as PhotoHandler
-    participant F as FileService
-    participant M as MediatR
-    participant OCR as PaddleOCR
-    participant DB as Database
-
-    U->>T: Send receipt photo
-    T->>C: Webhook (Update)
-    C->>R: RouteAsync(update)
-    R->>P: HandleAsync(message)
-    P->>T: "Processing..."
-    P->>F: DownloadFileAsync(fileId)
-    F->>T: GetFile + Download
-    F-->>P: byte[]
-    P->>M: Send(ScanReceiptCommand)
-    M->>OCR: POST /scan-receipt
-    OCR-->>M: OcrResult
-    M->>DB: FindMatchingIngredients
-    M-->>P: ReceiptScanResponse
-    P->>T: Edit message + Keyboard
-    T->>U: "Found 5 items. Confirm?"
-```
-
-### Updated PhotoHandler with MediatR
-
-Update `src/Nastart.Bot/Handlers/PhotoHandler.cs`:
-
-```csharp
-using MediatR;
-using Telegram.Bot;
-using Telegram.Bot.Types;
-using Nastart.Bot.Keyboards;
-using Nastart.Bot.Services;
-using Nastart.Application.Finance.Commands.ScanReceipt;
-
-namespace Nastart.Bot.Handlers;
-
-public interface IPhotoHandler
-{
-    Task HandleAsync(Message message, CancellationToken cancellationToken = default);
-}
-
-public sealed class PhotoHandler : IPhotoHandler
-{
-    private readonly ITelegramBotClient _botClient;
-    private readonly ITelegramFileService _fileService;
-    private readonly IMediator _mediator;
-    private readonly IReceiptConfirmationBuilder _confirmationBuilder;
-    private readonly ILogger<PhotoHandler> _logger;
-
-    public PhotoHandler(
-        ITelegramBotClient botClient,
-        ITelegramFileService fileService,
-        IMediator mediator,
-        IReceiptConfirmationBuilder confirmationBuilder,
-        ILogger<PhotoHandler> logger)
-    {
-        _botClient = botClient;
-        _fileService = fileService;
-        _mediator = mediator;
-        _confirmationBuilder = confirmationBuilder;
-        _logger = logger;
-    }
-
-    public async Task HandleAsync(Message message, CancellationToken cancellationToken = default)
-    {
-        if (message.Photo is null || message.Photo.Length == 0)
-        {
-            return;
-        }
-
-        var chatId = message.Chat.Id;
-        var userId = message.From?.Id ?? 0;
-
-        // Get the largest photo (last in array)
-        var photo = message.Photo[^1];
-        
-        _logger.LogInformation(
-            "Received photo {FileId} from user {UserId}, size: {Width}x{Height}",
-            photo.FileId, userId, photo.Width, photo.Height);
-
-        // Send processing message
-        var processingMessage = await _botClient.SendMessage(
-            chatId: chatId,
-            text: "🔄 *Processing your receipt...*\n\n" +
-                  "📸 Downloading image...",
-            parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-            cancellationToken: cancellationToken);
-
-        try
-        {
-            // Step 1: Download file from Telegram
-            await UpdateProgress(chatId, processingMessage.MessageId,
-                "🔄 *Processing your receipt...*\n\n" +
-                "✅ Image downloaded\n" +
-                "📝 Scanning text...",
-                cancellationToken);
-
-            var imageBytes = await _fileService.DownloadFileAsync(
-                photo.FileId, cancellationToken);
-
-            var fileName = $"receipt_{chatId}_{DateTime.UtcNow:yyyyMMddHHmmss}.jpg";
-
-            // Step 2: Send to OCR and match ingredients
-            await UpdateProgress(chatId, processingMessage.MessageId,
-                "🔄 *Processing your receipt...*\n\n" +
-                "✅ Image downloaded\n" +
-                "✅ Text scanned\n" +
-                "🔍 Matching ingredients...",
-                cancellationToken);
-
-            var command = new ScanReceiptCommand(
-                ImageBytes: imageBytes,
-                FileName: fileName,
-                ChatId: chatId,
-                UserId: userId
-            );
-
-            var result = await _mediator.Send(command, cancellationToken);
-
-            // Step 3: Show results
-            if (!result.IsSuccess)
-            {
-                await ShowError(chatId, processingMessage.MessageId, 
-                    result.Error?.Message ?? "Failed to process receipt",
-                    cancellationToken);
-                return;
-            }
-
-            await ShowConfirmation(chatId, processingMessage.MessageId, 
-                result.Value, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error processing photo from user {UserId}", userId);
-            await ShowError(chatId, processingMessage.MessageId,
-                "Sorry, I couldn't process that receipt. Please try again with a clearer photo.",
-                cancellationToken);
-        }
-    }
-
-    private async Task UpdateProgress(
-        long chatId, 
-        int messageId, 
-        string text,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await _botClient.EditMessageText(
-                chatId: chatId,
-                messageId: messageId,
-                text: text,
-                parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-                cancellationToken: cancellationToken);
-        }
-        catch
-        {
-            // Ignore edit failures (message might be the same)
-        }
-    }
-
-    private async Task ShowConfirmation(
-        long chatId,
-        int messageId,
-        ReceiptScanResponse response,
-        CancellationToken cancellationToken)
-    {
-        var (text, keyboard) = _confirmationBuilder.Build(response);
-
-        await _botClient.EditMessageText(
-            chatId: chatId,
-            messageId: messageId,
-            text: text,
-            parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-            replyMarkup: keyboard,
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task ShowError(
-        long chatId,
-        int messageId,
-        string errorMessage,
-        CancellationToken cancellationToken)
-    {
-        await _botClient.EditMessageText(
-            chatId: chatId,
-            messageId: messageId,
-            text: $"❌ *Error*\n\n{errorMessage}\n\n" +
-                  "💡 *Tips:*\n" +
-                  "• Make sure the photo is clear and well-lit\n" +
-                  "• Try to capture the entire receipt\n" +
-                  "• Avoid shadows and reflections",
-            parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-            cancellationToken: cancellationToken);
-    }
-}
-```
-
-### References
-- [Telegram Bot API - PhotoSize](https://core.telegram.org/bots/api#photosize)
-- [MediatR Pipeline](https://github.com/jbogard/MediatR)
-
----
-
-# Day 2: Telegram File Download Service
-
-## 🧒 Explain Like I'm 5
-
-When you send a photo to the bot, Telegram keeps the photo on their servers. The bot gets a "ticket" (file ID) to download it. We need a helper service to:
-1. Show the ticket to Telegram
-2. Get the download link
-3. Download the actual picture
+The **PhotoHandler** is the part of the robot that:
+- Catches the photo when you send it
+- Shows "processing..." while working
+- Asks you to confirm what it found
 
 ## 🔧 Engineer Language
 
-Telegram stores files on their CDN. To download:
-1. Call `getFile` with the `file_id` → get `file_path`
-2. Construct URL: `https://api.telegram.org/file/bot<token>/<file_path>`
-3. Download the file bytes
+The **PhotoHandler** feature handles incoming photo messages containing receipt images. It orchestrates the flow from receiving the image to displaying OCR results for confirmation.
 
-### ITelegramFileService Interface
+> 📖 **Microsoft Docs**: *"Minimal APIs provide a streamlined approach for creating HTTP APIs. They're ideal for handling webhooks and event-driven workflows."*
+>
+> — [Minimal APIs overview](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/overview)
 
-Create `src/Nastart.Bot/Services/ITelegramFileService.cs`:
+### Photo Processing Flow:
 
-```csharp
-namespace Nastart.Bot.Services;
-
-/// <summary>
-/// Service for downloading files from Telegram servers.
-/// </summary>
-public interface ITelegramFileService
-{
-    /// <summary>
-    /// Downloads a file from Telegram by its file ID.
-    /// </summary>
-    /// <param name="fileId">The Telegram file ID.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The file contents as byte array.</returns>
-    Task<byte[]> DownloadFileAsync(string fileId, CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Gets file info without downloading.
-    /// </summary>
-    Task<TelegramFileInfo> GetFileInfoAsync(string fileId, CancellationToken cancellationToken = default);
-}
-
-/// <summary>
-/// Information about a Telegram file.
-/// </summary>
-public record TelegramFileInfo(
-    string FileId,
-    string FileUniqueId,
-    long FileSize,
-    string? FilePath
-);
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                    RECEIPT PHOTO PROCESSING FLOW                      │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  User sends photo                                                     │
+│        │                                                              │
+│        ▼                                                              │
+│  ┌─────────────┐                                                      │
+│  │PhotoHandler │ ── 1. Send "Processing..." message                   │
+│  └──────┬──────┘                                                      │
+│         │                                                             │
+│         ▼                                                             │
+│  ┌─────────────┐                                                      │
+│  │Download File│ ── 2. Get image from Telegram servers               │
+│  └──────┬──────┘                                                      │
+│         │                                                             │
+│         ▼                                                             │
+│  ┌─────────────┐                                                      │
+│  │ ScanReceipt │ ── 3. Send to OCR microservice                      │
+│  └──────┬──────┘                                                      │
+│         │                                                             │
+│         ▼                                                             │
+│  ┌─────────────┐                                                      │
+│  │FuzzyMatching│ ── 4. Match text to known ingredients               │
+│  └──────┬──────┘                                                      │
+│         │                                                             │
+│         ▼                                                             │
+│  ┌─────────────┐                                                      │
+│  │Display      │ ── 5. Show results with confirm/edit keyboard       │
+│  │Confirmation │                                                      │
+│  └──────┬──────┘                                                      │
+│         │                                                             │
+│         ▼                                                             │
+│  ┌─────────────┐                                                      │
+│  │Handle       │ ── 6. Save if confirmed, allow edits if not         │
+│  │Callback     │                                                      │
+│  └─────────────┘                                                      │
+│                                                                       │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-### TelegramFileService Implementation
+### Scan Session Entity
 
-Create `src/Nastart.Bot/Services/TelegramFileService.cs`:
+First, create an entity to track scan sessions (for multi-step confirmation flow):
+
+Create `src/Nastart.Api/Features/Bot/ScanSession.cs`:
 
 ```csharp
-using Telegram.Bot;
-
-namespace Nastart.Bot.Services;
+namespace Nastart.Api.Features.Bot;
 
 /// <summary>
-/// Downloads files from Telegram servers.
+/// Tracks a receipt scan session from photo upload to confirmation.
 /// </summary>
 /// <remarks>
-/// Implements retry logic and proper error handling.
-/// Files are stored temporarily on Telegram CDN for ~1 hour.
+/// Used to maintain state between photo upload and user confirmation.
+/// Session expires after 10 minutes without confirmation.
+/// See: https://learn.microsoft.com/en-us/ef/core/modeling/
 /// </remarks>
-public sealed class TelegramFileService : ITelegramFileService
+public class ScanSession
 {
-    private readonly ITelegramBotClient _botClient;
-    private readonly ILogger<TelegramFileService> _logger;
-
-    public TelegramFileService(
-        ITelegramBotClient botClient,
-        ILogger<TelegramFileService> logger)
-    {
-        _botClient = botClient;
-        _logger = logger;
-    }
-
-    public async Task<byte[]> DownloadFileAsync(
-        string fileId, 
-        CancellationToken cancellationToken = default)
-    {
-        _logger.LogDebug("Downloading file {FileId}", fileId);
-
-        // Get file path from Telegram
-        var file = await _botClient.GetFile(fileId, cancellationToken);
-
-        if (string.IsNullOrEmpty(file.FilePath))
-        {
-            throw new InvalidOperationException(
-                $"Could not get file path for file ID: {fileId}");
-        }
-
-        _logger.LogDebug("File path: {FilePath}, Size: {FileSize} bytes", 
-            file.FilePath, file.FileSize);
-
-        // Download file content
-        using var memoryStream = new MemoryStream();
-        await _botClient.DownloadFile(file.FilePath, memoryStream, cancellationToken);
-        
-        var bytes = memoryStream.ToArray();
-
-        _logger.LogInformation("Downloaded file {FileId}: {Size} bytes", 
-            fileId, bytes.Length);
-
-        return bytes;
-    }
-
-    public async Task<TelegramFileInfo> GetFileInfoAsync(
-        string fileId, 
-        CancellationToken cancellationToken = default)
-    {
-        var file = await _botClient.GetFile(fileId, cancellationToken);
-
-        return new TelegramFileInfo(
-            FileId: file.FileId,
-            FileUniqueId: file.FileUniqueId,
-            FileSize: file.FileSize ?? 0,
-            FilePath: file.FilePath
-        );
-    }
-}
-```
-
-### File Size Validation
-
-Add validation before processing large files:
-
-```csharp
-// In PhotoHandler.HandleAsync
-private const long MaxFileSizeBytes = 10 * 1024 * 1024; // 10 MB
-
-public async Task HandleAsync(Message message, CancellationToken cancellationToken = default)
-{
-    // ... existing code ...
-
-    // Validate file size before download
-    var fileInfo = await _fileService.GetFileInfoAsync(photo.FileId, cancellationToken);
+    public Guid Id { get; set; }
     
-    if (fileInfo.FileSize > MaxFileSizeBytes)
-    {
-        await _botClient.SendMessage(
-            chatId: chatId,
-            text: "⚠️ The image is too large. Please send a photo under 10 MB.",
-            cancellationToken: cancellationToken);
-        return;
-    }
-
-    // Continue with download...
-}
-```
-
-### References
-- [Telegram Bot API - getFile](https://core.telegram.org/bots/api#getfile)
-- [File Download Best Practices](https://core.telegram.org/bots/faq#how-do-i-download-files)
-
----
-
-# Day 3: MediatR Integration for Photo Processing
-
-## 🧒 Explain Like I'm 5
-
-Instead of the bot doing everything itself, it sends a "request" to a helper (MediatR). The helper knows how to:
-1. Talk to the OCR service
-2. Find matching ingredients
-3. Package everything up nicely
-
-This way, the bot stays simple and the smart work happens elsewhere!
-
-## 🔧 Engineer Language
-
-Using MediatR for CQRS:
-- **Command**: `ScanReceiptCommand` — orchestrates OCR + matching
-- **Handler**: Calls `IOcrService`, then `IIngredientMatchingService`
-- **Response**: `ReceiptScanResponse` with matched items
-
-### Updated ScanReceiptCommand
-
-Update `src/Nastart.Application/Finance/Commands/ScanReceipt/ScanReceiptCommand.cs`:
-
-```csharp
-using MediatR;
-using Nastart.Application.Common;
-
-namespace Nastart.Application.Finance.Commands.ScanReceipt;
-
-/// <summary>
-/// Command to scan a receipt image and extract items.
-/// </summary>
-public record ScanReceiptCommand(
-    byte[] ImageBytes,
-    string FileName,
-    long ChatId,
-    long UserId
-) : IRequest<Result<ReceiptScanResponse>>;
-
-/// <summary>
-/// Response from receipt scanning.
-/// </summary>
-public record ReceiptScanResponse(
-    bool Success,
-    Guid SessionId,
-    IReadOnlyList<MatchedReceiptItem> MatchedItems,
-    IReadOnlyList<UnmatchedLine> UnmatchedLines,
-    string RawText,
-    decimal? DetectedTotal
-);
-
-/// <summary>
-/// A receipt item matched to a known ingredient.
-/// </summary>
-public record MatchedReceiptItem(
-    Guid IngredientId,
-    string IngredientName,
-    string DetectedText,
-    decimal? Quantity,
-    string? Unit,
-    decimal? UnitPrice,
-    decimal? LineTotal,
-    double MatchConfidence,
-    double OcrConfidence
-);
-
-/// <summary>
-/// A line from the receipt that couldn't be matched.
-/// </summary>
-public record UnmatchedLine(
-    string Text,
-    double Confidence,
-    UnmatchedReason Reason
-);
-
-public enum UnmatchedReason
-{
-    NoIngredientMatch,
-    PriceLineOnly,
-    HeaderFooter,
-    Unreadable
-}
-```
-
-### ScanReceiptCommandHandler with PaddleOCR
-
-Update `src/Nastart.Application/Finance/Commands/ScanReceipt/ScanReceiptCommandHandler.cs`:
-
-```csharp
-using MediatR;
-using Microsoft.Extensions.Logging;
-using Nastart.Application.Common;
-using Nastart.Application.Common.Interfaces;
-
-namespace Nastart.Application.Finance.Commands.ScanReceipt;
-
-/// <summary>
-/// Handles receipt scanning using PaddleOCR microservice.
-/// </summary>
-public class ScanReceiptCommandHandler 
-    : IRequestHandler<ScanReceiptCommand, Result<ReceiptScanResponse>>
-{
-    private readonly IOcrService _ocrService;
-    private readonly IIngredientMatchingService _matchingService;
-    private readonly IReceiptParsingService _parsingService;
-    private readonly IReceiptSessionRepository _sessionRepository;
-    private readonly ILogger<ScanReceiptCommandHandler> _logger;
-
-    public ScanReceiptCommandHandler(
-        IOcrService ocrService,
-        IIngredientMatchingService matchingService,
-        IReceiptParsingService parsingService,
-        IReceiptSessionRepository sessionRepository,
-        ILogger<ScanReceiptCommandHandler> logger)
-    {
-        _ocrService = ocrService;
-        _matchingService = matchingService;
-        _parsingService = parsingService;
-        _sessionRepository = sessionRepository;
-        _logger = logger;
-    }
-
-    public async Task<Result<ReceiptScanResponse>> Handle(
-        ScanReceiptCommand request, 
-        CancellationToken cancellationToken)
-    {
-        _logger.LogInformation(
-            "Processing receipt for user {UserId}, file: {FileName}",
-            request.UserId, request.FileName);
-
-        // Step 1: OCR with PaddleOCR
-        var ocrResult = await _ocrService.ScanImageAsync(
-            request.ImageBytes, 
-            request.FileName, 
-            cancellationToken);
-
-        if (!ocrResult.Success)
-        {
-            _logger.LogWarning("OCR failed: {Error}", ocrResult.Error);
-            return Result<ReceiptScanResponse>.Failure(
-                Error.Failure("OcrFailed", ocrResult.Error ?? "OCR scanning failed"));
-        }
-
-        _logger.LogDebug("OCR extracted {LineCount} lines", ocrResult.Lines.Count);
-
-        // Step 2: Parse receipt structure
-        var parsedReceipt = _parsingService.Parse(ocrResult.Lines);
-
-        // Step 3: Match to ingredients
-        var matchResult = await _matchingService.MatchAsync(
-            parsedReceipt.ItemLines, 
-            request.UserId,
-            cancellationToken);
-
-        // Step 4: Create session for confirmation workflow
-        var sessionId = Guid.NewGuid();
-        await _sessionRepository.CreateAsync(new ReceiptSession
-        {
-            Id = sessionId,
-            ChatId = request.ChatId,
-            UserId = request.UserId,
-            MatchedItems = matchResult.MatchedItems,
-            UnmatchedLines = matchResult.UnmatchedLines,
-            RawText = ocrResult.RawText,
-            DetectedTotal = parsedReceipt.Total,
-            CreatedAt = DateTime.UtcNow,
-            Status = ReceiptSessionStatus.PendingConfirmation
-        }, cancellationToken);
-
-        _logger.LogInformation(
-            "Receipt processed: {MatchedCount} matched, {UnmatchedCount} unmatched, session: {SessionId}",
-            matchResult.MatchedItems.Count, 
-            matchResult.UnmatchedLines.Count,
-            sessionId);
-
-        return Result<ReceiptScanResponse>.Success(new ReceiptScanResponse(
-            Success: true,
-            SessionId: sessionId,
-            MatchedItems: matchResult.MatchedItems,
-            UnmatchedLines: matchResult.UnmatchedLines,
-            RawText: ocrResult.RawText,
-            DetectedTotal: parsedReceipt.Total
-        ));
-    }
-}
-```
-
-### Receipt Session for State Management
-
-Create `src/Nastart.Application/Finance/Commands/ScanReceipt/ReceiptSession.cs`:
-
-```csharp
-namespace Nastart.Application.Finance.Commands.ScanReceipt;
-
-/// <summary>
-/// Temporary session to hold receipt data during confirmation workflow.
-/// </summary>
-public class ReceiptSession
-{
-    public Guid Id { get; init; }
-    public long ChatId { get; init; }
-    public long UserId { get; init; }
-    public IReadOnlyList<MatchedReceiptItem> MatchedItems { get; init; } = [];
-    public IReadOnlyList<UnmatchedLine> UnmatchedLines { get; init; } = [];
-    public string RawText { get; init; } = string.Empty;
-    public decimal? DetectedTotal { get; init; }
-    public DateTime CreatedAt { get; init; }
-    public ReceiptSessionStatus Status { get; set; }
-    public DateTime? ConfirmedAt { get; set; }
+    /// <summary>
+    /// Telegram chat ID where the photo was sent.
+    /// </summary>
+    public long ChatId { get; set; }
+    
+    /// <summary>
+    /// Telegram user ID who sent the photo.
+    /// </summary>
+    public long UserId { get; set; }
+    
+    /// <summary>
+    /// Message ID of the confirmation message (for editing).
+    /// </summary>
+    public int? ConfirmationMessageId { get; set; }
+    
+    /// <summary>
+    /// Original photo file ID from Telegram.
+    /// </summary>
+    public required string PhotoFileId { get; set; }
+    
+    /// <summary>
+    /// Raw OCR text result.
+    /// </summary>
+    public string? RawOcrText { get; set; }
+    
+    /// <summary>
+    /// Detected items as JSON (for editing before save).
+    /// </summary>
+    public string? DetectedItemsJson { get; set; }
+    
+    /// <summary>
+    /// Session status.
+    /// </summary>
+    public ScanSessionStatus Status { get; set; } = ScanSessionStatus.Processing;
+    
+    /// <summary>
+    /// When the session was created.
+    /// </summary>
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    
+    /// <summary>
+    /// When the session expires.
+    /// </summary>
+    public DateTime ExpiresAt { get; set; } = DateTime.UtcNow.AddMinutes(10);
+    
+    /// <summary>
+    /// Shop detected from receipt (if any).
+    /// </summary>
+    public string? DetectedShopName { get; set; }
+    
+    /// <summary>
+    /// Purchase date detected from receipt.
+    /// </summary>
+    public DateTime? DetectedPurchaseDate { get; set; }
 }
 
-public enum ReceiptSessionStatus
+/// <summary>
+/// Status of a scan session.
+/// </summary>
+public enum ScanSessionStatus
 {
-    PendingConfirmation,
+    Processing,
+    AwaitingConfirmation,
     Editing,
     Confirmed,
     Cancelled,
@@ -654,2179 +175,2147 @@ public enum ReceiptSessionStatus
 }
 ```
 
-### References
-- [MediatR Documentation](https://github.com/jbogard/MediatR)
-- [CQRS Pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs)
+### PhotoHandler Feature Slice
+
+Create `src/Nastart.Api/Features/Bot/Handlers/PhotoHandler.cs`:
+
+```csharp
+using System.Text.Json;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Bot;
+
+// ══════════════════════════════════════════════════════════════
+// PHOTO HANDLER FEATURE SLICE
+// Handles receipt photo messages
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
+/// <summary>
+/// Command to handle incoming photo message.
+/// </summary>
+public sealed record HandlePhotoCommand(
+    long ChatId,
+    long UserId,
+    string FileId,
+    string FileUniqueId,
+    int? Width,
+    int? Height
+) : IRequest<Result<PhotoHandlerResponse>>;
+
+// ── Response ──
+/// <summary>
+/// Response from photo handling.
+/// </summary>
+public sealed record PhotoHandlerResponse(
+    Guid SessionId,
+    string Status,
+    string? Message = null
+);
+
+// ── Handler ──
+/// <summary>
+/// Handles incoming photo messages by starting OCR flow.
+/// </summary>
+/// <remarks>
+/// Orchestrates the receipt scanning workflow:
+/// 1. Creates scan session
+/// 2. Sends "processing" message
+/// 3. Downloads and processes image
+/// 4. Sends confirmation keyboard
+/// See: https://core.telegram.org/bots/api#photosize
+/// </remarks>
+public sealed class PhotoHandler 
+    : IRequestHandler<HandlePhotoCommand, Result<PhotoHandlerResponse>>
+{
+    private readonly ITelegramBotService _botService;
+    private readonly IMediator _mediator;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<PhotoHandler> _logger;
+
+    public PhotoHandler(
+        ITelegramBotService botService,
+        IMediator mediator,
+        NastartDbContext db,
+        ILogger<PhotoHandler> logger)
+    {
+        _botService = botService;
+        _mediator = mediator;
+        _db = db;
+        _logger = logger;
+    }
+
+    public async Task<Result<PhotoHandlerResponse>> Handle(
+        HandlePhotoCommand request,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Photo received from chat {ChatId}, file {FileId}",
+            request.ChatId,
+            request.FileId);
+        
+        try
+        {
+            // 1. Create scan session
+            var session = new ScanSession
+            {
+                Id = Guid.NewGuid(),
+                ChatId = request.ChatId,
+                UserId = request.UserId,
+                PhotoFileId = request.FileId,
+                Status = ScanSessionStatus.Processing
+            };
+            
+            _db.ScanSessions.Add(session);
+            await _db.SaveChangesAsync(cancellationToken);
+            
+            // 2. Send "processing" message with typing indicator
+            await _botService.SendTypingActionAsync(request.ChatId, cancellationToken);
+            
+            var processingMessage = await _botService.SendTextMessageAsync(
+                request.ChatId,
+                "📷 <b>Struk diterima!</b>\n\n⏳ Sedang memproses...\n<i>Mohon tunggu 5-10 detik</i>",
+                cancellationToken: cancellationToken);
+            
+            // 3. Download image from Telegram
+            var downloadResult = await _mediator.Send(
+                new DownloadTelegramFileCommand(request.FileId),
+                cancellationToken);
+            
+            if (!downloadResult.IsSuccess)
+            {
+                await UpdateProcessingMessage(
+                    request.ChatId,
+                    processingMessage.MessageId,
+                    "❌ Gagal mengunduh foto. Silakan coba lagi.",
+                    cancellationToken);
+                
+                session.Status = ScanSessionStatus.Cancelled;
+                await _db.SaveChangesAsync(cancellationToken);
+                
+                return Result<PhotoHandlerResponse>.Failure("Failed to download image");
+            }
+            
+            // 4. Send to OCR service
+            var scanResult = await _mediator.Send(
+                new ScanReceiptCommand(
+                    UserId: Guid.Empty, // Will be set from user mapping
+                    ImageData: downloadResult.Value!.ImageData,
+                    FileName: $"receipt_{session.Id}.jpg"
+                ),
+                cancellationToken);
+            
+            if (!scanResult.IsSuccess)
+            {
+                await UpdateProcessingMessage(
+                    request.ChatId,
+                    processingMessage.MessageId,
+                    "❌ Gagal membaca struk. Pastikan foto jelas dan coba lagi.",
+                    cancellationToken);
+                
+                session.Status = ScanSessionStatus.Cancelled;
+                await _db.SaveChangesAsync(cancellationToken);
+                
+                return Result<PhotoHandlerResponse>.Failure("OCR failed");
+            }
+            
+            // 5. Store OCR results in session
+            session.RawOcrText = scanResult.Value!.RawText;
+            session.DetectedItemsJson = JsonSerializer.Serialize(scanResult.Value.Items);
+            session.DetectedShopName = scanResult.Value.ShopName;
+            session.DetectedPurchaseDate = scanResult.Value.PurchaseDate;
+            session.Status = ScanSessionStatus.AwaitingConfirmation;
+            
+            await _db.SaveChangesAsync(cancellationToken);
+            
+            // 6. Build and send confirmation message
+            var confirmationResult = await _mediator.Send(
+                new SendScanConfirmationCommand(session.Id),
+                cancellationToken);
+            
+            if (confirmationResult.IsSuccess)
+            {
+                session.ConfirmationMessageId = confirmationResult.Value!.MessageId;
+                await _db.SaveChangesAsync(cancellationToken);
+                
+                // Delete processing message
+                // Note: EditMessage used instead since we're updating
+            }
+            
+            return Result<PhotoHandlerResponse>.Success(new PhotoHandlerResponse(
+                SessionId: session.Id,
+                Status: "awaiting_confirmation",
+                Message: "OCR complete, awaiting user confirmation"
+            ));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, 
+                "Error processing photo from chat {ChatId}",
+                request.ChatId);
+            
+            await _botService.SendTextMessageAsync(
+                request.ChatId,
+                "❌ Terjadi kesalahan. Silakan coba lagi.",
+                cancellationToken: cancellationToken);
+            
+            return Result<PhotoHandlerResponse>.Failure(ex.Message);
+        }
+    }
+
+    private async Task UpdateProcessingMessage(
+        long chatId,
+        int messageId,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _botService.EditMessageTextAsync(
+                chatId,
+                messageId,
+                text,
+                cancellationToken: cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to edit processing message");
+        }
+    }
+}
+```
+
+### Add ScanSessions DbSet
+
+Update `src/Nastart.Api/Shared/Data/NastartDbContext.cs`:
+
+```csharp
+using Nastart.Api.Features.Bot;
+
+// Add to DbContext class:
+public DbSet<ScanSession> ScanSessions => Set<ScanSession>();
+```
+
+### Your Task (Day 1):
+
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
+
+# Create Handlers folder
+mkdir Features\Bot\Handlers -ErrorAction SilentlyContinue
+
+# Create session and handler files
+New-Item Features\Bot\ScanSession.cs
+New-Item Features\Bot\Handlers\PhotoHandler.cs
+
+# Update DbContext with ScanSessions DbSet
+
+# Verify build
+dotnet build
+```
 
 ---
 
-# Day 4: Fuzzy Ingredient Matching Service
+# Day 2: Download Image from Telegram
 
 ## 🧒 Explain Like I'm 5
 
-Sometimes receipts have typos or weird names:
-- "TEPUNG TERIGU" → "Tepung Terigu" (Wheat Flour)
-- "GULA PSR" → "Gula Pasir" (Sugar)
-- "M.GORENG" → "Minyak Goreng" (Cooking Oil)
+When you send a photo to Telegram, it doesn't come directly to our robot. Instead:
+1. Telegram keeps the photo on their servers
+2. They give us a "ticket" (file_id) to get it
+3. We use that ticket to download the actual photo
 
-The fuzzy matching service is like a smart assistant that can still figure out what ingredient it is, even if the name isn't perfect!
+It's like a coat check! 🎫 You give your coat, get a ticket. Later, show the ticket, get your coat back!
 
 ## 🔧 Engineer Language
 
-Fuzzy string matching techniques:
-1. **Levenshtein Distance** — Count character edits needed
-2. **Jaro-Winkler** — Weighted for prefix matches
-3. **Contains/Substring** — Simple but effective
-4. **Alias Matching** — Predefined abbreviations
+Telegram doesn't send actual images in webhooks — it sends `file_id` references. To get the actual bytes, you must:
+1. Call `getFile` API to get the file path
+2. Download from `https://api.telegram.org/file/bot<token>/<file_path>`
 
-### IIngredientMatchingService Interface
+> 📖 **Microsoft Docs**: *"HttpClient is intended to be instantiated once and reused throughout the life of an application. Use IHttpClientFactory for proper lifetime management."*
+>
+> — [IHttpClientFactory](https://learn.microsoft.com/en-us/dotnet/core/extensions/httpclient-factory)
 
-Create `src/Nastart.Application/Common/Interfaces/IIngredientMatchingService.cs`:
+### DownloadTelegramFile Feature
+
+Create `src/Nastart.Api/Features/Bot/DownloadTelegramFile.cs`:
 
 ```csharp
-namespace Nastart.Application.Common.Interfaces;
+using MediatR;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Bot;
+
+// ══════════════════════════════════════════════════════════════
+// DOWNLOAD TELEGRAM FILE FEATURE SLICE
+// Downloads files from Telegram servers
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
+/// <summary>
+/// Command to download a file from Telegram servers.
+/// </summary>
+public sealed record DownloadTelegramFileCommand(
+    string FileId
+) : IRequest<Result<TelegramFileDownload>>;
+
+// ── Response ──
+/// <summary>
+/// Result of file download.
+/// </summary>
+public sealed record TelegramFileDownload(
+    byte[] ImageData,
+    string FilePath,
+    int FileSize
+);
+
+// ── Handler ──
+/// <summary>
+/// Downloads files from Telegram servers using Bot API.
+/// </summary>
+/// <remarks>
+/// Telegram photos are stored on their servers.
+/// Use file_id with getFile API to get download path.
+/// See: https://core.telegram.org/bots/api#getfile
+/// </remarks>
+public sealed class DownloadTelegramFileHandler 
+    : IRequestHandler<DownloadTelegramFileCommand, Result<TelegramFileDownload>>
+{
+    private readonly ITelegramBotService _botService;
+    private readonly ILogger<DownloadTelegramFileHandler> _logger;
+
+    public DownloadTelegramFileHandler(
+        ITelegramBotService botService,
+        ILogger<DownloadTelegramFileHandler> logger)
+    {
+        _botService = botService;
+        _logger = logger;
+    }
+
+    public async Task<Result<TelegramFileDownload>> Handle(
+        DownloadTelegramFileCommand request,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Downloading file {FileId} from Telegram",
+            request.FileId);
+        
+        try
+        {
+            // Download file bytes
+            var fileData = await _botService.DownloadFileAsync(
+                request.FileId,
+                cancellationToken);
+            
+            _logger.LogInformation(
+                "Downloaded {Size} bytes from Telegram",
+                fileData.Length);
+            
+            return Result<TelegramFileDownload>.Success(new TelegramFileDownload(
+                ImageData: fileData,
+                FilePath: request.FileId,
+                FileSize: fileData.Length
+            ));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, 
+                "Failed to download file {FileId}",
+                request.FileId);
+            
+            return Result<TelegramFileDownload>.Failure(
+                $"Failed to download file: {ex.Message}");
+        }
+    }
+}
+```
+
+### Image Validation & Preprocessing
+
+Create `src/Nastart.Api/Features/Bot/Services/ImagePreprocessor.cs`:
+
+```csharp
+namespace Nastart.Api.Features.Bot.Services;
 
 /// <summary>
-/// Service for matching OCR-extracted text to known ingredients.
+/// Validates and preprocesses images before OCR.
 /// </summary>
-public interface IIngredientMatchingService
+public interface IImagePreprocessor
 {
     /// <summary>
-    /// Matches receipt lines to known ingredients.
+    /// Validates image is suitable for OCR.
     /// </summary>
-    Task<IngredientMatchResult> MatchAsync(
-        IEnumerable<ReceiptItemLine> lines,
-        long userId,
-        CancellationToken cancellationToken = default);
+    ImageValidationResult Validate(byte[] imageData);
+    
+    /// <summary>
+    /// Converts image to optimal format for OCR.
+    /// </summary>
+    Task<byte[]> PreprocessAsync(byte[] imageData, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
-/// A parsed item line from a receipt.
+/// Result of image validation.
 /// </summary>
-public record ReceiptItemLine(
+public sealed record ImageValidationResult(
+    bool IsValid,
+    string? ErrorMessage = null,
+    string? ImageFormat = null,
+    int? Width = null,
+    int? Height = null
+);
+
+/// <summary>
+/// Implementation of image preprocessor.
+/// </summary>
+public class ImagePreprocessor : IImagePreprocessor
+{
+    private readonly ILogger<ImagePreprocessor> _logger;
+    
+    // Supported formats (magic bytes)
+    private static readonly byte[] JpegHeader = { 0xFF, 0xD8, 0xFF };
+    private static readonly byte[] PngHeader = { 0x89, 0x50, 0x4E, 0x47 };
+    private static readonly byte[] WebpHeader = { 0x52, 0x49, 0x46, 0x46 };
+    
+    private const int MinWidth = 100;
+    private const int MaxWidth = 4096;
+    private const int MaxFileSize = 20 * 1024 * 1024; // 20MB
+
+    public ImagePreprocessor(ILogger<ImagePreprocessor> logger)
+    {
+        _logger = logger;
+    }
+
+    public ImageValidationResult Validate(byte[] imageData)
+    {
+        if (imageData is null || imageData.Length == 0)
+        {
+            return new ImageValidationResult(false, "Image data is empty");
+        }
+        
+        if (imageData.Length > MaxFileSize)
+        {
+            return new ImageValidationResult(false, 
+                $"Image too large. Max size: {MaxFileSize / 1024 / 1024}MB");
+        }
+        
+        // Detect format from magic bytes
+        string? format = DetectFormat(imageData);
+        
+        if (format is null)
+        {
+            return new ImageValidationResult(false, 
+                "Unsupported image format. Use JPEG, PNG, or WebP.");
+        }
+        
+        _logger.LogInformation(
+            "Image validated: {Format}, {Size} bytes",
+            format,
+            imageData.Length);
+        
+        return new ImageValidationResult(
+            IsValid: true,
+            ImageFormat: format
+        );
+    }
+
+    public Task<byte[]> PreprocessAsync(
+        byte[] imageData, 
+        CancellationToken cancellationToken = default)
+    {
+        // For now, pass through. Can add:
+        // - Rotation correction
+        // - Contrast enhancement
+        // - Noise reduction
+        // - Resize for optimal OCR
+        
+        return Task.FromResult(imageData);
+    }
+
+    private static string? DetectFormat(byte[] data)
+    {
+        if (data.Length < 4) return null;
+        
+        if (StartsWith(data, JpegHeader)) return "jpeg";
+        if (StartsWith(data, PngHeader)) return "png";
+        if (data.Length >= 12 && StartsWith(data, WebpHeader) && 
+            data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50)
+            return "webp";
+        
+        return null;
+    }
+
+    private static bool StartsWith(byte[] data, byte[] prefix)
+    {
+        if (data.Length < prefix.Length) return false;
+        for (int i = 0; i < prefix.Length; i++)
+        {
+            if (data[i] != prefix[i]) return false;
+        }
+        return true;
+    }
+}
+```
+
+### Register Services
+
+```csharp
+// In Program.cs, add:
+using Nastart.Api.Features.Bot.Services;
+
+builder.Services.AddSingleton<IImagePreprocessor, ImagePreprocessor>();
+```
+
+### Your Task (Day 2):
+
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
+
+# Create download feature and preprocessor
+New-Item Features\Bot\DownloadTelegramFile.cs
+New-Item Features\Bot\Services\ImagePreprocessor.cs
+
+# Verify build
+dotnet build
+```
+
+---
+
+# Day 3: Connect to ScanReceipt Feature
+
+## 🧒 Explain Like I'm 5
+
+Now we have the photo! Time to send it to our magic reading machine (OCR):
+1. "Hey OCR, here's a picture of a receipt!"
+2. OCR looks at it very carefully... 🔍
+3. OCR says "I see: Tepung 25000, Gula 16000, Telur 35000"
+4. We take those words and try to match them to ingredients we know!
+
+## 🔧 Engineer Language
+
+The **ScanReceipt** feature (from Week 6) processes images via the PaddleOCR microservice. Now we connect the Telegram photo flow to this existing feature.
+
+> 📖 **Microsoft Docs**: *"MediatR provides a simple, decoupled way to send requests through your application. Handlers can be composed and pipelines configured."*
+>
+> — [MediatR on GitHub](https://github.com/jbogard/MediatR)
+
+### Enhanced ScanReceipt for Bot Integration
+
+Update or create `src/Nastart.Api/Features/Receipts/ScanReceipt.cs`:
+
+```csharp
+using FluentValidation;
+using MediatR;
+using Nastart.Api.Shared.Models;
+using Nastart.Api.Shared.Services;
+
+namespace Nastart.Api.Features.Receipts;
+
+// ══════════════════════════════════════════════════════════════
+// SCAN RECEIPT FEATURE SLICE
+// OCR processing for receipt images
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
+/// <summary>
+/// Command to scan a receipt image using OCR.
+/// </summary>
+public sealed record ScanReceiptCommand(
+    Guid UserId,
+    byte[] ImageData,
+    string FileName
+) : IRequest<Result<ScanReceiptResponse>>;
+
+// ── Response ──
+/// <summary>
+/// OCR scan result with detected items.
+/// </summary>
+public sealed record ScanReceiptResponse(
     string RawText,
-    string? ItemName,
+    IReadOnlyList<DetectedReceiptItem> Items,
+    string? ShopName,
+    DateTime? PurchaseDate,
+    decimal? TotalAmount,
+    float Confidence
+);
+
+/// <summary>
+/// A single item detected from receipt.
+/// </summary>
+public sealed record DetectedReceiptItem(
+    string RawText,
+    string? MatchedIngredientName,
+    Guid? MatchedIngredientId,
     decimal? Quantity,
     string? Unit,
     decimal? UnitPrice,
     decimal? LineTotal,
-    double OcrConfidence
+    float Confidence
 );
 
-/// <summary>
-/// Result of ingredient matching.
-/// </summary>
-public record IngredientMatchResult(
-    IReadOnlyList<MatchedReceiptItem> MatchedItems,
-    IReadOnlyList<UnmatchedLine> UnmatchedLines
-);
-```
-
-### IngredientMatchingService Implementation
-
-Create `src/Nastart.Infrastructure/Services/IngredientMatchingService.cs`:
-
-```csharp
-using Microsoft.Extensions.Logging;
-using Nastart.Application.Common.Interfaces;
-using Nastart.Application.Finance.Commands.ScanReceipt;
-using Nastart.Domain.Inventory.Aggregates;
-
-namespace Nastart.Infrastructure.Services;
-
-/// <summary>
-/// Matches receipt text to ingredients using fuzzy matching.
-/// </summary>
-public class IngredientMatchingService : IIngredientMatchingService
+// ── Validator ──
+public sealed class ScanReceiptValidator : AbstractValidator<ScanReceiptCommand>
 {
-    private readonly IIngredientRepository _ingredientRepository;
-    private readonly IIngredientAliasRepository _aliasRepository;
-    private readonly ILogger<IngredientMatchingService> _logger;
-
-    // Minimum confidence threshold for a match
-    private const double MinMatchConfidence = 0.6;
-
-    public IngredientMatchingService(
-        IIngredientRepository ingredientRepository,
-        IIngredientAliasRepository aliasRepository,
-        ILogger<IngredientMatchingService> logger)
+    public ScanReceiptValidator()
     {
-        _ingredientRepository = ingredientRepository;
-        _aliasRepository = aliasRepository;
+        RuleFor(x => x.ImageData)
+            .NotEmpty()
+            .WithMessage("Image data is required");
+        
+        RuleFor(x => x.ImageData.Length)
+            .LessThanOrEqualTo(20 * 1024 * 1024) // 20MB
+            .WithMessage("Image too large (max 20MB)");
+        
+        RuleFor(x => x.FileName)
+            .NotEmpty()
+            .MaximumLength(255);
+    }
+}
+
+// ── Handler ──
+/// <summary>
+/// Handles receipt scanning via PaddleOCR service.
+/// </summary>
+/// <remarks>
+/// Sends image to OCR microservice, then uses fuzzy matching
+/// to identify ingredients from detected text.
+/// See Week 6 for PaddleOCR integration details.
+/// </remarks>
+public sealed class ScanReceiptHandler 
+    : IRequestHandler<ScanReceiptCommand, Result<ScanReceiptResponse>>
+{
+    private readonly IPaddleOcrService _ocrService;
+    private readonly IFuzzyMatchingService _fuzzyMatcher;
+    private readonly ILogger<ScanReceiptHandler> _logger;
+
+    public ScanReceiptHandler(
+        IPaddleOcrService ocrService,
+        IFuzzyMatchingService fuzzyMatcher,
+        ILogger<ScanReceiptHandler> logger)
+    {
+        _ocrService = ocrService;
+        _fuzzyMatcher = fuzzyMatcher;
         _logger = logger;
     }
 
-    public async Task<IngredientMatchResult> MatchAsync(
-        IEnumerable<ReceiptItemLine> lines,
-        long userId,
-        CancellationToken cancellationToken = default)
+    public async Task<Result<ScanReceiptResponse>> Handle(
+        ScanReceiptCommand request,
+        CancellationToken cancellationToken)
     {
-        // Load user's ingredients and common aliases
-        var ingredients = await _ingredientRepository.GetByUserIdAsync(userId, cancellationToken);
-        var aliases = await _aliasRepository.GetAllAsync(cancellationToken);
-
-        var matched = new List<MatchedReceiptItem>();
-        var unmatched = new List<UnmatchedLine>();
-
-        foreach (var line in lines)
+        _logger.LogInformation(
+            "Scanning receipt: {FileName}, {Size} bytes",
+            request.FileName,
+            request.ImageData.Length);
+        
+        try
         {
-            if (string.IsNullOrWhiteSpace(line.ItemName))
+            // 1. Send to OCR service
+            var ocrResult = await _ocrService.ScanReceiptAsync(
+                request.ImageData,
+                cancellationToken);
+            
+            if (!ocrResult.IsSuccess)
             {
-                unmatched.Add(new UnmatchedLine(
-                    line.RawText, 
-                    line.OcrConfidence, 
-                    UnmatchedReason.Unreadable));
-                continue;
+                return Result<ScanReceiptResponse>.Failure(
+                    ocrResult.ErrorMessage ?? "OCR failed");
             }
-
-            var (ingredient, confidence) = FindBestMatch(
-                line.ItemName, 
-                ingredients, 
-                aliases);
-
-            if (ingredient is not null && confidence >= MinMatchConfidence)
+            
+            // 2. Parse receipt lines
+            var detectedItems = new List<DetectedReceiptItem>();
+            
+            foreach (var line in ocrResult.Lines)
             {
-                matched.Add(new MatchedReceiptItem(
-                    IngredientId: ingredient.Id.Value,
-                    IngredientName: ingredient.Name,
-                    DetectedText: line.RawText,
+                // 3. Fuzzy match to known ingredients
+                var matchResult = await _fuzzyMatcher.FindBestMatchAsync(
+                    line.Text,
+                    cancellationToken);
+                
+                var item = new DetectedReceiptItem(
+                    RawText: line.Text,
+                    MatchedIngredientName: matchResult?.IngredientName,
+                    MatchedIngredientId: matchResult?.IngredientId,
                     Quantity: line.Quantity,
-                    Unit: line.Unit ?? ingredient.Unit.Name,
+                    Unit: line.Unit ?? matchResult?.DefaultUnit,
                     UnitPrice: line.UnitPrice,
-                    LineTotal: line.LineTotal,
-                    MatchConfidence: confidence,
-                    OcrConfidence: line.OcrConfidence
-                ));
-
-                _logger.LogDebug(
-                    "Matched '{Text}' → '{Ingredient}' (confidence: {Confidence:P0})",
-                    line.ItemName, ingredient.Name, confidence);
+                    LineTotal: line.Total,
+                    Confidence: matchResult?.Confidence ?? line.Confidence
+                );
+                
+                detectedItems.Add(item);
             }
-            else
-            {
-                unmatched.Add(new UnmatchedLine(
-                    line.RawText,
-                    line.OcrConfidence,
-                    UnmatchedReason.NoIngredientMatch));
-
-                _logger.LogDebug(
-                    "No match for '{Text}' (best: {Confidence:P0})",
-                    line.ItemName, confidence);
-            }
-        }
-
-        return new IngredientMatchResult(matched, unmatched);
-    }
-
-    private (Ingredient? Ingredient, double Confidence) FindBestMatch(
-        string text,
-        IEnumerable<Ingredient> ingredients,
-        IEnumerable<IngredientAlias> aliases)
-    {
-        var normalizedText = NormalizeText(text);
-        
-        Ingredient? bestMatch = null;
-        double bestConfidence = 0;
-
-        foreach (var ingredient in ingredients)
-        {
-            var normalizedName = NormalizeText(ingredient.Name);
             
-            // 1. Exact match (highest confidence)
-            if (normalizedText == normalizedName)
-            {
-                return (ingredient, 1.0);
-            }
-
-            // 2. Contains match
-            var containsConfidence = CalculateContainsConfidence(normalizedText, normalizedName);
-            if (containsConfidence > bestConfidence)
-            {
-                bestConfidence = containsConfidence;
-                bestMatch = ingredient;
-            }
-
-            // 3. Levenshtein distance
-            var levenshteinConfidence = CalculateLevenshteinConfidence(normalizedText, normalizedName);
-            if (levenshteinConfidence > bestConfidence)
-            {
-                bestConfidence = levenshteinConfidence;
-                bestMatch = ingredient;
-            }
-        }
-
-        // 4. Check aliases
-        foreach (var alias in aliases)
-        {
-            var normalizedAlias = NormalizeText(alias.Alias);
+            _logger.LogInformation(
+                "Scan complete: {ItemCount} items detected",
+                detectedItems.Count);
             
-            if (normalizedText.Contains(normalizedAlias) || normalizedAlias.Contains(normalizedText))
-            {
-                var matchedIngredient = ingredients.FirstOrDefault(i => i.Id.Value == alias.IngredientId);
-                if (matchedIngredient is not null)
-                {
-                    var aliasConfidence = 0.95; // High confidence for alias match
-                    if (aliasConfidence > bestConfidence)
-                    {
-                        bestConfidence = aliasConfidence;
-                        bestMatch = matchedIngredient;
-                    }
-                }
-            }
+            return Result<ScanReceiptResponse>.Success(new ScanReceiptResponse(
+                RawText: ocrResult.RawText,
+                Items: detectedItems,
+                ShopName: ocrResult.ShopName,
+                PurchaseDate: ocrResult.PurchaseDate,
+                TotalAmount: ocrResult.TotalAmount,
+                Confidence: ocrResult.OverallConfidence
+            ));
         }
-
-        return (bestMatch, bestConfidence);
-    }
-
-    private static string NormalizeText(string text)
-    {
-        return text
-            .ToLowerInvariant()
-            .Replace(".", "")
-            .Replace(",", "")
-            .Replace("-", " ")
-            .Replace("_", " ")
-            .Trim();
-    }
-
-    private static double CalculateContainsConfidence(string text, string name)
-    {
-        if (text.Contains(name))
+        catch (Exception ex)
         {
-            // Full name is in text
-            return 0.9 * ((double)name.Length / text.Length);
+            _logger.LogError(ex, "Receipt scan failed");
+            return Result<ScanReceiptResponse>.Failure(ex.Message);
         }
-        
-        if (name.Contains(text))
-        {
-            // Text is part of name
-            return 0.8 * ((double)text.Length / name.Length);
-        }
-
-        return 0;
-    }
-
-    private static double CalculateLevenshteinConfidence(string text, string name)
-    {
-        var distance = LevenshteinDistance(text, name);
-        var maxLength = Math.Max(text.Length, name.Length);
-        
-        if (maxLength == 0) return 0;
-        
-        return 1.0 - ((double)distance / maxLength);
-    }
-
-    private static int LevenshteinDistance(string s, string t)
-    {
-        if (string.IsNullOrEmpty(s)) return t?.Length ?? 0;
-        if (string.IsNullOrEmpty(t)) return s.Length;
-
-        var n = s.Length;
-        var m = t.Length;
-        var d = new int[n + 1, m + 1];
-
-        for (var i = 0; i <= n; i++) d[i, 0] = i;
-        for (var j = 0; j <= m; j++) d[0, j] = j;
-
-        for (var i = 1; i <= n; i++)
-        {
-            for (var j = 1; j <= m; j++)
-            {
-                var cost = (t[j - 1] == s[i - 1]) ? 0 : 1;
-                d[i, j] = Math.Min(
-                    Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1),
-                    d[i - 1, j - 1] + cost);
-            }
-        }
-
-        return d[n, m];
     }
 }
 ```
 
-### Ingredient Alias Entity
+### IPaddleOcrService Interface
 
-Create `src/Nastart.Domain/Inventory/Entities/IngredientAlias.cs`:
+Ensure you have `src/Nastart.Api/Shared/Services/IPaddleOcrService.cs`:
 
 ```csharp
-namespace Nastart.Domain.Inventory.Entities;
+namespace Nastart.Api.Shared.Services;
 
 /// <summary>
-/// Common aliases/abbreviations for ingredients.
-/// Examples: "TPG TERIGU" → "Tepung Terigu"
+/// Service for OCR via PaddleOCR microservice.
 /// </summary>
-public class IngredientAlias
+public interface IPaddleOcrService
 {
-    public Guid Id { get; init; }
-    public Guid IngredientId { get; init; }
-    public string Alias { get; init; } = string.Empty;
-    
-    // Common Indonesian receipt abbreviations
-    public static readonly Dictionary<string, string> CommonAliases = new()
-    {
-        ["TPG"] = "Tepung",
-        ["TRG"] = "Terigu",
-        ["GLR"] = "Gula",
-        ["PSR"] = "Pasir",
-        ["MNK"] = "Minyak",
-        ["GRG"] = "Goreng",
-        ["TLR"] = "Telur",
-        ["BWT"] = "Bawang",
-        ["PTH"] = "Putih",
-        ["MRH"] = "Merah",
-        ["KLP"] = "Kelapa",
-        ["SNT"] = "Santan",
-        ["GRM"] = "Garam",
-        ["MTG"] = "Mentega",
-        ["SKL"] = "Susu Kental",
-        ["SMS"] = "Susu Manis"
-    };
+    /// <summary>
+    /// Scans a receipt image and extracts text.
+    /// </summary>
+    Task<OcrScanResult> ScanReceiptAsync(
+        byte[] imageData,
+        CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Result from OCR scan.
+/// </summary>
+public sealed record OcrScanResult(
+    bool IsSuccess,
+    string RawText,
+    IReadOnlyList<OcrLine> Lines,
+    string? ShopName,
+    DateTime? PurchaseDate,
+    decimal? TotalAmount,
+    float OverallConfidence,
+    string? ErrorMessage = null
+);
+
+/// <summary>
+/// A single line from OCR.
+/// </summary>
+public sealed record OcrLine(
+    string Text,
+    decimal? Quantity,
+    string? Unit,
+    decimal? UnitPrice,
+    decimal? Total,
+    float Confidence
+);
 ```
 
-### References
-- [Levenshtein Distance Algorithm](https://en.wikipedia.org/wiki/Levenshtein_distance)
-- [Fuzzy String Matching](https://github.com/JakeBayer/FuzzySharp)
+### IFuzzyMatchingService Interface
+
+Ensure you have `src/Nastart.Api/Shared/Services/IFuzzyMatchingService.cs`:
+
+```csharp
+namespace Nastart.Api.Shared.Services;
+
+/// <summary>
+/// Service for fuzzy matching OCR text to ingredients.
+/// </summary>
+public interface IFuzzyMatchingService
+{
+    /// <summary>
+    /// Finds the best matching ingredient for OCR text.
+    /// </summary>
+    Task<FuzzyMatchResult?> FindBestMatchAsync(
+        string ocrText,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Result of fuzzy matching.
+/// </summary>
+public sealed record FuzzyMatchResult(
+    Guid IngredientId,
+    string IngredientName,
+    string? DefaultUnit,
+    float Confidence
+);
+```
+
+### Your Task (Day 3):
+
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
+
+# Ensure Receipts folder exists
+mkdir Features\Receipts -ErrorAction SilentlyContinue
+
+# Create/update ScanReceipt feature
+New-Item Features\Receipts\ScanReceipt.cs -ErrorAction SilentlyContinue
+
+# Create service interfaces
+mkdir Shared\Services -ErrorAction SilentlyContinue
+New-Item Shared\Services\IPaddleOcrService.cs -ErrorAction SilentlyContinue
+New-Item Shared\Services\IFuzzyMatchingService.cs -ErrorAction SilentlyContinue
+
+# Verify build
+dotnet build
+```
 
 ---
 
-# Day 5: Confirmation Workflow with Inline Keyboards
+# Day 4: Build Confirmation Keyboard UI
 
 ## 🧒 Explain Like I'm 5
 
-After the bot reads your receipt, it shows you:
-- "Found 5 items! Here's what I saw:"
-- Flour - Rp 25,000
-- Sugar - Rp 15,000
-- etc.
+After our robot reads the receipt, it shows you what it found with buttons:
 
-Then it asks: "Is this correct?" with buttons:
-- ✅ Yes, save it!
-- ✏️ Edit some items
-- ❌ Cancel
+```
+📋 Struk Terdeteksi:
 
-You tap the button to tell the bot what to do next!
+1️⃣ Tepung Terigu - 2kg - Rp 25.000
+2️⃣ Gula Pasir - 1kg - Rp 16.000
+3️⃣ Telur Ayam - 30pcs - Rp 35.000
+
+Total: Rp 76.000
+
+[✅ Simpan] [✏️ Edit] [❌ Batal]
+```
+
+You can press:
+- ✅ **Simpan** → Save everything as-is
+- ✏️ **Edit** → Change something that's wrong
+- ❌ **Batal** → Cancel and start over
 
 ## 🔧 Engineer Language
 
-Multi-step confirmation workflow:
-1. **Show Summary** — Display matched items with confidence
-2. **Edit Mode** — Allow item-by-item editing
-3. **Confirm** — Save to database
-4. **Cancel** — Discard session
+**Inline keyboards** provide interactive buttons in Telegram messages. We build a dynamic confirmation UI showing detected items with action buttons.
 
-### IReceiptConfirmationBuilder Interface
+> 📖 **Telegram Docs**: *"Inline keyboards are displayed directly below the message they belong to. Callback buttons send callback queries to your bot."*
+>
+> — [Inline Keyboards](https://core.telegram.org/bots/features#inline-keyboards)
 
-Create `src/Nastart.Bot/Services/IReceiptConfirmationBuilder.cs`:
+### SendScanConfirmation Feature
 
-```csharp
-using Telegram.Bot.Types.ReplyMarkups;
-using Nastart.Application.Finance.Commands.ScanReceipt;
-
-namespace Nastart.Bot.Services;
-
-/// <summary>
-/// Builds confirmation messages and keyboards for receipt processing.
-/// </summary>
-public interface IReceiptConfirmationBuilder
-{
-    /// <summary>
-    /// Builds the initial confirmation message.
-    /// </summary>
-    (string Text, InlineKeyboardMarkup Keyboard) Build(ReceiptScanResponse response);
-    
-    /// <summary>
-    /// Builds the edit mode message for a specific item.
-    /// </summary>
-    (string Text, InlineKeyboardMarkup Keyboard) BuildEditItem(
-        ReceiptScanResponse response, 
-        int itemIndex);
-}
-```
-
-### ReceiptConfirmationBuilder Implementation
-
-Create `src/Nastart.Bot/Services/ReceiptConfirmationBuilder.cs`:
+Create `src/Nastart.Api/Features/Bot/SendScanConfirmation.cs`:
 
 ```csharp
 using System.Text;
-using Telegram.Bot.Types.ReplyMarkups;
-using Nastart.Application.Finance.Commands.ScanReceipt;
-
-namespace Nastart.Bot.Services;
-
-public sealed class ReceiptConfirmationBuilder : IReceiptConfirmationBuilder
-{
-    public (string Text, InlineKeyboardMarkup Keyboard) Build(ReceiptScanResponse response)
-    {
-        var sb = new StringBuilder();
-        
-        if (response.MatchedItems.Count > 0)
-        {
-            sb.AppendLine("✅ *Receipt Scanned Successfully!*\n");
-            sb.AppendLine("*Found items:*");
-            
-            var total = 0m;
-            for (var i = 0; i < response.MatchedItems.Count; i++)
-            {
-                var item = response.MatchedItems[i];
-                var confidence = item.MatchConfidence >= 0.9 ? "✓" : "?";
-                
-                sb.AppendLine($"{i + 1}. {confidence} *{item.IngredientName}*");
-                
-                if (item.Quantity.HasValue && !string.IsNullOrEmpty(item.Unit))
-                {
-                    sb.Append($"   {item.Quantity:N1} {item.Unit}");
-                }
-                
-                if (item.UnitPrice.HasValue)
-                {
-                    sb.Append($" @ Rp {item.UnitPrice:N0}");
-                }
-                
-                if (item.LineTotal.HasValue)
-                {
-                    sb.AppendLine($" = *Rp {item.LineTotal:N0}*");
-                    total += item.LineTotal.Value;
-                }
-                else
-                {
-                    sb.AppendLine();
-                }
-            }
-            
-            sb.AppendLine();
-            
-            if (response.DetectedTotal.HasValue)
-            {
-                sb.AppendLine($"📋 *Receipt Total: Rp {response.DetectedTotal:N0}*");
-                sb.AppendLine($"📊 *Matched Total: Rp {total:N0}*");
-                
-                var diff = Math.Abs(response.DetectedTotal.Value - total);
-                if (diff > 0)
-                {
-                    sb.AppendLine($"⚠️ Difference: Rp {diff:N0}");
-                }
-            }
-            else
-            {
-                sb.AppendLine($"📊 *Total: Rp {total:N0}*");
-            }
-        }
-        else
-        {
-            sb.AppendLine("⚠️ *No ingredients found*\n");
-            sb.AppendLine("I couldn't match any items from this receipt.");
-        }
-
-        if (response.UnmatchedLines.Count > 0)
-        {
-            sb.AppendLine();
-            sb.AppendLine($"_({response.UnmatchedLines.Count} items not matched)_");
-        }
-
-        sb.AppendLine();
-        sb.AppendLine("_What would you like to do?_");
-
-        var keyboard = BuildConfirmationKeyboard(response.SessionId, response.MatchedItems.Count);
-
-        return (sb.ToString(), keyboard);
-    }
-
-    public (string Text, InlineKeyboardMarkup Keyboard) BuildEditItem(
-        ReceiptScanResponse response, 
-        int itemIndex)
-    {
-        if (itemIndex < 0 || itemIndex >= response.MatchedItems.Count)
-        {
-            return ("Invalid item index", new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()));
-        }
-
-        var item = response.MatchedItems[itemIndex];
-        var sb = new StringBuilder();
-        
-        sb.AppendLine($"📝 *Editing Item {itemIndex + 1}*\n");
-        sb.AppendLine($"*Detected:* {item.DetectedText}");
-        sb.AppendLine($"*Matched to:* {item.IngredientName}");
-        
-        if (item.Quantity.HasValue)
-            sb.AppendLine($"*Quantity:* {item.Quantity:N1} {item.Unit}");
-        
-        if (item.UnitPrice.HasValue)
-            sb.AppendLine($"*Price:* Rp {item.UnitPrice:N0}");
-        
-        sb.AppendLine($"*Confidence:* {item.MatchConfidence:P0}");
-
-        var keyboard = BuildEditItemKeyboard(response.SessionId, itemIndex);
-
-        return (sb.ToString(), keyboard);
-    }
-
-    private static InlineKeyboardMarkup BuildConfirmationKeyboard(Guid sessionId, int itemCount)
-    {
-        var buttons = new List<InlineKeyboardButton[]>();
-
-        // Main action row
-        buttons.Add(new[]
-        {
-            InlineKeyboardButton.WithCallbackData(
-                "✅ Confirm & Save", 
-                $"receipt:confirm:{sessionId}"),
-            InlineKeyboardButton.WithCallbackData(
-                "❌ Cancel", 
-                $"receipt:cancel:{sessionId}")
-        });
-
-        // Edit row (if there are items)
-        if (itemCount > 0)
-        {
-            buttons.Add(new[]
-            {
-                InlineKeyboardButton.WithCallbackData(
-                    "✏️ Edit Items", 
-                    $"receipt:edit:{sessionId}"),
-                InlineKeyboardButton.WithCallbackData(
-                    "➕ Add Missing", 
-                    $"receipt:add:{sessionId}")
-            });
-        }
-
-        // View unmatched
-        buttons.Add(new[]
-        {
-            InlineKeyboardButton.WithCallbackData(
-                "👁️ View Unmatched", 
-                $"receipt:unmatched:{sessionId}")
-        });
-
-        return new InlineKeyboardMarkup(buttons);
-    }
-
-    private static InlineKeyboardMarkup BuildEditItemKeyboard(Guid sessionId, int itemIndex)
-    {
-        return new InlineKeyboardMarkup(new[]
-        {
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData(
-                    "🔄 Change Ingredient", 
-                    $"receipt:change:{sessionId}:{itemIndex}"),
-                InlineKeyboardButton.WithCallbackData(
-                    "💰 Edit Price", 
-                    $"receipt:price:{sessionId}:{itemIndex}")
-            },
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData(
-                    "📦 Edit Quantity", 
-                    $"receipt:qty:{sessionId}:{itemIndex}"),
-                InlineKeyboardButton.WithCallbackData(
-                    "🗑️ Remove", 
-                    $"receipt:remove:{sessionId}:{itemIndex}")
-            },
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData(
-                    "⬅️ Back to Summary", 
-                    $"receipt:summary:{sessionId}")
-            }
-        });
-    }
-}
-```
-
-### Receipt Callback Handler
-
-Update `src/Nastart.Bot/Handlers/CallbackHandler.cs` to handle receipt callbacks:
-
-```csharp
+using System.Text.Json;
 using MediatR;
-using Telegram.Bot;
-using Telegram.Bot.Types;
-using Nastart.Application.Finance.Commands.ConfirmReceipt;
-using Nastart.Application.Finance.Commands.CancelReceipt;
-
-namespace Nastart.Bot.Handlers;
-
-public sealed class CallbackHandler : ICallbackHandler
-{
-    private readonly ITelegramBotClient _botClient;
-    private readonly IMediator _mediator;
-    private readonly IReceiptConfirmationBuilder _confirmationBuilder;
-    private readonly ILogger<CallbackHandler> _logger;
-
-    public CallbackHandler(
-        ITelegramBotClient botClient,
-        IMediator mediator,
-        IReceiptConfirmationBuilder confirmationBuilder,
-        ILogger<CallbackHandler> logger)
-    {
-        _botClient = botClient;
-        _mediator = mediator;
-        _confirmationBuilder = confirmationBuilder;
-        _logger = logger;
-    }
-
-    public async Task HandleAsync(
-        CallbackQuery callbackQuery, 
-        CancellationToken cancellationToken = default)
-    {
-        var data = callbackQuery.Data ?? string.Empty;
-        _logger.LogInformation("Callback: {Data}", data);
-
-        // Always answer callback to remove loading state
-        await _botClient.AnswerCallbackQuery(
-            callbackQueryId: callbackQuery.Id,
-            cancellationToken: cancellationToken);
-
-        var parts = data.Split(':');
-        
-        if (parts.Length < 2) return;
-
-        await (parts[0] switch
-        {
-            "receipt" => HandleReceiptCallback(callbackQuery, parts, cancellationToken),
-            "action" => HandleActionCallback(callbackQuery, parts[1], cancellationToken),
-            _ => Task.CompletedTask
-        });
-    }
-
-    private async Task HandleReceiptCallback(
-        CallbackQuery callbackQuery,
-        string[] parts,
-        CancellationToken cancellationToken)
-    {
-        if (parts.Length < 3) return;
-
-        var action = parts[1];
-        var sessionIdStr = parts[2];
-
-        if (!Guid.TryParse(sessionIdStr, out var sessionId))
-        {
-            _logger.LogWarning("Invalid session ID: {SessionId}", sessionIdStr);
-            return;
-        }
-
-        var chatId = callbackQuery.Message!.Chat.Id;
-        var messageId = callbackQuery.Message.MessageId;
-
-        switch (action)
-        {
-            case "confirm":
-                await HandleConfirm(chatId, messageId, sessionId, cancellationToken);
-                break;
-                
-            case "cancel":
-                await HandleCancel(chatId, messageId, sessionId, cancellationToken);
-                break;
-                
-            case "edit":
-                await HandleEditMode(chatId, messageId, sessionId, cancellationToken);
-                break;
-                
-            case "unmatched":
-                await HandleViewUnmatched(chatId, messageId, sessionId, cancellationToken);
-                break;
-                
-            case "summary":
-                await HandleBackToSummary(chatId, messageId, sessionId, cancellationToken);
-                break;
-        }
-    }
-
-    private async Task HandleConfirm(
-        long chatId,
-        int messageId,
-        Guid sessionId,
-        CancellationToken cancellationToken)
-    {
-        var command = new ConfirmReceiptCommand(sessionId);
-        var result = await _mediator.Send(command, cancellationToken);
-
-        if (result.IsSuccess)
-        {
-            await _botClient.EditMessageText(
-                chatId: chatId,
-                messageId: messageId,
-                text: "✅ *Purchase saved successfully!*\n\n" +
-                      $"📦 {result.Value.ItemCount} items added to inventory\n" +
-                      $"💰 Total: Rp {result.Value.Total:N0}\n\n" +
-                      "_Prices have been updated._",
-                parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-                cancellationToken: cancellationToken);
-        }
-        else
-        {
-            await _botClient.EditMessageText(
-                chatId: chatId,
-                messageId: messageId,
-                text: $"❌ Failed to save: {result.Error?.Message}",
-                cancellationToken: cancellationToken);
-        }
-    }
-
-    private async Task HandleCancel(
-        long chatId,
-        int messageId,
-        Guid sessionId,
-        CancellationToken cancellationToken)
-    {
-        var command = new CancelReceiptCommand(sessionId);
-        await _mediator.Send(command, cancellationToken);
-
-        await _botClient.EditMessageText(
-            chatId: chatId,
-            messageId: messageId,
-            text: "❌ *Receipt cancelled*\n\n" +
-                  "No changes were saved. Send another photo when you're ready!",
-            parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-            cancellationToken: cancellationToken);
-    }
-
-    // ... other handlers
-}
-```
-
-### Enhanced Confirmation Preview with Price Changes
-
-The confirmation preview should also show **price change impact** when existing ingredient prices will be updated:
-
-Create `src/Nastart.Bot/Services/EnhancedReceiptConfirmationBuilder.cs`:
-
-```csharp
-using System.Text;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Receipts;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
 using Telegram.Bot.Types.ReplyMarkups;
-using Nastart.Application.Finance.Commands.ScanReceipt;
-using Nastart.Application.Finance.Queries.GetIngredientCurrentPrice;
-using MediatR;
 
-namespace Nastart.Bot.Services;
+namespace Nastart.Api.Features.Bot;
 
+// ══════════════════════════════════════════════════════════════
+// SEND SCAN CONFIRMATION FEATURE SLICE
+// Sends confirmation message with detected items
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
 /// <summary>
-/// Enhanced confirmation builder that shows price change impact
-/// before the user confirms the receipt.
+/// Command to send scan confirmation message.
 /// </summary>
-public sealed class EnhancedReceiptConfirmationBuilder : IReceiptConfirmationBuilder
+public sealed record SendScanConfirmationCommand(
+    Guid SessionId
+) : IRequest<Result<ScanConfirmationResponse>>;
+
+// ── Response ──
+/// <summary>
+/// Response with confirmation message details.
+/// </summary>
+public sealed record ScanConfirmationResponse(
+    int MessageId,
+    int ItemCount
+);
+
+// ── Handler ──
+/// <summary>
+/// Sends confirmation message with detected receipt items.
+/// </summary>
+/// <remarks>
+/// Builds a formatted message with inline keyboard for user actions.
+/// See: https://core.telegram.org/bots/features#inline-keyboards
+/// </remarks>
+public sealed class SendScanConfirmationHandler 
+    : IRequestHandler<SendScanConfirmationCommand, Result<ScanConfirmationResponse>>
 {
-    private readonly IMediator _mediator;
+    private readonly ITelegramBotService _botService;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<SendScanConfirmationHandler> _logger;
 
-    public EnhancedReceiptConfirmationBuilder(IMediator mediator)
+    public SendScanConfirmationHandler(
+        ITelegramBotService botService,
+        NastartDbContext db,
+        ILogger<SendScanConfirmationHandler> logger)
     {
-        _mediator = mediator;
-    }
-
-    public async Task<(string Text, InlineKeyboardMarkup Keyboard)> BuildAsync(
-        ReceiptScanResponse response,
-        CancellationToken cancellationToken = default)
-    {
-        var sb = new StringBuilder();
-        var priceChanges = new List<PriceChangePreview>();
-        
-        if (response.MatchedItems.Count > 0)
-        {
-            sb.AppendLine("✅ *Receipt Scanned Successfully!*\n");
-            sb.AppendLine("*Found items:*");
-            
-            var total = 0m;
-            for (var i = 0; i < response.MatchedItems.Count; i++)
-            {
-                var item = response.MatchedItems[i];
-                var confidence = item.MatchConfidence >= 0.9 ? "✓" : "?";
-                
-                sb.AppendLine($"{i + 1}. {confidence} *{item.IngredientName}*");
-                
-                if (item.Quantity.HasValue && !string.IsNullOrEmpty(item.Unit))
-                {
-                    sb.Append($"   {item.Quantity:N1} {item.Unit}");
-                }
-                
-                if (item.UnitPrice.HasValue)
-                {
-                    sb.Append($" @ Rp {item.UnitPrice:N0}");
-                    
-                    // Check for price change
-                    var currentPrice = await _mediator.Send(
-                        new GetIngredientCurrentPriceQuery(item.IngredientId),
-                        cancellationToken);
-                    
-                    if (currentPrice.IsSuccess && currentPrice.Value.Amount != item.UnitPrice.Value)
-                    {
-                        var change = item.UnitPrice.Value - currentPrice.Value.Amount;
-                        var changePercent = (change / currentPrice.Value.Amount) * 100;
-                        var arrow = change > 0 ? "📈" : "📉";
-                        
-                        sb.Append($" {arrow} ({changePercent:+0.0;-0.0}%)");
-                        
-                        priceChanges.Add(new PriceChangePreview(
-                            item.IngredientName,
-                            currentPrice.Value.Amount,
-                            item.UnitPrice.Value,
-                            changePercent));
-                    }
-                }
-                
-                if (item.LineTotal.HasValue)
-                {
-                    sb.AppendLine($" = *Rp {item.LineTotal:N0}*");
-                    total += item.LineTotal.Value;
-                }
-                else
-                {
-                    sb.AppendLine();
-                }
-            }
-            
-            sb.AppendLine();
-            sb.AppendLine($"📊 *Total: Rp {total:N0}*");
-        }
-
-        // Show price change summary
-        if (priceChanges.Count > 0)
-        {
-            sb.AppendLine();
-            sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━");
-            sb.AppendLine($"💡 *{priceChanges.Count} price(s) will be updated:*");
-            
-            foreach (var change in priceChanges.Take(5))
-            {
-                var arrow = change.ChangePercent > 0 ? "📈" : "📉";
-                sb.AppendLine($"{arrow} {change.IngredientName}");
-                sb.AppendLine($"   Rp {change.OldPrice:N0} → Rp {change.NewPrice:N0}");
-            }
-            
-            if (priceChanges.Count > 5)
-            {
-                sb.AppendLine($"_...and {priceChanges.Count - 5} more_");
-            }
-        }
-
-        // Show unmatched items
-        if (response.UnmatchedLines.Count > 0)
-        {
-            sb.AppendLine();
-            sb.AppendLine($"⚠️ *{response.UnmatchedLines.Count} item(s) not recognized:*");
-            
-            foreach (var line in response.UnmatchedLines.Take(3))
-            {
-                sb.AppendLine($"• _{line.OriginalText}_");
-            }
-            
-            sb.AppendLine();
-            sb.AppendLine("_Tap '➕ Add as New' to create new ingredients_");
-        }
-
-        sb.AppendLine();
-        sb.AppendLine("_What would you like to do?_");
-
-        var keyboard = BuildEnhancedKeyboard(
-            response.SessionId, 
-            response.MatchedItems.Count,
-            response.UnmatchedLines.Count);
-
-        return (sb.ToString(), keyboard);
-    }
-
-    private static InlineKeyboardMarkup BuildEnhancedKeyboard(
-        Guid sessionId, 
-        int matchedCount,
-        int unmatchedCount)
-    {
-        var buttons = new List<InlineKeyboardButton[]>();
-
-        // Main action row
-        buttons.Add(new[]
-        {
-            InlineKeyboardButton.WithCallbackData(
-                "✅ Confirm & Save", 
-                $"receipt:confirm:{sessionId}"),
-            InlineKeyboardButton.WithCallbackData(
-                "❌ Cancel", 
-                $"receipt:cancel:{sessionId}")
-        });
-
-        // Edit row (if there are items)
-        if (matchedCount > 0)
-        {
-            buttons.Add(new[]
-            {
-                InlineKeyboardButton.WithCallbackData(
-                    "✏️ Edit Items", 
-                    $"receipt:edit:{sessionId}"),
-                InlineKeyboardButton.WithCallbackData(
-                    "💰 View Price Changes", 
-                    $"receipt:pricechanges:{sessionId}")
-            });
-        }
-
-        // Add new ingredient button (if there are unmatched items)
-        if (unmatchedCount > 0)
-        {
-            buttons.Add(new[]
-            {
-                InlineKeyboardButton.WithCallbackData(
-                    $"➕ Add as New ({unmatchedCount})", 
-                    $"receipt:newingredient:{sessionId}:0")
-            });
-        }
-
-        return new InlineKeyboardMarkup(buttons);
-    }
-
-    // Simple implementation for the sync interface
-    public (string Text, InlineKeyboardMarkup Keyboard) Build(ReceiptScanResponse response)
-    {
-        // Fallback sync version without price change detection
-        return BuildAsync(response, CancellationToken.None).GetAwaiter().GetResult();
-    }
-
-    public (string Text, InlineKeyboardMarkup Keyboard) BuildEditItem(
-        ReceiptScanResponse response, 
-        int itemIndex)
-    {
-        // ... existing implementation
-        throw new NotImplementedException();
-    }
-}
-
-internal record PriceChangePreview(
-    string IngredientName,
-    decimal OldPrice,
-    decimal NewPrice,
-    decimal ChangePercent);
-```
-
-### New Ingredient Wizard
-
-When unmatched items are detected, allow users to quickly add them as new ingredients:
-
-Update `src/Nastart.Bot/Handlers/CallbackHandler.cs`:
-
-```csharp
-private async Task HandleNewIngredientWizard(
-    long chatId,
-    int messageId,
-    Guid sessionId,
-    int itemIndex,
-    CancellationToken cancellationToken)
-{
-    // Get the unmatched items from session
-    var session = await _sessionStore.GetAsync(sessionId, cancellationToken);
-    if (session is null) return;
-
-    var unmatchedItems = session.UnmatchedLines;
-    if (itemIndex >= unmatchedItems.Count) return;
-
-    var item = unmatchedItems[itemIndex];
-    var sb = new StringBuilder();
-    
-    sb.AppendLine("➕ *New Ingredient Wizard*\n");
-    sb.AppendLine($"*Detected text:* `{item.OriginalText}`");
-    sb.AppendLine();
-    sb.AppendLine("What type of ingredient is this?");
-
-    var keyboard = new InlineKeyboardMarkup(new[]
-    {
-        // Category selection
-        new[]
-        {
-            InlineKeyboardButton.WithCallbackData(
-                "🥛 Dairy", 
-                $"newin:cat:{sessionId}:{itemIndex}:dairy"),
-            InlineKeyboardButton.WithCallbackData(
-                "🌾 Dry Goods", 
-                $"newin:cat:{sessionId}:{itemIndex}:dry"),
-        },
-        new[]
-        {
-            InlineKeyboardButton.WithCallbackData(
-                "🥩 Meat", 
-                $"newin:cat:{sessionId}:{itemIndex}:meat"),
-            InlineKeyboardButton.WithCallbackData(
-                "🥬 Produce", 
-                $"newin:cat:{sessionId}:{itemIndex}:produce"),
-        },
-        new[]
-        {
-            InlineKeyboardButton.WithCallbackData(
-                "🧂 Spices", 
-                $"newin:cat:{sessionId}:{itemIndex}:spices"),
-            InlineKeyboardButton.WithCallbackData(
-                "📦 Other", 
-                $"newin:cat:{sessionId}:{itemIndex}:other"),
-        },
-        new[]
-        {
-            InlineKeyboardButton.WithCallbackData(
-                "⏭️ Skip This Item", 
-                $"newin:skip:{sessionId}:{itemIndex}"),
-            InlineKeyboardButton.WithCallbackData(
-                "⬅️ Back", 
-                $"receipt:summary:{sessionId}"),
-        }
-    });
-
-    await _botClient.EditMessageText(
-        chatId: chatId,
-        messageId: messageId,
-        text: sb.ToString(),
-        parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-        replyMarkup: keyboard,
-        cancellationToken: cancellationToken);
-}
-
-private async Task HandleNewIngredientCategory(
-    long chatId,
-    int messageId,
-    Guid sessionId,
-    int itemIndex,
-    string category,
-    CancellationToken cancellationToken)
-{
-    var session = await _sessionStore.GetAsync(sessionId, cancellationToken);
-    if (session is null) return;
-
-    var item = session.UnmatchedLines[itemIndex];
-    
-    var sb = new StringBuilder();
-    sb.AppendLine("➕ *New Ingredient Wizard*\n");
-    sb.AppendLine($"*Text:* `{item.OriginalText}`");
-    sb.AppendLine($"*Category:* {category}");
-    sb.AppendLine();
-    sb.AppendLine("Select the unit of measurement:");
-
-    var keyboard = new InlineKeyboardMarkup(new[]
-    {
-        new[]
-        {
-            InlineKeyboardButton.WithCallbackData(
-                "kg", 
-                $"newin:unit:{sessionId}:{itemIndex}:{category}:kg"),
-            InlineKeyboardButton.WithCallbackData(
-                "g", 
-                $"newin:unit:{sessionId}:{itemIndex}:{category}:g"),
-            InlineKeyboardButton.WithCallbackData(
-                "L", 
-                $"newin:unit:{sessionId}:{itemIndex}:{category}:L"),
-        },
-        new[]
-        {
-            InlineKeyboardButton.WithCallbackData(
-                "mL", 
-                $"newin:unit:{sessionId}:{itemIndex}:{category}:mL"),
-            InlineKeyboardButton.WithCallbackData(
-                "pcs", 
-                $"newin:unit:{sessionId}:{itemIndex}:{category}:pcs"),
-            InlineKeyboardButton.WithCallbackData(
-                "pack", 
-                $"newin:unit:{sessionId}:{itemIndex}:{category}:pack"),
-        },
-        new[]
-        {
-            InlineKeyboardButton.WithCallbackData(
-                "⬅️ Back", 
-                $"newin:start:{sessionId}:{itemIndex}"),
-        }
-    });
-
-    await _botClient.EditMessageText(
-        chatId: chatId,
-        messageId: messageId,
-        text: sb.ToString(),
-        parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-        replyMarkup: keyboard,
-        cancellationToken: cancellationToken);
-}
-
-private async Task HandleNewIngredientConfirm(
-    long chatId,
-    int messageId,
-    Guid sessionId,
-    int itemIndex,
-    string category,
-    string unit,
-    CancellationToken cancellationToken)
-{
-    var session = await _sessionStore.GetAsync(sessionId, cancellationToken);
-    if (session is null) return;
-
-    var item = session.UnmatchedLines[itemIndex];
-    
-    // Create the new ingredient
-    var command = new CreateIngredientFromReceiptCommand(
-        Name: item.OriginalText.Trim(),
-        Category: category,
-        DefaultUnit: unit,
-        InitialPrice: item.DetectedPrice,
-        InitialQuantity: item.DetectedQuantity,
-        SessionId: sessionId);
-    
-    var result = await _mediator.Send(command, cancellationToken);
-
-    if (result.IsSuccess)
-    {
-        // Check if there are more unmatched items
-        if (itemIndex + 1 < session.UnmatchedLines.Count)
-        {
-            // Move to next unmatched item
-            await HandleNewIngredientWizard(
-                chatId, messageId, sessionId, 
-                itemIndex + 1, cancellationToken);
-        }
-        else
-        {
-            // All done, return to summary
-            await HandleBackToSummary(chatId, messageId, sessionId, cancellationToken);
-        }
-    }
-    else
-    {
-        await _botClient.EditMessageText(
-            chatId: chatId,
-            messageId: messageId,
-            text: $"❌ Failed to create ingredient: {result.Error?.Message}",
-            cancellationToken: cancellationToken);
-    }
-}
-```
-
-### Partial Save on Errors (Fault Tolerance)
-
-Handle cases where some items can be saved but others fail:
-
-Create `src/Nastart.Application/Finance/Commands/ConfirmReceiptWithPartialSave/`:
-
-```csharp
-// ConfirmReceiptWithPartialSaveCommand.cs
-namespace Nastart.Application.Finance.Commands.ConfirmReceiptWithPartialSave;
-
-public sealed record ConfirmReceiptWithPartialSaveCommand(
-    Guid SessionId,
-    bool AllowPartialSave = true
-) : IRequest<Result<PartialSaveResult>>;
-
-public sealed record PartialSaveResult(
-    int SuccessfulItems,
-    int FailedItems,
-    IReadOnlyList<ItemSaveResult> Results,
-    decimal TotalSaved);
-
-public sealed record ItemSaveResult(
-    string IngredientName,
-    bool Success,
-    string? ErrorMessage = null);
-```
-
-```csharp
-// ConfirmReceiptWithPartialSaveHandler.cs
-using Microsoft.Extensions.Logging;
-using Nastart.Domain.Inventory;
-
-namespace Nastart.Application.Finance.Commands.ConfirmReceiptWithPartialSave;
-
-internal sealed class ConfirmReceiptWithPartialSaveHandler 
-    : IRequestHandler<ConfirmReceiptWithPartialSaveCommand, Result<PartialSaveResult>>
-{
-    private readonly IReceiptSessionStore _sessionStore;
-    private readonly IIngredientRepository _ingredientRepository;
-    private readonly IPurchaseRepository _purchaseRepository;
-    private readonly IUnitOfWork _unitOfWork;
-    private readonly ILogger<ConfirmReceiptWithPartialSaveHandler> _logger;
-
-    public ConfirmReceiptWithPartialSaveHandler(
-        IReceiptSessionStore sessionStore,
-        IIngredientRepository ingredientRepository,
-        IPurchaseRepository purchaseRepository,
-        IUnitOfWork unitOfWork,
-        ILogger<ConfirmReceiptWithPartialSaveHandler> logger)
-    {
-        _sessionStore = sessionStore;
-        _ingredientRepository = ingredientRepository;
-        _purchaseRepository = purchaseRepository;
-        _unitOfWork = unitOfWork;
+        _botService = botService;
+        _db = db;
         _logger = logger;
     }
 
-    public async Task<Result<PartialSaveResult>> Handle(
-        ConfirmReceiptWithPartialSaveCommand request, 
+    public async Task<Result<ScanConfirmationResponse>> Handle(
+        SendScanConfirmationCommand request,
         CancellationToken cancellationToken)
     {
-        var session = await _sessionStore.GetAsync(request.SessionId, cancellationToken);
+        // Get session
+        var session = await _db.ScanSessions
+            .FirstOrDefaultAsync(s => s.Id == request.SessionId, cancellationToken);
+        
         if (session is null)
         {
-            return Result.Failure<PartialSaveResult>(
-                Error.NotFound("Session not found"));
+            return Result<ScanConfirmationResponse>.Failure("Session not found");
         }
-
-        var results = new List<ItemSaveResult>();
-        var totalSaved = 0m;
-
-        foreach (var item in session.MatchedItems)
+        
+        if (string.IsNullOrEmpty(session.DetectedItemsJson))
         {
-            try
-            {
-                var ingredient = await _ingredientRepository
-                    .GetByIdAsync(item.IngredientId, cancellationToken);
-                
-                if (ingredient is null)
-                {
-                    results.Add(new ItemSaveResult(
-                        item.IngredientName, 
-                        false, 
-                        "Ingredient not found"));
-                    continue;
-                }
-
-                // Update price
-                if (item.UnitPrice.HasValue)
-                {
-                    ingredient.UpdatePrice(
-                        Money.FromDecimal(item.UnitPrice.Value, "IDR"),
-                        DateTimeOffset.UtcNow);
-                }
-
-                // Add stock
-                if (item.Quantity.HasValue)
-                {
-                    var quantity = new Quantity(
-                        item.Quantity.Value, 
-                        Unit.Parse(item.Unit ?? "pcs"));
-                    
-                    ingredient.AddStock(quantity);
-                }
-
-                // Create purchase record
-                var purchase = Purchase.Create(
-                    ingredientId: ingredient.Id,
-                    quantity: item.Quantity ?? 1,
-                    unit: item.Unit ?? "pcs",
-                    unitPrice: item.UnitPrice ?? 0,
-                    purchaseDate: session.ProcessedAt);
-
-                await _purchaseRepository.AddAsync(purchase, cancellationToken);
-
-                results.Add(new ItemSaveResult(item.IngredientName, true));
-                totalSaved += item.LineTotal ?? 0;
-
-                _logger.LogInformation(
-                    "Successfully saved item: {IngredientName}", 
-                    item.IngredientName);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, 
-                    "Failed to save item: {IngredientName}", 
-                    item.IngredientName);
-                
-                results.Add(new ItemSaveResult(
-                    item.IngredientName, 
-                    false, 
-                    ex.Message));
-                
-                // Continue with other items if partial save is allowed
-                if (!request.AllowPartialSave)
-                {
-                    throw;
-                }
-            }
+            return Result<ScanConfirmationResponse>.Failure("No items detected");
         }
-
-        // Commit successful items
-        if (results.Any(r => r.Success))
-        {
-            await _unitOfWork.CommitAsync(cancellationToken);
-        }
-
-        // Clean up session
-        await _sessionStore.RemoveAsync(request.SessionId, cancellationToken);
-
-        var successCount = results.Count(r => r.Success);
-        var failedCount = results.Count(r => !r.Success);
-
-        return new PartialSaveResult(
-            successCount, 
-            failedCount, 
-            results, 
-            totalSaved);
-    }
-}
-```
-
-Update the confirmation handler to use partial save:
-
-```csharp
-private async Task HandleConfirmWithPartialSave(
-    long chatId,
-    int messageId,
-    Guid sessionId,
-    CancellationToken cancellationToken)
-{
-    var command = new ConfirmReceiptWithPartialSaveCommand(sessionId);
-    var result = await _mediator.Send(command, cancellationToken);
-
-    if (!result.IsSuccess)
-    {
-        await _botClient.EditMessageText(
-            chatId: chatId,
-            messageId: messageId,
-            text: $"❌ Failed to save: {result.Error?.Message}",
+        
+        // Deserialize items
+        var items = JsonSerializer.Deserialize<List<DetectedReceiptItem>>(
+            session.DetectedItemsJson) ?? [];
+        
+        // Build confirmation message
+        var message = BuildConfirmationMessage(session, items);
+        
+        // Build keyboard
+        var keyboard = BuildConfirmationKeyboard(session.Id, items);
+        
+        // Send message
+        var sentMessage = await _botService.SendTextMessageAsync(
+            session.ChatId,
+            message,
+            keyboard,
             cancellationToken: cancellationToken);
-        return;
-    }
-
-    var sb = new StringBuilder();
-    
-    if (result.Value.FailedItems == 0)
-    {
-        // All items saved successfully
-        sb.AppendLine("✅ *Purchase saved successfully!*\n");
-        sb.AppendLine($"📦 {result.Value.SuccessfulItems} items added to inventory");
-        sb.AppendLine($"💰 Total: Rp {result.Value.TotalSaved:N0}");
-    }
-    else if (result.Value.SuccessfulItems > 0)
-    {
-        // Partial save - some items failed
-        sb.AppendLine("⚠️ *Partially Saved*\n");
-        sb.AppendLine($"✅ {result.Value.SuccessfulItems} items saved");
-        sb.AppendLine($"❌ {result.Value.FailedItems} items failed");
-        sb.AppendLine($"💰 Total saved: Rp {result.Value.TotalSaved:N0}");
-        sb.AppendLine();
-        sb.AppendLine("*Failed items:*");
         
-        foreach (var failed in result.Value.Results.Where(r => !r.Success))
-        {
-            sb.AppendLine($"• {failed.IngredientName}");
-            sb.AppendLine($"  _Error: {failed.ErrorMessage}_");
-        }
-    }
-    else
-    {
-        // All items failed
-        sb.AppendLine("❌ *Save Failed*\n");
-        sb.AppendLine("None of the items could be saved.");
-        sb.AppendLine();
-        sb.AppendLine("*Errors:*");
-        
-        foreach (var failed in result.Value.Results)
-        {
-            sb.AppendLine($"• {failed.IngredientName}: {failed.ErrorMessage}");
-        }
-    }
-
-    await _botClient.EditMessageText(
-        chatId: chatId,
-        messageId: messageId,
-        text: sb.ToString(),
-        parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-        cancellationToken: cancellationToken);
-}
-```
-
-### Unit Conversion Integration
-
-Integrate smart unit conversion when processing receipts:
-
-```csharp
-// In ConfirmReceiptWithPartialSaveHandler.cs
-private static Quantity NormalizeQuantity(decimal value, string unit)
-{
-    var parsedUnit = Unit.Parse(unit);
-    
-    // Auto-convert to standard units
-    var quantity = new Quantity(value, parsedUnit);
-    
-    // Convert grams > 1000 to kg
-    if (parsedUnit == Unit.Gram && value >= 1000)
-    {
-        return quantity.ConvertTo(Unit.Kilogram);
-    }
-    
-    // Convert mL > 1000 to L
-    if (parsedUnit == Unit.Milliliter && value >= 1000)
-    {
-        return quantity.ConvertTo(Unit.Liter);
-    }
-    
-    return quantity;
-}
-```
-
-### CreateIngredientFromReceiptCommand
-
-Used by the New Ingredient Wizard to quickly add ingredients from unmatched receipt items:
-
-Create `src/Nastart.Application/Inventory/Commands/CreateIngredientFromReceipt/`:
-
-```csharp
-// CreateIngredientFromReceiptCommand.cs
-namespace Nastart.Application.Inventory.Commands.CreateIngredientFromReceipt;
-
-public sealed record CreateIngredientFromReceiptCommand(
-    string Name,
-    string Category,
-    string DefaultUnit,
-    decimal? InitialPrice,
-    decimal? InitialQuantity,
-    Guid SessionId
-) : IRequest<Result<CreateIngredientFromReceiptResponse>>;
-
-public sealed record CreateIngredientFromReceiptResponse(
-    Guid IngredientId,
-    string Name);
-```
-
-```csharp
-// CreateIngredientFromReceiptHandler.cs
-using Nastart.Domain.Inventory;
-
-namespace Nastart.Application.Inventory.Commands.CreateIngredientFromReceipt;
-
-internal sealed class CreateIngredientFromReceiptHandler
-    : IRequestHandler<CreateIngredientFromReceiptCommand, Result<CreateIngredientFromReceiptResponse>>
-{
-    private readonly IIngredientRepository _ingredientRepository;
-    private readonly IReceiptSessionStore _sessionStore;
-    private readonly IUnitOfWork _unitOfWork;
-
-    public CreateIngredientFromReceiptHandler(
-        IIngredientRepository ingredientRepository,
-        IReceiptSessionStore sessionStore,
-        IUnitOfWork unitOfWork)
-    {
-        _ingredientRepository = ingredientRepository;
-        _sessionStore = sessionStore;
-        _unitOfWork = unitOfWork;
-    }
-
-    public async Task<Result<CreateIngredientFromReceiptResponse>> Handle(
-        CreateIngredientFromReceiptCommand request,
-        CancellationToken cancellationToken)
-    {
-        // Check for duplicates
-        var existing = await _ingredientRepository
-            .FindByNameAsync(request.Name, cancellationToken);
-        
-        if (existing is not null)
-        {
-            return Result.Failure<CreateIngredientFromReceiptResponse>(
-                Error.Conflict($"Ingredient '{request.Name}' already exists"));
-        }
-
-        // Create new ingredient
-        var ingredient = Ingredient.Create(
-            name: request.Name,
-            category: request.Category,
-            defaultUnit: Unit.Parse(request.DefaultUnit),
-            minimumStock: Quantity.Zero(Unit.Parse(request.DefaultUnit)));
-
-        // Set initial price if provided
-        if (request.InitialPrice.HasValue)
-        {
-            ingredient.UpdatePrice(
-                Money.FromDecimal(request.InitialPrice.Value, "IDR"),
-                DateTimeOffset.UtcNow);
-        }
-
-        // Add initial stock if provided
-        if (request.InitialQuantity.HasValue)
-        {
-            var quantity = new Quantity(
-                request.InitialQuantity.Value,
-                Unit.Parse(request.DefaultUnit));
-            
-            ingredient.AddStock(quantity);
-        }
-
-        await _ingredientRepository.AddAsync(ingredient, cancellationToken);
-        await _unitOfWork.CommitAsync(cancellationToken);
-
-        // Update session to move this item from unmatched to matched
-        await _sessionStore.MoveToMatchedAsync(
-            request.SessionId,
-            request.Name,
-            ingredient.Id,
-            cancellationToken);
-
-        return new CreateIngredientFromReceiptResponse(
-            ingredient.Id,
-            ingredient.Name);
-    }
-}
-```
-
----
-
-# Day 6: Receipt Parsing & Price Extraction
-
-## 🧒 Explain Like I'm 5
-
-Receipts are messy! They have:
-- Store name at the top (we don't need this)
-- Items with prices in the middle (we want this!)
-- Total at the bottom (useful to check)
-
-The parser is like a smart reader that knows which parts are important!
-
-## 🔧 Engineer Language
-
-Receipt parsing strategy:
-1. **Header Detection** — Skip store name, address, date
-2. **Item Line Detection** — Find lines with quantity, name, price
-3. **Price Extraction** — Parse Indonesian currency formats
-4. **Total Detection** — Find "TOTAL", "SUBTOTAL", etc.
-
-### IReceiptParsingService Interface
-
-Create `src/Nastart.Application/Common/Interfaces/IReceiptParsingService.cs`:
-
-```csharp
-namespace Nastart.Application.Common.Interfaces;
-
-/// <summary>
-/// Parses OCR output into structured receipt data.
-/// </summary>
-public interface IReceiptParsingService
-{
-    /// <summary>
-    /// Parses OCR lines into receipt structure.
-    /// </summary>
-    ParsedReceipt Parse(IReadOnlyList<OcrLine> lines);
-}
-
-/// <summary>
-/// Parsed receipt with categorized lines.
-/// </summary>
-public record ParsedReceipt(
-    IReadOnlyList<ReceiptItemLine> ItemLines,
-    decimal? Total,
-    decimal? Subtotal,
-    DateTime? Date,
-    string? StoreName
-);
-```
-
-### ReceiptParsingService Implementation
-
-Create `src/Nastart.Infrastructure/Services/ReceiptParsingService.cs`:
-
-```csharp
-using System.Text.RegularExpressions;
-using Microsoft.Extensions.Logging;
-using Nastart.Application.Common.Interfaces;
-
-namespace Nastart.Infrastructure.Services;
-
-/// <summary>
-/// Parses Indonesian receipt formats.
-/// </summary>
-public partial class ReceiptParsingService : IReceiptParsingService
-{
-    private readonly ILogger<ReceiptParsingService> _logger;
-
-    // Regex patterns for Indonesian receipts
-    [GeneratedRegex(@"(?:Rp\.?|IDR)\s*[\d.,]+", RegexOptions.IgnoreCase)]
-    private static partial Regex PricePattern();
-
-    [GeneratedRegex(@"(\d+(?:[.,]\d+)?)\s*(kg|gr|g|ltr|l|ml|pcs|pc|bh|bks|pack|btl|botol)", RegexOptions.IgnoreCase)]
-    private static partial Regex QuantityPattern();
-
-    [GeneratedRegex(@"(?:TOTAL|SUBTOTAL|JUMLAH|TTL)\s*:?\s*(?:Rp\.?|IDR)?\s*([\d.,]+)", RegexOptions.IgnoreCase)]
-    private static partial Regex TotalPattern();
-
-    [GeneratedRegex(@"[\d.,]+", RegexOptions.None)]
-    private static partial Regex NumberPattern();
-
-    // Words that indicate header/footer (skip these)
-    private static readonly HashSet<string> SkipKeywords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "terima", "kasih", "thank", "struk", "receipt", "invoice",
-        "kasir", "cashier", "tanggal", "date", "waktu", "time",
-        "no.", "alamat", "address", "telp", "phone", "npwp",
-        "pembayaran", "payment", "tunai", "cash", "debit", "credit",
-        "kembalian", "change", "ppn", "tax", "pajak", "diskon", "discount"
-    };
-
-    public ReceiptParsingService(ILogger<ReceiptParsingService> logger)
-    {
-        _logger = logger;
-    }
-
-    public ParsedReceipt Parse(IReadOnlyList<OcrLine> lines)
-    {
-        var itemLines = new List<ReceiptItemLine>();
-        decimal? total = null;
-        decimal? subtotal = null;
-
-        foreach (var line in lines)
-        {
-            var text = line.Text.Trim();
-            
-            if (string.IsNullOrWhiteSpace(text) || text.Length < 3)
-                continue;
-
-            // Check for total line
-            var totalMatch = TotalPattern().Match(text);
-            if (totalMatch.Success)
-            {
-                var totalStr = totalMatch.Groups[1].Value;
-                if (TryParsePrice(totalStr, out var parsedTotal))
-                {
-                    if (text.Contains("SUB", StringComparison.OrdinalIgnoreCase))
-                        subtotal = parsedTotal;
-                    else
-                        total = parsedTotal;
-                }
-                continue;
-            }
-
-            // Skip header/footer lines
-            if (ShouldSkipLine(text))
-                continue;
-
-            // Try to parse as item line
-            var itemLine = ParseItemLine(text, line.Confidence);
-            if (itemLine is not null)
-            {
-                itemLines.Add(itemLine);
-            }
-        }
-
         _logger.LogInformation(
-            "Parsed receipt: {ItemCount} items, Total: {Total}",
-            itemLines.Count, total);
-
-        return new ParsedReceipt(
-            ItemLines: itemLines,
-            Total: total,
-            Subtotal: subtotal,
-            Date: null,
-            StoreName: null
-        );
+            "Sent confirmation for session {SessionId}, {ItemCount} items",
+            request.SessionId,
+            items.Count);
+        
+        return Result<ScanConfirmationResponse>.Success(new ScanConfirmationResponse(
+            MessageId: sentMessage.MessageId,
+            ItemCount: items.Count
+        ));
     }
 
-    private ReceiptItemLine? ParseItemLine(string text, double ocrConfidence)
+    private static string BuildConfirmationMessage(
+        ScanSession session,
+        List<DetectedReceiptItem> items)
     {
-        // Extract price from line
-        var priceMatch = PricePattern().Match(text);
-        decimal? price = null;
+        var sb = new StringBuilder();
         
-        if (priceMatch.Success)
+        // Header
+        sb.AppendLine("📋 <b>Struk Terdeteksi</b>");
+        sb.AppendLine();
+        
+        // Shop info
+        if (!string.IsNullOrEmpty(session.DetectedShopName))
         {
-            var priceStr = NumberPattern().Match(priceMatch.Value).Value;
-            TryParsePrice(priceStr, out var parsedPrice);
-            price = parsedPrice;
+            sb.AppendLine($"🏪 <b>Toko:</b> {session.DetectedShopName}");
         }
-
-        // Extract quantity and unit
-        var quantityMatch = QuantityPattern().Match(text);
-        decimal? quantity = null;
-        string? unit = null;
-
-        if (quantityMatch.Success)
+        
+        if (session.DetectedPurchaseDate.HasValue)
         {
-            if (decimal.TryParse(
-                quantityMatch.Groups[1].Value.Replace(',', '.'),
-                out var parsedQty))
-            {
-                quantity = parsedQty;
-                unit = NormalizeUnit(quantityMatch.Groups[2].Value);
-            }
+            sb.AppendLine($"📅 <b>Tanggal:</b> {session.DetectedPurchaseDate:dd/MM/yyyy}");
         }
-
-        // Extract item name (remove price and quantity parts)
-        var itemName = ExtractItemName(text, priceMatch, quantityMatch);
-
-        if (string.IsNullOrWhiteSpace(itemName) || itemName.Length < 2)
-            return null;
-
-        // Calculate line total
-        decimal? lineTotal = null;
-        decimal? unitPrice = null;
-
-        if (price.HasValue)
+        
+        sb.AppendLine();
+        sb.AppendLine("<b>Barang yang terdeteksi:</b>");
+        sb.AppendLine();
+        
+        // Items list
+        decimal total = 0;
+        for (int i = 0; i < items.Count; i++)
         {
-            if (quantity.HasValue && quantity.Value > 1)
+            var item = items[i];
+            var num = GetNumberEmoji(i + 1);
+            
+            // Format: 1️⃣ Tepung Terigu - 2kg - Rp 25.000
+            var itemLine = new StringBuilder();
+            itemLine.Append($"{num} ");
+            
+            if (!string.IsNullOrEmpty(item.MatchedIngredientName))
             {
-                // Assume price is line total, calculate unit price
-                lineTotal = price;
-                unitPrice = price / quantity.Value;
+                itemLine.Append($"<b>{item.MatchedIngredientName}</b>");
             }
             else
             {
-                // Price is unit price
-                unitPrice = price;
-                lineTotal = price * (quantity ?? 1);
+                itemLine.Append($"<i>{item.RawText}</i> ⚠️");
             }
+            
+            if (item.Quantity.HasValue && !string.IsNullOrEmpty(item.Unit))
+            {
+                itemLine.Append($" - {item.Quantity}{item.Unit}");
+            }
+            
+            if (item.UnitPrice.HasValue)
+            {
+                itemLine.Append($" @ Rp {item.UnitPrice:N0}");
+            }
+            
+            if (item.LineTotal.HasValue)
+            {
+                itemLine.Append($" = <b>Rp {item.LineTotal:N0}</b>");
+                total += item.LineTotal.Value;
+            }
+            
+            // Confidence indicator
+            if (item.Confidence < 0.7f)
+            {
+                itemLine.Append(" ❓");
+            }
+            
+            sb.AppendLine(itemLine.ToString());
         }
-
-        return new ReceiptItemLine(
-            RawText: text,
-            ItemName: itemName,
-            Quantity: quantity,
-            Unit: unit,
-            UnitPrice: unitPrice,
-            LineTotal: lineTotal,
-            OcrConfidence: ocrConfidence
-        );
-    }
-
-    private static string ExtractItemName(
-        string text, 
-        Match priceMatch, 
-        Match quantityMatch)
-    {
-        var result = text;
-
-        // Remove price
-        if (priceMatch.Success)
-        {
-            result = result.Replace(priceMatch.Value, "");
-        }
-
-        // Remove quantity pattern
-        if (quantityMatch.Success)
-        {
-            result = result.Replace(quantityMatch.Value, "");
-        }
-
-        // Clean up
-        result = Regex.Replace(result, @"[\d]+[xX]", ""); // Remove multipliers like "2x"
-        result = Regex.Replace(result, @"@\s*[\d.,]+", ""); // Remove @ price
-        result = Regex.Replace(result, @"[^\w\s]", " "); // Remove special chars
-        result = Regex.Replace(result, @"\s+", " "); // Normalize spaces
         
-        return result.Trim();
+        // Total
+        sb.AppendLine();
+        sb.AppendLine($"💰 <b>Total:</b> Rp {total:N0}");
+        
+        // Footer
+        sb.AppendLine();
+        sb.AppendLine("<i>⚠️ = Tidak yakin, butuh konfirmasi</i>");
+        sb.AppendLine("<i>❓ = Confidence rendah</i>");
+        
+        return sb.ToString();
     }
 
-    private static bool ShouldSkipLine(string text)
+    private static InlineKeyboardMarkup BuildConfirmationKeyboard(
+        Guid sessionId,
+        List<DetectedReceiptItem> items)
     {
-        var lowerText = text.ToLowerInvariant();
-        return SkipKeywords.Any(kw => lowerText.Contains(kw));
-    }
-
-    private static bool TryParsePrice(string priceStr, out decimal price)
-    {
-        // Indonesian format: 25.000 or 25,000 (thousand separator)
-        priceStr = priceStr
-            .Replace(".", "")
-            .Replace(",", "")
-            .Trim();
-
-        return decimal.TryParse(priceStr, out price);
-    }
-
-    private static string NormalizeUnit(string unit)
-    {
-        return unit.ToLowerInvariant() switch
+        var rows = new List<InlineKeyboardButton[]>();
+        
+        // Item edit buttons (if there are uncertain items)
+        var uncertainItems = items
+            .Select((item, index) => (item, index))
+            .Where(x => string.IsNullOrEmpty(x.item.MatchedIngredientName) || x.item.Confidence < 0.7f)
+            .Take(3) // Max 3 edit buttons
+            .ToList();
+        
+        if (uncertainItems.Any())
         {
-            "gr" or "g" => "gram",
-            "kg" => "kg",
-            "ltr" or "l" => "liter",
-            "ml" => "ml",
-            "pcs" or "pc" or "bh" => "pcs",
-            "bks" or "pack" => "pack",
-            "btl" or "botol" => "botol",
-            _ => unit.ToLowerInvariant()
-        };
+            rows.Add(uncertainItems.Select(x => 
+                InlineKeyboardButton.WithCallbackData(
+                    $"✏️ Edit #{x.index + 1}",
+                    $"scan:edit:{sessionId}:{x.index}"
+                )).ToArray());
+        }
+        
+        // Main action buttons
+        rows.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData(
+                "✅ Simpan Semua",
+                $"scan:confirm:{sessionId}"),
+            InlineKeyboardButton.WithCallbackData(
+                "✏️ Edit",
+                $"scan:editall:{sessionId}"),
+        });
+        
+        rows.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData(
+                "❌ Batal",
+                $"scan:cancel:{sessionId}"),
+        });
+        
+        return new InlineKeyboardMarkup(rows);
+    }
+
+    private static string GetNumberEmoji(int number) => number switch
+    {
+        1 => "1️⃣",
+        2 => "2️⃣",
+        3 => "3️⃣",
+        4 => "4️⃣",
+        5 => "5️⃣",
+        6 => "6️⃣",
+        7 => "7️⃣",
+        8 => "8️⃣",
+        9 => "9️⃣",
+        10 => "🔟",
+        _ => $"{number}."
+    };
+}
+```
+
+### Your Task (Day 4):
+
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
+
+# Create confirmation feature
+New-Item Features\Bot\SendScanConfirmation.cs
+
+# Verify build
+dotnet build
+```
+
+---
+
+# Day 5: Handle Confirmation Callbacks
+
+## 🧒 Explain Like I'm 5
+
+When you press a button on the confirmation message:
+- **✅ Simpan** → Robot saves everything to the notebook (database)
+- **✏️ Edit** → Robot asks "Which one do you want to change?"
+- **❌ Batal** → Robot says "Okay, cancelled!" and throws away the paper
+
+After pressing, the message updates to show what happened!
+
+## 🔧 Engineer Language
+
+**Callback queries** are triggered when users click inline keyboard buttons. We handle each callback type and update the message accordingly.
+
+> 📖 **Telegram Docs**: *"When a user presses a callback button, Telegram sends a callback_query update. Always answer callback queries with answerCallbackQuery."*
+>
+> — [Callback Query](https://core.telegram.org/bots/api#callbackquery)
+
+### Scan Callback Handlers
+
+Create `src/Nastart.Api/Features/Bot/Callbacks/ScanCallbacks.cs`:
+
+```csharp
+using System.Text.Json;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Purchases;
+using Nastart.Api.Features.Receipts;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
+using Telegram.Bot.Types.ReplyMarkups;
+
+namespace Nastart.Api.Features.Bot;
+
+// ══════════════════════════════════════════════════════════════
+// SCAN CALLBACK HANDLERS
+// Handles confirmation/edit/cancel callbacks
+// ══════════════════════════════════════════════════════════════
+
+// ── Confirm Scan ──
+/// <summary>
+/// Command to confirm and save scanned receipt.
+/// </summary>
+public sealed record ConfirmScanCommand(
+    Guid SessionId,
+    long ChatId,
+    int MessageId,
+    string CallbackQueryId
+) : IRequest<Result<PurchaseResponse>>;
+
+/// <summary>
+/// Handler for confirming scanned receipt.
+/// </summary>
+public sealed class ConfirmScanHandler 
+    : IRequestHandler<ConfirmScanCommand, Result<PurchaseResponse>>
+{
+    private readonly ITelegramBotService _botService;
+    private readonly IMediator _mediator;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<ConfirmScanHandler> _logger;
+
+    public ConfirmScanHandler(
+        ITelegramBotService botService,
+        IMediator mediator,
+        NastartDbContext db,
+        ILogger<ConfirmScanHandler> logger)
+    {
+        _botService = botService;
+        _mediator = mediator;
+        _db = db;
+        _logger = logger;
+    }
+
+    public async Task<Result<PurchaseResponse>> Handle(
+        ConfirmScanCommand request,
+        CancellationToken cancellationToken)
+    {
+        // Answer callback immediately
+        await _botService.AnswerCallbackQueryAsync(
+            request.CallbackQueryId,
+            "Menyimpan...",
+            cancellationToken: cancellationToken);
+        
+        // Get session
+        var session = await _db.ScanSessions
+            .FirstOrDefaultAsync(s => s.Id == request.SessionId, cancellationToken);
+        
+        if (session is null || session.Status != ScanSessionStatus.AwaitingConfirmation)
+        {
+            await _botService.EditMessageTextAsync(
+                request.ChatId,
+                request.MessageId,
+                "❌ Sesi tidak ditemukan atau sudah kadaluarsa.",
+                cancellationToken: cancellationToken);
+            
+            return Result<PurchaseResponse>.Failure("Session not found or expired");
+        }
+        
+        // Get user from Telegram ID
+        var user = await _db.Users
+            .FirstOrDefaultAsync(u => u.TelegramId == session.UserId, cancellationToken);
+        
+        if (user is null)
+        {
+            await _botService.EditMessageTextAsync(
+                request.ChatId,
+                request.MessageId,
+                "❌ Pengguna tidak ditemukan. Silakan /start dulu.",
+                cancellationToken: cancellationToken);
+            
+            return Result<PurchaseResponse>.Failure("User not found");
+        }
+        
+        // Deserialize items
+        var items = JsonSerializer.Deserialize<List<DetectedReceiptItem>>(
+            session.DetectedItemsJson ?? "[]") ?? [];
+        
+        // Convert to purchase items
+        var purchaseItems = items
+            .Where(i => i.MatchedIngredientId.HasValue)
+            .Select(i => new PurchaseItemInput(
+                IngredientId: i.MatchedIngredientId!.Value,
+                Quantity: i.Quantity ?? 1,
+                UnitPrice: i.UnitPrice ?? 0))
+            .ToList();
+        
+        if (!purchaseItems.Any())
+        {
+            await _botService.EditMessageTextAsync(
+                request.ChatId,
+                request.MessageId,
+                "❌ Tidak ada bahan yang terdeteksi. Silakan coba foto lain.",
+                cancellationToken: cancellationToken);
+            
+            return Result<PurchaseResponse>.Failure("No items to save");
+        }
+        
+        // Create purchase
+        var purchaseResult = await _mediator.Send(new RecordPurchaseCommand(
+            UserId: user.Id,
+            ShopName: session.DetectedShopName,
+            PurchaseDate: session.DetectedPurchaseDate ?? DateTime.UtcNow,
+            Items: purchaseItems
+        ), cancellationToken);
+        
+        if (!purchaseResult.IsSuccess)
+        {
+            await _botService.EditMessageTextAsync(
+                request.ChatId,
+                request.MessageId,
+                $"❌ Gagal menyimpan: {purchaseResult.ErrorMessage}",
+                cancellationToken: cancellationToken);
+            
+            return purchaseResult;
+        }
+        
+        // Update session status
+        session.Status = ScanSessionStatus.Confirmed;
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        // Update message with success
+        var successMessage = $"""
+            ✅ <b>Berhasil Disimpan!</b>
+            
+            📦 {purchaseItems.Count} bahan tercatat
+            💰 Total: Rp {purchaseResult.Value!.TotalAmount:N0}
+            📅 Tanggal: {purchaseResult.Value.PurchaseDate:dd/MM/yyyy}
+            
+            <i>Gunakan /cost untuk hitung ulang biaya resep.</i>
+            """;
+        
+        await _botService.EditMessageTextAsync(
+            request.ChatId,
+            request.MessageId,
+            successMessage,
+            cancellationToken: cancellationToken);
+        
+        _logger.LogInformation(
+            "Scan confirmed for session {SessionId}, created purchase {PurchaseId}",
+            request.SessionId,
+            purchaseResult.Value.Id);
+        
+        return purchaseResult;
+    }
+}
+
+// ── Cancel Scan ──
+/// <summary>
+/// Command to cancel a scan session.
+/// </summary>
+public sealed record CancelScanCommand(
+    Guid SessionId,
+    long ChatId,
+    int MessageId,
+    string CallbackQueryId
+) : IRequest<Unit>;
+
+/// <summary>
+/// Handler for cancelling scan session.
+/// </summary>
+public sealed class CancelScanHandler : IRequestHandler<CancelScanCommand, Unit>
+{
+    private readonly ITelegramBotService _botService;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<CancelScanHandler> _logger;
+
+    public CancelScanHandler(
+        ITelegramBotService botService,
+        NastartDbContext db,
+        ILogger<CancelScanHandler> logger)
+    {
+        _botService = botService;
+        _db = db;
+        _logger = logger;
+    }
+
+    public async Task<Unit> Handle(
+        CancelScanCommand request,
+        CancellationToken cancellationToken)
+    {
+        // Answer callback
+        await _botService.AnswerCallbackQueryAsync(
+            request.CallbackQueryId,
+            "Dibatalkan",
+            cancellationToken: cancellationToken);
+        
+        // Update session
+        var session = await _db.ScanSessions
+            .FirstOrDefaultAsync(s => s.Id == request.SessionId, cancellationToken);
+        
+        if (session is not null)
+        {
+            session.Status = ScanSessionStatus.Cancelled;
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        
+        // Update message
+        await _botService.EditMessageTextAsync(
+            request.ChatId,
+            request.MessageId,
+            "❌ <b>Dibatalkan</b>\n\nKirim foto struk baru untuk scan ulang.",
+            cancellationToken: cancellationToken);
+        
+        _logger.LogInformation(
+            "Scan cancelled for session {SessionId}",
+            request.SessionId);
+        
+        return Unit.Value;
+    }
+}
+
+// ── Edit Item ──
+/// <summary>
+/// Command to edit a specific item in scan.
+/// </summary>
+public sealed record EditScanItemCommand(
+    Guid SessionId,
+    int ItemIndex,
+    long ChatId,
+    int MessageId,
+    string CallbackQueryId
+) : IRequest<Unit>;
+
+/// <summary>
+/// Handler for editing specific scan item.
+/// </summary>
+public sealed class EditScanItemHandler : IRequestHandler<EditScanItemCommand, Unit>
+{
+    private readonly ITelegramBotService _botService;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<EditScanItemHandler> _logger;
+
+    public EditScanItemHandler(
+        ITelegramBotService botService,
+        NastartDbContext db,
+        ILogger<EditScanItemHandler> logger)
+    {
+        _botService = botService;
+        _db = db;
+        _logger = logger;
+    }
+
+    public async Task<Unit> Handle(
+        EditScanItemCommand request,
+        CancellationToken cancellationToken)
+    {
+        await _botService.AnswerCallbackQueryAsync(
+            request.CallbackQueryId,
+            cancellationToken: cancellationToken);
+        
+        var session = await _db.ScanSessions
+            .FirstOrDefaultAsync(s => s.Id == request.SessionId, cancellationToken);
+        
+        if (session is null)
+        {
+            return Unit.Value;
+        }
+        
+        var items = JsonSerializer.Deserialize<List<DetectedReceiptItem>>(
+            session.DetectedItemsJson ?? "[]") ?? [];
+        
+        if (request.ItemIndex >= items.Count)
+        {
+            return Unit.Value;
+        }
+        
+        var item = items[request.ItemIndex];
+        session.Status = ScanSessionStatus.Editing;
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        // Build edit message
+        var editMessage = $"""
+            ✏️ <b>Edit Barang #{request.ItemIndex + 1}</b>
+            
+            <b>Teks asli:</b> {item.RawText}
+            <b>Deteksi:</b> {item.MatchedIngredientName ?? "Tidak dikenali"}
+            
+            Pilih bahan yang benar:
+            """;
+        
+        // Build ingredient selection keyboard
+        // TODO: Load ingredients from database and paginate
+        var keyboard = new InlineKeyboardMarkup(new[]
+        {
+            new[] 
+            { 
+                InlineKeyboardButton.WithCallbackData(
+                    "🔍 Cari Bahan",
+                    $"scan:search:{request.SessionId}:{request.ItemIndex}")
+            },
+            new[] 
+            { 
+                InlineKeyboardButton.WithCallbackData(
+                    "➕ Tambah Baru",
+                    $"scan:addnew:{request.SessionId}:{request.ItemIndex}")
+            },
+            new[] 
+            { 
+                InlineKeyboardButton.WithCallbackData(
+                    "🔙 Kembali",
+                    $"scan:back:{request.SessionId}")
+            }
+        });
+        
+        await _botService.EditMessageTextAsync(
+            request.ChatId,
+            request.MessageId,
+            editMessage,
+            keyboard,
+            cancellationToken: cancellationToken);
+        
+        _logger.LogInformation(
+            "Editing item {Index} for session {SessionId}",
+            request.ItemIndex,
+            request.SessionId);
+        
+        return Unit.Value;
     }
 }
 ```
 
-### References
-- [.NET Regex Source Generation](https://learn.microsoft.com/en-us/dotnet/standard/base-types/regular-expression-source-generators)
-- [Indonesian Number Formatting](https://docs.microsoft.com/en-us/globalization/locale/number-formatting)
+### Update Webhook Handler for Scan Callbacks
+
+Add to `HandleWebhook.cs` in the callback routing section:
+
+```csharp
+// In HandleCallbackQuery method, add these cases:
+
+// Scan callbacks
+("scan", "confirm") when param is not null => await DispatchCallback(
+    new ConfirmScanCommand(
+        Guid.Parse(param),
+        chatId,
+        messageId,
+        callbackQuery.Id
+    ), cancellationToken),
+
+("scan", "cancel") when param is not null => await DispatchCallback(
+    new CancelScanCommand(
+        Guid.Parse(param),
+        chatId,
+        messageId,
+        callbackQuery.Id
+    ), cancellationToken),
+
+("scan", "edit") when param is not null => await HandleEditCallback(
+    param, chatId, messageId, callbackQuery.Id, cancellationToken),
+```
+
+### Your Task (Day 5):
+
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
+
+# Create scan callbacks
+New-Item Features\Bot\Callbacks\ScanCallbacks.cs
+
+# Update HandleWebhook.cs with scan callback routing
+
+# Verify build
+dotnet build
+```
 
 ---
 
-# Day 7: Testing & Error Recovery
+# Day 6: Progress Updates & Error Handling
 
 ## 🧒 Explain Like I'm 5
 
-We need to make sure everything works correctly:
-- What if the photo is blurry? → Tell user to try again
-- What if OCR service is down? → Show helpful error
-- What if no items match? → Let user add manually
+When the robot is reading a big receipt, it takes time! We don't want you to think it's broken, so it shows progress:
 
-Testing is like practicing for all the things that could go wrong!
+1. "📷 Got your photo!" ✅
+2. "⏳ Reading text..." (1 second)
+3. "🔍 Finding ingredients..." (2 seconds)
+4. "✅ Done! Found 5 items!"
+
+If something goes wrong, instead of just crashing, it says:
+"❌ Oops! The photo was too blurry. Please try again with a clearer photo!"
 
 ## 🔧 Engineer Language
 
-Testing strategy:
-1. **Unit Tests** — Test parsing and matching logic
-2. **Integration Tests** — Test full OCR pipeline
-3. **Error Recovery** — Graceful degradation
+**Progress updates** improve UX by showing users what's happening during long operations. We use chat actions (typing indicator) and message edits to provide feedback.
 
-### Unit Tests for ReceiptParsingService
+> 📖 **Telegram Docs**: *"Use sendChatAction to tell users that something is happening. Available actions: typing, upload_photo, record_video, etc."*
+>
+> — [sendChatAction](https://core.telegram.org/bots/api#sendchataction)
 
-Create `tests/Nastart.Infrastructure.Tests/Services/ReceiptParsingServiceTests.cs`:
+### Progress Tracker Service
+
+Create `src/Nastart.Api/Features/Bot/Services/ScanProgressTracker.cs`:
+
+```csharp
+namespace Nastart.Api.Features.Bot.Services;
+
+/// <summary>
+/// Tracks and reports scan progress to users.
+/// </summary>
+public interface IScanProgressTracker
+{
+    /// <summary>
+    /// Starts tracking progress for a scan session.
+    /// </summary>
+    Task StartTrackingAsync(
+        long chatId,
+        int progressMessageId,
+        CancellationToken cancellationToken = default);
+    
+    /// <summary>
+    /// Updates progress stage.
+    /// </summary>
+    Task UpdateProgressAsync(
+        long chatId,
+        int progressMessageId,
+        ScanStage stage,
+        CancellationToken cancellationToken = default);
+    
+    /// <summary>
+    /// Marks progress as complete.
+    /// </summary>
+    Task CompleteAsync(
+        long chatId,
+        int progressMessageId,
+        int itemCount,
+        CancellationToken cancellationToken = default);
+    
+    /// <summary>
+    /// Reports an error.
+    /// </summary>
+    Task ReportErrorAsync(
+        long chatId,
+        int progressMessageId,
+        string errorMessage,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Scan processing stages.
+/// </summary>
+public enum ScanStage
+{
+    Received,
+    Downloading,
+    Processing,
+    Matching,
+    Complete,
+    Error
+}
+
+/// <summary>
+/// Implementation of scan progress tracker.
+/// </summary>
+public class ScanProgressTracker : IScanProgressTracker
+{
+    private readonly ITelegramBotService _botService;
+    private readonly ILogger<ScanProgressTracker> _logger;
+
+    public ScanProgressTracker(
+        ITelegramBotService botService,
+        ILogger<ScanProgressTracker> logger)
+    {
+        _botService = botService;
+        _logger = logger;
+    }
+
+    public async Task StartTrackingAsync(
+        long chatId,
+        int progressMessageId,
+        CancellationToken cancellationToken = default)
+    {
+        await _botService.SendTypingActionAsync(chatId, cancellationToken);
+    }
+
+    public async Task UpdateProgressAsync(
+        long chatId,
+        int progressMessageId,
+        ScanStage stage,
+        CancellationToken cancellationToken = default)
+    {
+        var message = GetProgressMessage(stage);
+        
+        try
+        {
+            await _botService.EditMessageTextAsync(
+                chatId,
+                progressMessageId,
+                message,
+                cancellationToken: cancellationToken);
+            
+            // Keep typing indicator active
+            await _botService.SendTypingActionAsync(chatId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to update progress message");
+        }
+    }
+
+    public async Task CompleteAsync(
+        long chatId,
+        int progressMessageId,
+        int itemCount,
+        CancellationToken cancellationToken = default)
+    {
+        var message = $"""
+            ✅ <b>Scan Selesai!</b>
+            
+            📦 {itemCount} barang terdeteksi
+            
+            <i>Menampilkan hasil...</i>
+            """;
+        
+        try
+        {
+            await _botService.EditMessageTextAsync(
+                chatId,
+                progressMessageId,
+                message,
+                cancellationToken: cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to update completion message");
+        }
+    }
+
+    public async Task ReportErrorAsync(
+        long chatId,
+        int progressMessageId,
+        string errorMessage,
+        CancellationToken cancellationToken = default)
+    {
+        var message = $"""
+            ❌ <b>Scan Gagal</b>
+            
+            {errorMessage}
+            
+            <b>Tips:</b>
+            • Pastikan foto tidak blur
+            • Pastikan semua teks terlihat jelas
+            • Hindari bayangan atau lipatan
+            
+            <i>Silakan kirim foto baru untuk coba lagi.</i>
+            """;
+        
+        try
+        {
+            await _botService.EditMessageTextAsync(
+                chatId,
+                progressMessageId,
+                message,
+                cancellationToken: cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to update error message");
+        }
+    }
+
+    private static string GetProgressMessage(ScanStage stage) => stage switch
+    {
+        ScanStage.Received => """
+            📷 <b>Struk diterima!</b>
+            
+            ⏳ Memulai proses...
+            """,
+        
+        ScanStage.Downloading => """
+            📷 <b>Struk diterima!</b>
+            ✅ Foto diterima
+            
+            ⏳ Mengunduh gambar...
+            """,
+        
+        ScanStage.Processing => """
+            📷 <b>Struk diterima!</b>
+            ✅ Foto diterima
+            ✅ Gambar diunduh
+            
+            ⏳ Membaca teks (OCR)...
+            <i>Mohon tunggu 5-10 detik</i>
+            """,
+        
+        ScanStage.Matching => """
+            📷 <b>Struk diterima!</b>
+            ✅ Foto diterima
+            ✅ Gambar diunduh
+            ✅ Teks terbaca
+            
+            ⏳ Mencocokkan dengan database bahan...
+            """,
+        
+        ScanStage.Complete => """
+            📷 <b>Struk diterima!</b>
+            ✅ Foto diterima
+            ✅ Gambar diunduh
+            ✅ Teks terbaca
+            ✅ Bahan terdeteksi
+            
+            🎉 Selesai! Menampilkan hasil...
+            """,
+        
+        ScanStage.Error => """
+            📷 <b>Struk diterima!</b>
+            
+            ❌ Terjadi kesalahan
+            """,
+        
+        _ => "⏳ Memproses..."
+    };
+}
+```
+
+### Error Messages
+
+Create `src/Nastart.Api/Features/Bot/Services/BotErrorMessages.cs`:
+
+```csharp
+namespace Nastart.Api.Features.Bot.Services;
+
+/// <summary>
+/// User-friendly error messages for bot responses.
+/// </summary>
+public static class BotErrorMessages
+{
+    public static string GetOcrErrorMessage(string? technicalError) => technicalError switch
+    {
+        string e when e.Contains("timeout", StringComparison.OrdinalIgnoreCase) =>
+            "⏱️ Waktu habis saat membaca struk. Server sedang sibuk, silakan coba lagi.",
+        
+        string e when e.Contains("connection", StringComparison.OrdinalIgnoreCase) =>
+            "🔌 Tidak dapat terhubung ke server OCR. Silakan coba beberapa saat lagi.",
+        
+        string e when e.Contains("no text", StringComparison.OrdinalIgnoreCase) =>
+            "🔍 Tidak ada teks yang terdeteksi. Pastikan foto menampilkan struk dengan jelas.",
+        
+        string e when e.Contains("too large", StringComparison.OrdinalIgnoreCase) =>
+            "📏 Ukuran foto terlalu besar. Silakan kirim foto dengan resolusi lebih kecil.",
+        
+        string e when e.Contains("format", StringComparison.OrdinalIgnoreCase) =>
+            "📷 Format foto tidak didukung. Gunakan JPEG atau PNG.",
+        
+        _ => "❓ Terjadi kesalahan saat memproses. Silakan coba lagi."
+    };
+
+    public static string GetDownloadErrorMessage(string? technicalError) => technicalError switch
+    {
+        string e when e.Contains("not found", StringComparison.OrdinalIgnoreCase) =>
+            "🔍 Foto tidak ditemukan. Mungkin sudah dihapus atau kadaluarsa.",
+        
+        string e when e.Contains("too large", StringComparison.OrdinalIgnoreCase) =>
+            "📏 Foto terlalu besar untuk diunduh. Maksimal 20MB.",
+        
+        _ => "❓ Gagal mengunduh foto. Silakan kirim ulang."
+    };
+
+    public static string SessionExpired =>
+        "⏰ Sesi sudah kadaluarsa. Silakan kirim foto struk baru.";
+
+    public static string UserNotFound =>
+        "👤 Pengguna tidak ditemukan. Silakan ketik /start untuk mendaftar.";
+
+    public static string NoItemsDetected =>
+        "📭 Tidak ada barang yang terdeteksi. Pastikan foto menampilkan daftar belanja dengan jelas.";
+
+    public static string GenericError =>
+        "❌ Terjadi kesalahan. Silakan coba lagi atau hubungi @nastart_support.";
+}
+```
+
+### Register Services
+
+```csharp
+// In Program.cs, add:
+builder.Services.AddScoped<IScanProgressTracker, ScanProgressTracker>();
+```
+
+### Your Task (Day 6):
+
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
+
+# Create progress tracker and error messages
+New-Item Features\Bot\Services\ScanProgressTracker.cs
+New-Item Features\Bot\Services\BotErrorMessages.cs
+
+# Register services in Program.cs
+
+# Verify build
+dotnet build
+```
+
+---
+
+# Day 7: Testing Photo Flow End-to-End
+
+## 🧒 Explain Like I'm 5
+
+Before showing your robot to everyone, test it!
+1. Send a clear receipt photo → Should work! ✅
+2. Send a blurry photo → Should say "too blurry" nicely ✅
+3. Send a random picture (not a receipt) → Should handle gracefully ✅
+4. Press all the buttons → Should all work! ✅
+
+If everything works, your robot is ready for real users! 🎉
+
+## 🔧 Engineer Language
+
+**End-to-end testing** validates the complete photo scanning flow from receiving the image to saving the purchase.
+
+> 📖 **Microsoft Docs**: *"Integration tests ensure that an app's components function correctly at a level that includes infrastructure."*
+>
+> — [Integration tests in ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/test/integration-tests)
+
+### PhotoHandler Tests
+
+Create `tests/Nastart.Api.Tests/Features/Bot/PhotoHandlerTests.cs`:
 
 ```csharp
 using FluentAssertions;
+using MediatR;
 using Microsoft.Extensions.Logging;
-using NSubstitute;
-using Nastart.Application.Common.Interfaces;
-using Nastart.Infrastructure.Services;
+using Moq;
+using Nastart.Api.Features.Bot;
+using Nastart.Api.Shared.Models;
 
-namespace Nastart.Infrastructure.Tests.Services;
+namespace Nastart.Api.Tests.Features.Bot;
 
-public class ReceiptParsingServiceTests
+public class PhotoHandlerTests
 {
-    private readonly ReceiptParsingService _sut;
+    private readonly Mock<ITelegramBotService> _mockBotService;
+    private readonly Mock<IMediator> _mockMediator;
+    private readonly Mock<ILogger<PhotoHandler>> _mockLogger;
 
-    public ReceiptParsingServiceTests()
+    public PhotoHandlerTests()
     {
-        var logger = Substitute.For<ILogger<ReceiptParsingService>>();
-        _sut = new ReceiptParsingService(logger);
+        _mockBotService = new Mock<ITelegramBotService>();
+        _mockMediator = new Mock<IMediator>();
+        _mockLogger = new Mock<ILogger<PhotoHandler>>();
     }
 
     [Fact]
-    public void Parse_WithValidItems_ExtractsCorrectly()
+    public async Task Handle_ValidPhoto_SendsProcessingMessage()
     {
         // Arrange
-        var lines = new List<OcrLine>
-        {
-            new("TOKO SUMBER REZEKI", 0.95),
-            new("Tepung Terigu 1kg Rp 25.000", 0.92),
-            new("Gula Pasir 500gr Rp 15.000", 0.90),
-            new("Telur 1 bks Rp 35.000", 0.88),
-            new("TOTAL Rp 75.000", 0.95)
-        };
-
+        var command = new HandlePhotoCommand(
+            ChatId: 123456789,
+            UserId: 987654321,
+            FileId: "AgACAgIAAxkBAAI",
+            FileUniqueId: "AQADAgAT",
+            Width: 1280,
+            Height: 720);
+        
+        _mockBotService
+            .Setup(s => s.SendTypingActionAsync(
+                It.IsAny<long>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        
+        _mockBotService
+            .Setup(s => s.SendTextMessageAsync(
+                It.IsAny<long>(),
+                It.IsAny<string>(),
+                It.IsAny<Telegram.Bot.Types.ReplyMarkups.IReplyMarkup?>(),
+                It.IsAny<Telegram.Bot.Types.Enums.ParseMode>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Telegram.Bot.Types.Message { MessageId = 1 });
+        
+        // Mock successful download and scan
+        _mockMediator
+            .Setup(m => m.Send(
+                It.IsAny<DownloadTelegramFileCommand>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<TelegramFileDownload>.Success(
+                new TelegramFileDownload(new byte[100], "path", 100)));
+        
         // Act
-        var result = _sut.Parse(lines);
-
+        // Note: Add test with real handler setup
+        
         // Assert
-        result.ItemLines.Should().HaveCount(3);
-        result.Total.Should().Be(75000);
-
-        var flour = result.ItemLines[0];
-        flour.ItemName.Should().Contain("Tepung");
-        flour.Quantity.Should().Be(1);
-        flour.Unit.Should().Be("kg");
-        flour.LineTotal.Should().Be(25000);
+        _mockBotService.Verify(
+            s => s.SendTypingActionAsync(command.ChatId, It.IsAny<CancellationToken>()),
+            Times.AtLeastOnce);
     }
 
     [Fact]
-    public void Parse_WithIndonesianFormat_ParsesPricesCorrectly()
-    {
-        // Arrange - Indonesian uses . for thousands
-        var lines = new List<OcrLine>
-        {
-            new("Minyak Goreng 2L Rp 45.500", 0.90),
-            new("SUBTOTAL Rp 45.500", 0.95)
-        };
-
-        // Act
-        var result = _sut.Parse(lines);
-
-        // Assert
-        result.ItemLines.Should().HaveCount(1);
-        result.ItemLines[0].LineTotal.Should().Be(45500);
-        result.Subtotal.Should().Be(45500);
-    }
-
-    [Fact]
-    public void Parse_SkipsHeaderFooter_OnlyReturnsItems()
+    public async Task Handle_DownloadFails_SendsErrorMessage()
     {
         // Arrange
-        var lines = new List<OcrLine>
-        {
-            new("STRUK BELANJA", 0.95),
-            new("Tanggal: 30/01/2026", 0.90),
-            new("Kasir: BUDI", 0.88),
-            new("Gula Pasir Rp 15.000", 0.92),
-            new("TOTAL Rp 15.000", 0.95),
-            new("Terima Kasih", 0.90)
-        };
+        var command = new HandlePhotoCommand(
+            ChatId: 123456789,
+            UserId: 987654321,
+            FileId: "invalid-file-id",
+            FileUniqueId: "unique",
+            Width: null,
+            Height: null);
+        
+        _mockMediator
+            .Setup(m => m.Send(
+                It.IsAny<DownloadTelegramFileCommand>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<TelegramFileDownload>.Failure("File not found"));
+        
+        // Act & Assert
+        // Should call EditMessageTextAsync with error message
+    }
+}
+```
 
+### Scan Confirmation Tests
+
+Create `tests/Nastart.Api.Tests/Features/Bot/ScanConfirmationTests.cs`:
+
+```csharp
+using FluentAssertions;
+using Nastart.Api.Features.Bot;
+using Nastart.Api.Features.Receipts;
+using System.Text.Json;
+
+namespace Nastart.Api.Tests.Features.Bot;
+
+public class ScanConfirmationTests
+{
+    [Fact]
+    public void DetectedReceiptItem_Serialization_RoundTrips()
+    {
+        // Arrange
+        var item = new DetectedReceiptItem(
+            RawText: "Tepung Terigu 2kg @25000",
+            MatchedIngredientName: "Tepung Terigu",
+            MatchedIngredientId: Guid.NewGuid(),
+            Quantity: 2,
+            Unit: "kg",
+            UnitPrice: 25000,
+            LineTotal: 50000,
+            Confidence: 0.95f);
+        
         // Act
-        var result = _sut.Parse(lines);
-
+        var json = JsonSerializer.Serialize(item);
+        var deserialized = JsonSerializer.Deserialize<DetectedReceiptItem>(json);
+        
         // Assert
-        result.ItemLines.Should().HaveCount(1);
-        result.ItemLines[0].ItemName.Should().Contain("Gula");
+        deserialized.Should().BeEquivalentTo(item);
+    }
+
+    [Fact]
+    public void ScanSession_ExpiresAt_IsSetCorrectly()
+    {
+        // Arrange & Act
+        var session = new ScanSession
+        {
+            Id = Guid.NewGuid(),
+            ChatId = 123,
+            UserId = 456,
+            PhotoFileId = "abc"
+        };
+        
+        // Assert
+        session.ExpiresAt.Should().BeAfter(DateTime.UtcNow);
+        session.ExpiresAt.Should().BeBefore(DateTime.UtcNow.AddMinutes(11));
     }
 
     [Theory]
-    [InlineData("2x Tepung @ 12.500 = 25.000", "Tepung", 2, 25000)]
-    [InlineData("GULA 500GR RP.15000", "GULA", 500, 15000)]
-    [InlineData("M.GORENG 1L Rp 22.000", "M GORENG", 1, 22000)]
-    public void Parse_VariousFormats_ExtractsCorrectly(
-        string line, 
-        string expectedName, 
-        decimal expectedQty, 
-        decimal expectedPrice)
+    [InlineData(ScanSessionStatus.Processing)]
+    [InlineData(ScanSessionStatus.AwaitingConfirmation)]
+    [InlineData(ScanSessionStatus.Editing)]
+    [InlineData(ScanSessionStatus.Confirmed)]
+    [InlineData(ScanSessionStatus.Cancelled)]
+    public void ScanSessionStatus_AllValues_AreHandled(ScanSessionStatus status)
     {
         // Arrange
-        var lines = new List<OcrLine> { new(line, 0.90) };
-
-        // Act
-        var result = _sut.Parse(lines);
-
+        var session = new ScanSession
+        {
+            Id = Guid.NewGuid(),
+            ChatId = 123,
+            UserId = 456,
+            PhotoFileId = "abc",
+            Status = status
+        };
+        
         // Assert
-        result.ItemLines.Should().HaveCount(1);
-        result.ItemLines[0].ItemName.Should().Contain(expectedName);
+        session.Status.Should().Be(status);
     }
 }
 ```
 
-### Unit Tests for IngredientMatchingService
+### Manual Testing Checklist
 
-Create `tests/Nastart.Infrastructure.Tests/Services/IngredientMatchingServiceTests.cs`:
+```markdown
+## Receipt Photo Flow - Manual Test Checklist
 
-```csharp
-using FluentAssertions;
-using Microsoft.Extensions.Logging;
-using NSubstitute;
-using Nastart.Application.Common.Interfaces;
-using Nastart.Domain.Inventory.Aggregates;
-using Nastart.Domain.Inventory.ValueObjects;
-using Nastart.Infrastructure.Services;
+### Setup
+- [ ] ngrok tunnel running: `ngrok http 5000`
+- [ ] Webhook registered: POST /api/bot/setup-webhook
+- [ ] Bot token configured in appsettings.Development.json
+- [ ] OCR service running: docker-compose up ocr-service
 
-namespace Nastart.Infrastructure.Tests.Services;
+### Happy Path Tests
+- [ ] Send clear receipt photo → Gets "Processing..." message
+- [ ] Processing shows progress stages
+- [ ] Confirmation message shows detected items
+- [ ] Items have correct names and prices
+- [ ] Click "✅ Simpan" → Purchase saved successfully
+- [ ] Success message shows correct totals
 
-public class IngredientMatchingServiceTests
-{
-    private readonly IIngredientRepository _ingredientRepo;
-    private readonly IIngredientAliasRepository _aliasRepo;
-    private readonly IngredientMatchingService _sut;
+### Edit Flow Tests
+- [ ] Click "✏️ Edit" → Shows edit options
+- [ ] Can select different ingredient
+- [ ] Click "🔙 Kembali" → Returns to confirmation
+- [ ] Edited items save correctly
 
-    public IngredientMatchingServiceTests()
-    {
-        _ingredientRepo = Substitute.For<IIngredientRepository>();
-        _aliasRepo = Substitute.For<IIngredientAliasRepository>();
-        var logger = Substitute.For<ILogger<IngredientMatchingService>>();
-        
-        _sut = new IngredientMatchingService(_ingredientRepo, _aliasRepo, logger);
-    }
+### Cancel Flow Tests
+- [ ] Click "❌ Batal" → Session cancelled
+- [ ] Message updated to cancelled state
+- [ ] Can send new photo after cancel
 
-    [Fact]
-    public async Task MatchAsync_ExactMatch_ReturnsHighConfidence()
-    {
-        // Arrange
-        var ingredients = new List<Ingredient>
-        {
-            CreateIngredient("Tepung Terigu", "kg"),
-            CreateIngredient("Gula Pasir", "kg")
-        };
-        
-        _ingredientRepo.GetByUserIdAsync(Arg.Any<long>(), Arg.Any<CancellationToken>())
-            .Returns(ingredients);
-        _aliasRepo.GetAllAsync(Arg.Any<CancellationToken>())
-            .Returns(new List<IngredientAlias>());
+### Error Handling Tests
+- [ ] Send blurry photo → Friendly error message
+- [ ] Send non-receipt image → Handles gracefully
+- [ ] Send very large image → Size error message
+- [ ] Wait 10+ minutes → Session expired message
 
-        var lines = new List<ReceiptItemLine>
-        {
-            new("Tepung Terigu 1kg Rp 25.000", "Tepung Terigu", 1, "kg", 25000, 25000, 0.95)
-        };
-
-        // Act
-        var result = await _sut.MatchAsync(lines, 123);
-
-        // Assert
-        result.MatchedItems.Should().HaveCount(1);
-        result.MatchedItems[0].IngredientName.Should().Be("Tepung Terigu");
-        result.MatchedItems[0].MatchConfidence.Should().Be(1.0);
-    }
-
-    [Fact]
-    public async Task MatchAsync_FuzzyMatch_ReturnsMediumConfidence()
-    {
-        // Arrange
-        var ingredients = new List<Ingredient>
-        {
-            CreateIngredient("Tepung Terigu", "kg")
-        };
-        
-        _ingredientRepo.GetByUserIdAsync(Arg.Any<long>(), Arg.Any<CancellationToken>())
-            .Returns(ingredients);
-        _aliasRepo.GetAllAsync(Arg.Any<CancellationToken>())
-            .Returns(new List<IngredientAlias>());
-
-        var lines = new List<ReceiptItemLine>
-        {
-            // Slightly different spelling
-            new("TPG TERIGU 1kg", "TPG TERIGU", 1, "kg", null, null, 0.85)
-        };
-
-        // Act
-        var result = await _sut.MatchAsync(lines, 123);
-
-        // Assert
-        result.MatchedItems.Should().HaveCount(1);
-        result.MatchedItems[0].MatchConfidence.Should().BeGreaterThan(0.6);
-    }
-
-    [Fact]
-    public async Task MatchAsync_NoMatch_ReturnsUnmatched()
-    {
-        // Arrange
-        var ingredients = new List<Ingredient>
-        {
-            CreateIngredient("Tepung Terigu", "kg")
-        };
-        
-        _ingredientRepo.GetByUserIdAsync(Arg.Any<long>(), Arg.Any<CancellationToken>())
-            .Returns(ingredients);
-        _aliasRepo.GetAllAsync(Arg.Any<CancellationToken>())
-            .Returns(new List<IngredientAlias>());
-
-        var lines = new List<ReceiptItemLine>
-        {
-            new("Sabun Cuci Piring", "Sabun Cuci Piring", null, null, 8000, 8000, 0.90)
-        };
-
-        // Act
-        var result = await _sut.MatchAsync(lines, 123);
-
-        // Assert
-        result.MatchedItems.Should().BeEmpty();
-        result.UnmatchedLines.Should().HaveCount(1);
-        result.UnmatchedLines[0].Reason.Should().Be(UnmatchedReason.NoIngredientMatch);
-    }
-
-    private static Ingredient CreateIngredient(string name, string unit)
-    {
-        return Ingredient.Create(
-            new IngredientId(Guid.NewGuid()),
-            name,
-            new Unit(unit),
-            Money.Zero,
-            Quantity.Zero,
-            Quantity.Zero,
-            null
-        ).Value;
-    }
-}
+### Edge Cases
+- [ ] Send multiple photos rapidly → Handles queue correctly
+- [ ] Click button after session expired → Shows expired message
+- [ ] OCR service down → Connection error message
 ```
 
-### Error Recovery in PhotoHandler
+### Run Tests
 
-Add robust error handling:
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend
 
-```csharp
-// Enhanced error handling in PhotoHandler
-public async Task HandleAsync(Message message, CancellationToken cancellationToken = default)
-{
-    // ... existing code ...
+# Run all bot tests
+dotnet test --filter "FullyQualifiedName~Bot"
 
-    try
-    {
-        // ... processing code ...
-    }
-    catch (HttpRequestException ex) when (ex.Message.Contains("timeout"))
-    {
-        _logger.LogWarning(ex, "OCR service timeout for user {UserId}", userId);
-        await ShowRetryableError(chatId, processingMessage.MessageId,
-            "⏱️ *Processing took too long*\n\n" +
-            "The OCR service is busy. Please try again in a moment.",
-            sessionId: null,
-            cancellationToken);
-    }
-    catch (HttpRequestException ex)
-    {
-        _logger.LogError(ex, "OCR service unavailable for user {UserId}", userId);
-        await ShowRetryableError(chatId, processingMessage.MessageId,
-            "🔌 *Service temporarily unavailable*\n\n" +
-            "Please try again in a few minutes.",
-            sessionId: null,
-            cancellationToken);
-    }
-    catch (Exception ex)
-    {
-        _logger.LogError(ex, "Unexpected error processing photo for user {UserId}", userId);
-        await ShowError(chatId, processingMessage.MessageId,
-            "Something went wrong. Please try again.",
-            cancellationToken);
-    }
-}
+# Run with verbose output
+dotnet test --filter "FullyQualifiedName~Bot" --logger "console;verbosity=detailed"
 
-private async Task ShowRetryableError(
-    long chatId,
-    int messageId,
-    string message,
-    Guid? sessionId,
-    CancellationToken cancellationToken)
-{
-    var keyboard = new InlineKeyboardMarkup(new[]
-    {
-        new[]
-        {
-            InlineKeyboardButton.WithCallbackData("🔄 Retry", "action:retry"),
-            InlineKeyboardButton.WithCallbackData("✏️ Enter Manually", "action:manual")
-        }
-    });
-
-    await _botClient.EditMessageText(
-        chatId: chatId,
-        messageId: messageId,
-        text: message,
-        parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-        replyMarkup: keyboard,
-        cancellationToken: cancellationToken);
-}
+# Generate coverage report
+dotnet test --collect:"XPlat Code Coverage" --filter "FullyQualifiedName~Bot"
 ```
 
-### References
-- [xUnit Testing](https://xunit.net/)
-- [FluentAssertions](https://fluentassertions.com/)
-- [NSubstitute](https://nsubstitute.github.io/)
+### Your Task (Day 7):
+
+1. Create `PhotoHandlerTests.cs`
+2. Create `ScanConfirmationTests.cs`
+3. Run tests: `dotnet test`
+4. Perform manual testing with real receipt photos
+5. Document any issues found
 
 ---
 
-## Week 9 Summary
+# Resources
 
-### Files Created/Updated
+## Microsoft Official Documentation
 
-```
-Nastart.Bot/
-├── Handlers/
-│   └── PhotoHandler.cs          (updated - MediatR integration)
-├── Services/
-│   ├── ITelegramFileService.cs  (new)
-│   ├── TelegramFileService.cs   (new)
-│   ├── IReceiptConfirmationBuilder.cs (new)
-│   └── ReceiptConfirmationBuilder.cs  (new)
+| Topic | Link |
+|-------|------|
+| **Minimal APIs** | [learn.microsoft.com/aspnet/core/fundamentals/minimal-apis](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/overview) |
+| **IHttpClientFactory** | [learn.microsoft.com/dotnet/core/extensions/httpclient-factory](https://learn.microsoft.com/en-us/dotnet/core/extensions/httpclient-factory) |
+| **Integration Tests** | [learn.microsoft.com/aspnet/core/test/integration-tests](https://learn.microsoft.com/en-us/aspnet/core/test/integration-tests) |
+| **JSON Serialization** | [learn.microsoft.com/dotnet/standard/serialization/system-text-json](https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/overview) |
 
-Nastart.Application/
-├── Common/Interfaces/
-│   ├── IIngredientMatchingService.cs (new)
-│   └── IReceiptParsingService.cs     (new)
-├── Finance/Commands/ScanReceipt/
-│   ├── ScanReceiptCommand.cs         (updated)
-│   ├── ScanReceiptCommandHandler.cs  (updated)
-│   └── ReceiptSession.cs             (new)
+## Telegram Documentation
 
-Nastart.Infrastructure/
-├── Services/
-│   ├── IngredientMatchingService.cs  (new)
-│   └── ReceiptParsingService.cs      (new)
+| Topic | Link |
+|-------|------|
+| **Bot API** | [core.telegram.org/bots/api](https://core.telegram.org/bots/api) |
+| **getFile** | [core.telegram.org/bots/api#getfile](https://core.telegram.org/bots/api#getfile) |
+| **PhotoSize** | [core.telegram.org/bots/api#photosize](https://core.telegram.org/bots/api#photosize) |
+| **Inline Keyboards** | [core.telegram.org/bots/features#inline-keyboards](https://core.telegram.org/bots/features#inline-keyboards) |
+| **Callback Query** | [core.telegram.org/bots/api#callbackquery](https://core.telegram.org/bots/api#callbackquery) |
+| **Chat Actions** | [core.telegram.org/bots/api#sendchataction](https://core.telegram.org/bots/api#sendchataction) |
 
-Nastart.Domain/
-├── Inventory/Entities/
-│   └── IngredientAlias.cs            (new)
-```
+## External Resources
 
-### Key Concepts Learned
+| Topic | Link |
+|-------|------|
+| **Telegram.Bot NuGet** | [github.com/TelegramBots/Telegram.Bot](https://github.com/TelegramBots/Telegram.Bot) |
+| **MediatR** | [github.com/jbogard/MediatR](https://github.com/jbogard/MediatR) |
+| **FluentAssertions** | [fluentassertions.com](https://fluentassertions.com/) |
 
-1. **Photo Download Pipeline** — Telegram file ID → getFile → download bytes
-2. **PaddleOCR Integration** — Local Python microservice for free OCR
-3. **Fuzzy Matching** — Levenshtein distance + alias matching
-4. **Receipt Parsing** — Regex patterns for Indonesian receipt formats
-5. **Confirmation Workflow** — Multi-step with inline keyboards
-6. **Session Management** — Track state during confirmation
-7. **Error Recovery** — Graceful degradation and retry options
+## Week 9 Checklist
 
-### Why PaddleOCR Over Azure Vision
+- [ ] Created `ScanSession` entity for tracking scan state
+- [ ] Added `ScanSessions` DbSet to context
+- [ ] Created `PhotoHandler` feature slice
+- [ ] Created `DownloadTelegramFile` feature
+- [ ] Created `ImagePreprocessor` service
+- [ ] Connected to `ScanReceipt` feature from Week 6
+- [ ] Created `SendScanConfirmation` feature
+- [ ] Built dynamic confirmation keyboard UI
+- [ ] Created `ConfirmScanCommand` handler
+- [ ] Created `CancelScanCommand` handler
+- [ ] Created `EditScanItemCommand` handler
+- [ ] Updated webhook handler with scan callbacks
+- [ ] Created `ScanProgressTracker` service
+- [ ] Created `BotErrorMessages` for friendly errors
+- [ ] Created unit tests for photo handling
+- [ ] Created unit tests for confirmation flow
+- [ ] Manual tested with real receipt photos
+- [ ] All builds pass: `dotnet build`
+- [ ] All tests pass: `dotnet test`
 
-| Aspect | PaddleOCR | Azure Vision |
-|--------|-----------|--------------|
-| **Monthly Cost** | Rp 0 | ~Rp 500,000+ |
-| **Privacy** | 100% local | Data in cloud |
-| **Latency** | ~200ms | ~500ms |
-| **Offline** | ✅ Yes | ❌ No |
+---
 
-For a small F&B business app, **PaddleOCR is the clear winner**.
+## What's Next?
 
-### Next Week Preview
+**Week 10: Bot Commands + Alerts** — Implement `/cost`, `/price`, `/low`, `/profit` commands. Connect notification system to send Telegram alerts when prices spike or margins drop below threshold.
 
-**Week 10: Bot Commands + Alerts** — Implement `/cost`, `/price`, `/low`, `/profit` commands and connect domain events to Telegram notifications.
+---
+
+*Nastart — Start smart, bake profitable*

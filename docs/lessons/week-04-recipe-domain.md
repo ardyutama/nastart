@@ -1,2561 +1,2020 @@
-# Week 4: Recipe Context Domain 🍳
+# Week 4: Recipe Features + Alerts 🍳
 
-> **Goal**: Build the Recipe bounded context — Recipe aggregate with RecipeItem child entities, Margin value object, CostCalculationService for computing recipe costs, and Alert aggregate for notifications.
+> **Goal**: Build the Recipe feature slices — create recipes with ingredients, calculate costs in real-time, track profit margins, and trigger alerts when margins fall below threshold.
 
 ---
 
 ## Table of Contents
-1. [Day 1: Strongly-Typed IDs & Margin Value Object](#day-1-strongly-typed-ids--margin-value-object)
-2. [Day 2: Recipe Aggregate Root](#day-2-recipe-aggregate-root)
-3. [Day 3: RecipeItem Entity (Child Collection)](#day-3-recipeitem-entity-child-collection)
-4. [Day 4: CostCalculationService (Domain Service)](#day-4-costcalculationservice-domain-service)
-5. [Day 5: Domain Events — MarginBelowThresholdEvent](#day-5-domain-events--marginbelowthresholdevent)
-6. [Day 6: Alert Aggregate](#day-6-alert-aggregate)
-7. [Day 7: Unit Testing Recipe Domain](#day-7-unit-testing-recipe-domain)
+1. [Day 1: Recipe & RecipeItem Models](#day-1-recipe--recipeitem-models)
+2. [Day 2: CreateRecipe Feature Slice](#day-2-createrecipe-feature-slice)
+3. [Day 3: AddIngredientToRecipe Feature](#day-3-addingredienttorecipe-feature)
+4. [Day 4: GetRecipeCost Query with Live Calculation](#day-4-getrecipecost-query-with-live-calculation)
+5. [Day 5: Margin Calculation & Threshold Detection](#day-5-margin-calculation--threshold-detection)
+6. [Day 6: MarginBelowThresholdNotification](#day-6-marginbelowthresholdnotification)
+7. [Day 7: Testing Recipe Features](#day-7-testing-recipe-features)
 8. [Resources](#resources) *(Microsoft Official Docs Verified)*
 
 ---
 
-# Day 1: Strongly-Typed IDs & Margin Value Object
-
-## 🧒 Explain Like I'm 5
-
-Imagine you're selling lemonade for $1. If it costs you 80 cents to make, you keep 20 cents. That 20 cents is your **margin** — it's like "how much money you get to keep!"
-
-If you only keep 5 cents, that's bad! 😟 We need to know when our margin is too small.
-
-## 🔧 Engineer Language
-
-The **Margin** value object represents the difference between selling price and cost, expressed as a percentage or absolute amount. It encapsulates business rules like "is this margin below our minimum acceptable threshold?"
-
-> 📖 **Microsoft Docs**: *"Value objects have no identity. They are immutable, and equality is determined by the values of their properties rather than by identity."*
->
-> — [Implement Value Objects](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/implement-value-objects)
-
-### RecipeId — Strongly-Typed ID
-
-Create `src/Nastart.Domain/Recipe/ValueObjects/RecipeIds.cs`:
-
-```csharp
-namespace Nastart.Domain.Recipe.ValueObjects;
-
-/// <summary>
-/// Strongly-typed ID for Recipe aggregate.
-/// Uses record struct for value semantics and zero allocation.
-/// </summary>
-/// <remarks>
-/// See: https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-7.0/whatsnew#value-generation-for-ddd-guarded-types
-/// </remarks>
-public readonly record struct RecipeId(Guid Value)
-{
-    public static RecipeId New() => new(Guid.NewGuid());
-    public static RecipeId Empty => new(Guid.Empty);
-    public bool IsEmpty => Value == Guid.Empty;
-    public override string ToString() => Value.ToString();
-    
-    public static implicit operator Guid(RecipeId id) => id.Value;
-    public static explicit operator RecipeId(Guid guid) => new(guid);
-}
-
-/// <summary>
-/// Strongly-typed ID for RecipeItem entity.
-/// </summary>
-public readonly record struct RecipeItemId(Guid Value)
-{
-    public static RecipeItemId New() => new(Guid.NewGuid());
-    public static RecipeItemId Empty => new(Guid.Empty);
-    public bool IsEmpty => Value == Guid.Empty;
-    public override string ToString() => Value.ToString();
-}
-
-/// <summary>
-/// Strongly-typed ID for Alert aggregate.
-/// </summary>
-public readonly record struct AlertId(Guid Value)
-{
-    public static AlertId New() => new(Guid.NewGuid());
-    public static AlertId Empty => new(Guid.Empty);
-    public bool IsEmpty => Value == Guid.Empty;
-    public override string ToString() => Value.ToString();
-}
-```
-
-### Margin Value Object
-
-The Margin represents the profit margin of a recipe — the percentage or amount remaining after costs.
-
-Create `src/Nastart.Domain/Recipe/ValueObjects/Margin.cs`:
-
-```csharp
-using Nastart.Domain.Common;
-
-namespace Nastart.Domain.Recipe.ValueObjects;
-
-/// <summary>
-/// Represents the profit margin of a recipe.
-/// Can be expressed as a percentage (0-100) or calculated from cost/selling price.
-/// </summary>
-/// <remarks>
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/implement-value-objects
-/// </remarks>
-public class Margin : ValueObject
-{
-    /// <summary>The margin as a percentage (e.g., 25.5 means 25.5%).</summary>
-    public decimal Percentage { get; }
-    
-    /// <summary>The absolute amount of the margin.</summary>
-    public decimal Amount { get; }
-    
-    /// <summary>The selling price used to calculate this margin.</summary>
-    public decimal SellingPrice { get; }
-    
-    /// <summary>The cost used to calculate this margin.</summary>
-    public decimal Cost { get; }
-
-    // Private constructor — use factory methods
-    private Margin(decimal percentage, decimal amount, decimal sellingPrice, decimal cost)
-    {
-        Percentage = percentage;
-        Amount = amount;
-        SellingPrice = sellingPrice;
-        Cost = cost;
-    }
-
-    /// <summary>
-    /// Creates a Margin from cost and selling price.
-    /// </summary>
-    /// <param name="cost">The total cost of the recipe.</param>
-    /// <param name="sellingPrice">The selling price of the recipe.</param>
-    /// <returns>A new Margin value object.</returns>
-    /// <exception cref="ArgumentException">When selling price is zero or negative.</exception>
-    public static Margin Calculate(decimal cost, decimal sellingPrice)
-    {
-        if (sellingPrice <= 0)
-            throw new ArgumentException("Selling price must be greater than zero.", nameof(sellingPrice));
-        
-        if (cost < 0)
-            throw new ArgumentException("Cost cannot be negative.", nameof(cost));
-        
-        var amount = sellingPrice - cost;
-        var percentage = (amount / sellingPrice) * 100;
-        
-        return new Margin(
-            percentage: Math.Round(percentage, 2),
-            amount: Math.Round(amount, 2),
-            sellingPrice: sellingPrice,
-            cost: cost
-        );
-    }
-
-    /// <summary>
-    /// Creates a Margin directly from a percentage.
-    /// Used when you know the target margin percentage.
-    /// </summary>
-    /// <param name="percentage">The margin percentage (e.g., 30 for 30%).</param>
-    /// <param name="sellingPrice">The selling price.</param>
-    public static Margin FromPercentage(decimal percentage, decimal sellingPrice)
-    {
-        if (percentage < 0 || percentage > 100)
-            throw new ArgumentOutOfRangeException(nameof(percentage), "Percentage must be between 0 and 100.");
-        
-        if (sellingPrice <= 0)
-            throw new ArgumentException("Selling price must be greater than zero.", nameof(sellingPrice));
-        
-        var amount = (percentage / 100) * sellingPrice;
-        var cost = sellingPrice - amount;
-        
-        return new Margin(
-            percentage: Math.Round(percentage, 2),
-            amount: Math.Round(amount, 2),
-            sellingPrice: sellingPrice,
-            cost: Math.Round(cost, 2)
-        );
-    }
-
-    /// <summary>
-    /// Checks if this margin is below a given threshold percentage.
-    /// </summary>
-    /// <param name="thresholdPercentage">The minimum acceptable margin percentage.</param>
-    /// <returns>True if the margin is below the threshold.</returns>
-    public bool IsBelow(decimal thresholdPercentage)
-    {
-        return Percentage < thresholdPercentage;
-    }
-
-    /// <summary>
-    /// Checks if this margin is above a given threshold percentage.
-    /// </summary>
-    public bool IsAbove(decimal thresholdPercentage)
-    {
-        return Percentage > thresholdPercentage;
-    }
-
-    /// <summary>
-    /// Checks if the recipe is operating at a loss (negative margin).
-    /// </summary>
-    public bool IsLoss => Amount < 0;
-
-    /// <summary>
-    /// Returns the status of this margin relative to common thresholds.
-    /// </summary>
-    public MarginStatus GetStatus(decimal warningThreshold = 15m, decimal criticalThreshold = 10m)
-    {
-        if (IsLoss) return MarginStatus.Loss;
-        if (IsBelow(criticalThreshold)) return MarginStatus.Critical;
-        if (IsBelow(warningThreshold)) return MarginStatus.Warning;
-        return MarginStatus.Healthy;
-    }
-
-    protected override IEnumerable<object> GetEqualityComponents()
-    {
-        yield return Percentage;
-        yield return Amount;
-        yield return SellingPrice;
-        yield return Cost;
-    }
-
-    public override string ToString() => $"{Percentage:F2}% (${Amount:F2})";
-}
-
-/// <summary>
-/// Represents the health status of a margin.
-/// </summary>
-public enum MarginStatus
-{
-    Healthy,   // Above warning threshold
-    Warning,   // Between warning and critical
-    Critical,  // Below critical threshold but still profitable
-    Loss       // Negative margin — losing money
-}
-```
-
-### Alternative: Margin as C# Record (Simpler Approach)
-
-For simpler scenarios, you can use a record:
-
-```csharp
-namespace Nastart.Domain.Recipe.ValueObjects;
-
-/// <summary>
-/// Simplified Margin using C# record.
-/// </summary>
-public sealed record MarginSimple
-{
-    public decimal Percentage { get; init; }
-    public decimal Amount { get; init; }
-
-    private MarginSimple(decimal percentage, decimal amount)
-    {
-        Percentage = percentage;
-        Amount = amount;
-    }
-
-    public static MarginSimple Calculate(decimal cost, decimal sellingPrice)
-    {
-        if (sellingPrice <= 0)
-            throw new ArgumentException("Selling price must be greater than zero.");
-        
-        var amount = sellingPrice - cost;
-        var percentage = (amount / sellingPrice) * 100;
-        
-        return new MarginSimple(Math.Round(percentage, 2), Math.Round(amount, 2));
-    }
-
-    public bool IsBelow(decimal threshold) => Percentage < threshold;
-}
-```
-
-### Folder Structure After Day 1:
-
-```
-src/Nastart.Domain/
-├── Common/                        # From Week 2
-│   ├── Entity.cs
-│   ├── AggregateRoot.cs
-│   └── ValueObject.cs
-├── Finance/                       # From Week 3
-│   ├── Aggregates/
-│   ├── Entities/
-│   ├── Services/
-│   └── ValueObjects/
-├── Recipe/                        # NEW - Week 4
-│   ├── Aggregates/               # Coming Day 2
-│   ├── Entities/                 # Coming Day 3
-│   ├── Events/                   # Coming Day 5
-│   ├── Services/                 # Coming Day 4
-│   └── ValueObjects/
-│       ├── RecipeIds.cs          ✅ Created
-│       └── Margin.cs             ✅ Created
-```
-
----
-
-# Day 2: Recipe Aggregate Root
+# Day 1: Recipe & RecipeItem Models
 
 ## 🧒 Explain Like I'm 5
 
 A **recipe** is like a treasure map 🗺️ that tells you:
-- What ingredients you need
-- How much of each ingredient
-- How to make the dish
+- What ingredients you need (flour, sugar, eggs)
+- How much of each ingredient (500g flour, 200g sugar, 3 eggs)
+- How much you sell it for (Rp 50.000 per cake)
 
-The Recipe is the "boss" — it decides what ingredients can be added or removed!
+The **recipe items** are the individual lines on your map — each ingredient with its amount.
+
+Then we can calculate: "Does this recipe make me money or lose money?"
 
 ## 🔧 Engineer Language
 
-The **Recipe** aggregate root encapsulates a collection of RecipeItems (ingredients with quantities). Following DDD principles, the aggregate root is the only entry point for modifications — clients cannot directly manipulate the items collection.
+A **Recipe** represents a product formula — what ingredients are needed and in what quantities. **RecipeItem** represents each ingredient entry with its quantity. In Vertical Slice Architecture, these models live inside the `Features/Recipes/` folder.
 
-> 📖 **Microsoft Docs**: *"An aggregate's root Entity should be the only entry point for updates to the aggregate, through methods on the aggregate root. Those methods (or the aggregate root) should maintain consistency across the aggregate's data at all times."*
+> 📖 **Microsoft Docs**: *"Entity types are typically mapped to tables. Configure entity types in OnModelCreating or use data annotations."*
 >
-> — [Design a microservice domain model](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model)
+> — [Creating and Configuring a Model](https://learn.microsoft.com/en-us/ef/core/modeling/)
 
-### Key DDD Pattern: Encapsulated Collections
+### Recipe Entity Model:
+
+Create `src/Nastart.Api/Features/Recipes/Recipe.cs`:
 
 ```csharp
-// ❌ WRONG — Direct collection access breaks encapsulation
-myRecipe.Items.Add(new RecipeItem(...));
-
-// ✅ CORRECT — Domain methods maintain invariants
-myRecipe.AddIngredient(ingredientId, quantity, unitCost);
-```
-
-> 📖 **Microsoft Docs**: *"Collections within the entity (like the order items) should be read-only properties. You should be able to update it only from within the aggregate root class methods."*
->
-> — [Implement a microservice domain model with .NET](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model)
-
-### Recipe Aggregate Root
-
-Create `src/Nastart.Domain/Recipe/Aggregates/Recipe.cs`:
-
-```csharp
-using Nastart.Domain.Common;
-using Nastart.Domain.Recipe.Entities;
-using Nastart.Domain.Recipe.Events;
-using Nastart.Domain.Recipe.ValueObjects;
-using Nastart.Domain.Inventory.ValueObjects; // For IngredientId from Week 2
-
-namespace Nastart.Domain.Recipe.Aggregates;
+namespace Nastart.Api.Features.Recipes;
 
 /// <summary>
-/// Recipe aggregate root — represents a dish/item that can be sold.
-/// Contains a collection of RecipeItems (ingredients with quantities).
+/// Represents a product recipe with ingredients and pricing.
 /// </summary>
 /// <remarks>
-/// Design principles:
-/// - Recipe is the ONLY entry point for modifying items
-/// - Items collection is read-only externally
-/// - All domain logic flows through aggregate methods
-/// 
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model
+/// Entity model following EF Core conventions.
+/// Cost calculations are done in feature handlers, not entity classes.
+/// See: https://learn.microsoft.com/en-us/ef/core/modeling/
 /// </remarks>
-public class Recipe : AggregateRoot<RecipeId>
+public class Recipe
 {
-    // ═══════════════════════════════════════════════════════════════
-    // PRIVATE BACKING FIELD — Only the aggregate can modify this
-    // ═══════════════════════════════════════════════════════════════
-    private readonly List<RecipeItem> _items = new();
-
-    // ═══════════════════════════════════════════════════════════════
-    // PUBLIC PROPERTIES
-    // ═══════════════════════════════════════════════════════════════
-    
-    /// <summary>The recipe name (e.g., "Margherita Pizza").</summary>
-    public string Name { get; private set; } = string.Empty;
-    
-    /// <summary>Optional description of the recipe.</summary>
-    public string? Description { get; private set; }
-    
-    /// <summary>The selling price of this recipe.</summary>
-    public decimal SellingPrice { get; private set; }
-    
-    /// <summary>The category this recipe belongs to (e.g., "Main Course", "Dessert").</summary>
-    public string Category { get; private set; } = string.Empty;
-    
-    /// <summary>Whether this recipe is currently active/available for sale.</summary>
-    public bool IsActive { get; private set; } = true;
+    public Guid Id { get; set; }
     
     /// <summary>
-    /// READ-ONLY access to recipe items.
-    /// Modifications MUST go through aggregate methods.
+    /// The user who owns this recipe.
     /// </summary>
-    /// <remarks>
-    /// Using AsReadOnly() prevents external code from casting back to List
-    /// and bypassing our encapsulation.
-    /// </remarks>
-    public IReadOnlyCollection<RecipeItem> Items => _items.AsReadOnly();
+    public required Guid UserId { get; set; }
     
-    /// <summary>The calculated total cost of all ingredients.</summary>
-    public decimal TotalCost { get; private set; }
-    
-    /// <summary>The calculated margin for this recipe.</summary>
-    public Margin CurrentMargin { get; private set; } = null!;
-    
-    /// <summary>When this recipe was created.</summary>
-    public DateTime CreatedAt { get; private set; }
-    
-    /// <summary>When this recipe was last modified.</summary>
-    public DateTime? ModifiedAt { get; private set; }
-
-    // ═══════════════════════════════════════════════════════════════
-    // CONSTRUCTORS
-    // ═══════════════════════════════════════════════════════════════
-    
-    /// <summary>EF Core constructor — do not use directly.</summary>
-    private Recipe() : base(RecipeId.Empty) { }
-
     /// <summary>
-    /// Creates a new Recipe.
+    /// Recipe name (e.g., "Chocolate Cake", "Nastar Cookies").
     /// </summary>
-    /// <param name="id">The unique identifier for this recipe.</param>
-    /// <param name="name">The recipe name.</param>
-    /// <param name="sellingPrice">The price at which this recipe is sold.</param>
-    /// <param name="category">The category (e.g., "Appetizer", "Main").</param>
-    /// <param name="description">Optional description.</param>
-    public Recipe(RecipeId id, string name, decimal sellingPrice, string category, string? description = null)
-        : base(id)
+    public required string Name { get; set; }
+    
+    /// <summary>
+    /// Optional description or notes.
+    /// </summary>
+    public string? Description { get; set; }
+    
+    /// <summary>
+    /// Category (e.g., "Cakes", "Cookies", "Bread").
+    /// </summary>
+    public string? Category { get; set; }
+    
+    /// <summary>
+    /// The selling price per unit.
+    /// </summary>
+    public decimal SellPrice { get; set; }
+    
+    /// <summary>
+    /// Calculated total cost of all ingredients.
+    /// Updated when ingredients are added/removed or prices change.
+    /// </summary>
+    public decimal TotalCost { get; set; }
+    
+    /// <summary>
+    /// Calculated margin percentage: ((SellPrice - TotalCost) / SellPrice) * 100.
+    /// </summary>
+    public decimal MarginPercent { get; set; }
+    
+    /// <summary>
+    /// Recipe status: Draft, Active, NeedsReview, Inactive, Archived.
+    /// </summary>
+    public required string Status { get; set; } = "Draft";
+    
+    /// <summary>
+    /// Number of units this recipe produces (e.g., "makes 24 cookies").
+    /// </summary>
+    public int YieldQuantity { get; set; } = 1;
+    
+    /// <summary>
+    /// Unit for yield (e.g., "pieces", "portions", "loaves").
+    /// </summary>
+    public string YieldUnit { get; set; } = "unit";
+    
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    
+    public DateTime? UpdatedAt { get; set; }
+    
+    // Navigation properties
+    public ICollection<RecipeItem> Items { get; set; } = [];
+}
+
+/// <summary>
+/// Represents one ingredient entry in a recipe.
+/// </summary>
+public class RecipeItem
+{
+    public Guid Id { get; set; }
+    
+    /// <summary>
+    /// Parent recipe this item belongs to.
+    /// </summary>
+    public required Guid RecipeId { get; set; }
+    
+    /// <summary>
+    /// The ingredient used.
+    /// </summary>
+    public required Guid IngredientId { get; set; }
+    
+    /// <summary>
+    /// Quantity of ingredient needed (e.g., 500 for 500g).
+    /// </summary>
+    public required decimal Quantity { get; set; }
+    
+    /// <summary>
+    /// Calculated cost for this line item (Quantity × Ingredient.CurrentPrice).
+    /// </summary>
+    public decimal Cost { get; set; }
+    
+    // Navigation properties
+    public Recipe? Recipe { get; set; }
+    public Ingredient? Ingredient { get; set; }
+}
+```
+
+### Add DbSets to Context:
+
+Update `src/Nastart.Api/Shared/Data/NastartDbContext.cs`:
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Ingredients;
+using Nastart.Api.Features.Purchases;
+using Nastart.Api.Features.Recipes;
+using Nastart.Api.Features.Alerts;
+
+namespace Nastart.Api.Shared.Data;
+
+public class NastartDbContext : DbContext
+{
+    public NastartDbContext(DbContextOptions<NastartDbContext> options) 
+        : base(options) { }
+    
+    // Ingredients
+    public DbSet<Ingredient> Ingredients => Set<Ingredient>();
+    public DbSet<Category> Categories => Set<Category>();
+    
+    // Purchases
+    public DbSet<Purchase> Purchases => Set<Purchase>();
+    public DbSet<PurchaseItem> PurchaseItems => Set<PurchaseItem>();
+    public DbSet<Shop> Shops => Set<Shop>();
+    public DbSet<PriceHistory> PriceHistories => Set<PriceHistory>();
+    
+    // Recipes
+    public DbSet<Recipe> Recipes => Set<Recipe>();
+    public DbSet<RecipeItem> RecipeItems => Set<RecipeItem>();
+    
+    // Alerts
+    public DbSet<Alert> Alerts => Set<Alert>();
+    
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        SetName(name);
-        SetSellingPrice(sellingPrice);
-        SetCategory(category);
-        Description = description;
-        CreatedAt = DateTime.UtcNow;
+        // Recipe -> RecipeItem relationship
+        modelBuilder.Entity<Recipe>()
+            .HasMany(r => r.Items)
+            .WithOne(i => i.Recipe)
+            .HasForeignKey(i => i.RecipeId)
+            .OnDelete(DeleteBehavior.Cascade);
         
-        // Initialize margin with zero cost
-        RecalculateCost();
+        // RecipeItem -> Ingredient relationship
+        modelBuilder.Entity<RecipeItem>()
+            .HasOne(ri => ri.Ingredient)
+            .WithMany()
+            .HasForeignKey(ri => ri.IngredientId)
+            .OnDelete(DeleteBehavior.Restrict);
         
-        AddDomainEvent(new RecipeCreatedEvent(Id, Name));
+        // Decimal precision for money
+        modelBuilder.Entity<Recipe>()
+            .Property(r => r.SellPrice)
+            .HasPrecision(18, 2);
+        
+        modelBuilder.Entity<Recipe>()
+            .Property(r => r.TotalCost)
+            .HasPrecision(18, 2);
+        
+        modelBuilder.Entity<Recipe>()
+            .Property(r => r.MarginPercent)
+            .HasPrecision(5, 2);
+        
+        modelBuilder.Entity<RecipeItem>()
+            .Property(ri => ri.Cost)
+            .HasPrecision(18, 2);
+    }
+}
+```
+
+### .NET 10 Features Used:
+
+| Feature | Usage |
+|---------|-------|
+| **Required members** | `required string Name` ensures initialization |
+| **Collection expressions** | `Items { get; set; } = [];` |
+| **Nullable reference types** | `string? Description` |
+| **File-scoped namespace** | `namespace Nastart.Api.Features.Recipes;` |
+
+### Your Task (Day 1):
+
+```powershell
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
+
+# Create Recipes feature folder
+mkdir Features\Recipes
+
+# Create the Recipe model
+New-Item Features\Recipes\Recipe.cs
+
+# Verify build
+dotnet build
+```
+
+---
+
+# Day 2: CreateRecipe Feature Slice
+
+## 🧒 Explain Like I'm 5
+
+When a baker wants to add a new recipe:
+1. They give it a name ("Chocolate Chip Cookies")
+2. They set the selling price (Rp 25.000 per box)
+3. They tell us how many it makes (24 cookies)
+4. We create a new recipe and say "Done! Now add your ingredients!"
+
+## 🔧 Engineer Language
+
+The **CreateRecipe** feature slice handles creating a new recipe. This is a **Command** (changes state) that creates the recipe header. Ingredients are added separately via the `AddIngredientToRecipe` feature.
+
+> 📖 **Microsoft Docs**: *"Minimal APIs support model binding, validation, and returning appropriate HTTP responses."*
+>
+> — [Minimal APIs overview](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/overview)
+
+### Complete CreateRecipe Feature:
+
+Create `src/Nastart.Api/Features/Recipes/CreateRecipe.cs`:
+
+```csharp
+using FluentValidation;
+using MediatR;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Recipes;
+
+// ══════════════════════════════════════════════════════════════
+// CREATE RECIPE FEATURE SLICE
+// Everything needed to create a recipe in one file
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
+/// <summary>
+/// Command to create a new recipe.
+/// </summary>
+public sealed record CreateRecipeCommand(
+    Guid UserId,
+    string Name,
+    decimal SellPrice,
+    string? Description = null,
+    string? Category = null,
+    int YieldQuantity = 1,
+    string YieldUnit = "unit"
+) : IRequest<Result<RecipeResponse>>;
+
+// ── Response ──
+/// <summary>
+/// Response DTO for recipe operations.
+/// </summary>
+public sealed record RecipeResponse(
+    Guid Id,
+    string Name,
+    string? Description,
+    string? Category,
+    decimal SellPrice,
+    decimal TotalCost,
+    decimal MarginPercent,
+    string Status,
+    int YieldQuantity,
+    string YieldUnit,
+    decimal CostPerUnit,
+    IReadOnlyList<RecipeItemResponse> Items,
+    DateTime CreatedAt
+);
+
+/// <summary>
+/// Response DTO for a recipe item.
+/// </summary>
+public sealed record RecipeItemResponse(
+    Guid Id,
+    Guid IngredientId,
+    string IngredientName,
+    decimal Quantity,
+    string Unit,
+    decimal UnitPrice,
+    decimal Cost
+);
+
+// ── Validator ──
+/// <summary>
+/// Validates CreateRecipeCommand input.
+/// </summary>
+public sealed class CreateRecipeValidator : AbstractValidator<CreateRecipeCommand>
+{
+    public CreateRecipeValidator()
+    {
+        RuleFor(x => x.UserId)
+            .NotEmpty()
+            .WithMessage("User ID is required");
+        
+        RuleFor(x => x.Name)
+            .NotEmpty()
+            .MaximumLength(200)
+            .WithMessage("Recipe name is required and must be under 200 characters");
+        
+        RuleFor(x => x.SellPrice)
+            .GreaterThan(0)
+            .WithMessage("Selling price must be greater than 0");
+        
+        RuleFor(x => x.YieldQuantity)
+            .GreaterThan(0)
+            .WithMessage("Yield quantity must be at least 1");
+        
+        RuleFor(x => x.YieldUnit)
+            .NotEmpty()
+            .MaximumLength(50)
+            .WithMessage("Yield unit is required");
+    }
+}
+
+// ── Handler ──
+/// <summary>
+/// Handles CreateRecipeCommand by creating a new recipe.
+/// </summary>
+public sealed class CreateRecipeHandler 
+    : IRequestHandler<CreateRecipeCommand, Result<RecipeResponse>>
+{
+    private readonly NastartDbContext _db;
+    private readonly ILogger<CreateRecipeHandler> _logger;
+
+    public CreateRecipeHandler(
+        NastartDbContext db,
+        ILogger<CreateRecipeHandler> logger)
+    {
+        _db = db;
+        _logger = logger;
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // FACTORY METHOD — Alternative creation pattern
-    // ═══════════════════════════════════════════════════════════════
-    
-    /// <summary>
-    /// Factory method to create a new Recipe with validation.
-    /// </summary>
-    public static Recipe Create(string name, decimal sellingPrice, string category, string? description = null)
+    public async Task<Result<RecipeResponse>> Handle(
+        CreateRecipeCommand request, 
+        CancellationToken cancellationToken)
     {
-        return new Recipe(RecipeId.New(), name, sellingPrice, category, description);
+        // Create recipe
+        var recipe = new Recipe
+        {
+            Id = Guid.NewGuid(),
+            UserId = request.UserId,
+            Name = request.Name,
+            Description = request.Description,
+            Category = request.Category,
+            SellPrice = request.SellPrice,
+            TotalCost = 0,  // No ingredients yet
+            MarginPercent = 100,  // 100% margin when no costs
+            Status = "Draft",
+            YieldQuantity = request.YieldQuantity,
+            YieldUnit = request.YieldUnit,
+            CreatedAt = DateTime.UtcNow
+        };
+        
+        _db.Recipes.Add(recipe);
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        _logger.LogInformation(
+            "Created recipe '{Name}' (ID: {RecipeId}) with sell price {SellPrice}",
+            recipe.Name, recipe.Id, recipe.SellPrice);
+        
+        return Result<RecipeResponse>.Success(new RecipeResponse(
+            Id: recipe.Id,
+            Name: recipe.Name,
+            Description: recipe.Description,
+            Category: recipe.Category,
+            SellPrice: recipe.SellPrice,
+            TotalCost: recipe.TotalCost,
+            MarginPercent: recipe.MarginPercent,
+            Status: recipe.Status,
+            YieldQuantity: recipe.YieldQuantity,
+            YieldUnit: recipe.YieldUnit,
+            CostPerUnit: 0,
+            Items: [],
+            CreatedAt: recipe.CreatedAt
+        ));
+    }
+}
+```
+
+### GetRecipe Query:
+
+Create `src/Nastart.Api/Features/Recipes/GetRecipe.cs`:
+
+```csharp
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Recipes;
+
+// ══════════════════════════════════════════════════════════════
+// GET RECIPE FEATURE SLICE
+// ══════════════════════════════════════════════════════════════
+
+public sealed record GetRecipeQuery(
+    Guid RecipeId,
+    Guid UserId
+) : IRequest<Result<RecipeResponse>>;
+
+public sealed class GetRecipeHandler 
+    : IRequestHandler<GetRecipeQuery, Result<RecipeResponse>>
+{
+    private readonly NastartDbContext _db;
+
+    public GetRecipeHandler(NastartDbContext db)
+    {
+        _db = db;
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // DOMAIN METHODS — The ONLY way to modify the aggregate
-    // ═══════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// Adds an ingredient to this recipe.
-    /// This is the ONLY way to add items — direct collection access is not allowed.
-    /// </summary>
-    /// <param name="ingredientId">The ingredient to add.</param>
-    /// <param name="ingredientName">Display name of the ingredient.</param>
-    /// <param name="quantity">How much of the ingredient is needed.</param>
-    /// <param name="unit">The unit of measurement (e.g., "kg", "pieces").</param>
-    /// <param name="unitCost">The cost per unit of this ingredient.</param>
-    /// <remarks>
-    /// Pattern from eShopOnContainers:
-    /// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model
-    /// </remarks>
-    public void AddIngredient(
-        IngredientId ingredientId,
-        string ingredientName,
-        decimal quantity,
-        string unit,
-        decimal unitCost)
+    public async Task<Result<RecipeResponse>> Handle(
+        GetRecipeQuery request, 
+        CancellationToken cancellationToken)
     {
-        // Check if ingredient already exists — consolidate if so
-        var existingItem = _items.FirstOrDefault(i => i.IngredientId == ingredientId);
+        var recipe = await _db.Recipes
+            .Include(r => r.Items)
+                .ThenInclude(i => i.Ingredient)
+            .FirstOrDefaultAsync(r => 
+                r.Id == request.RecipeId && 
+                r.UserId == request.UserId, 
+                cancellationToken);
+        
+        if (recipe is null)
+        {
+            return Result<RecipeResponse>.Failure(
+                Error.NotFound("RECIPE_NOT_FOUND", 
+                    $"Recipe {request.RecipeId} not found"));
+        }
+        
+        var costPerUnit = recipe.YieldQuantity > 0 
+            ? recipe.TotalCost / recipe.YieldQuantity 
+            : 0;
+        
+        return Result<RecipeResponse>.Success(new RecipeResponse(
+            Id: recipe.Id,
+            Name: recipe.Name,
+            Description: recipe.Description,
+            Category: recipe.Category,
+            SellPrice: recipe.SellPrice,
+            TotalCost: recipe.TotalCost,
+            MarginPercent: recipe.MarginPercent,
+            Status: recipe.Status,
+            YieldQuantity: recipe.YieldQuantity,
+            YieldUnit: recipe.YieldUnit,
+            CostPerUnit: costPerUnit,
+            Items: recipe.Items.Select(i => new RecipeItemResponse(
+                Id: i.Id,
+                IngredientId: i.IngredientId,
+                IngredientName: i.Ingredient?.Name ?? "Unknown",
+                Quantity: i.Quantity,
+                Unit: i.Ingredient?.Unit ?? "",
+                UnitPrice: i.Ingredient?.CurrentPrice ?? 0,
+                Cost: i.Cost
+            )).ToList(),
+            CreatedAt: recipe.CreatedAt
+        ));
+    }
+}
+```
+
+### Your Task (Day 2):
+
+1. Create `CreateRecipe.cs` in `Features/Recipes/`
+2. Create `GetRecipe.cs` query feature
+3. Verify build: `dotnet build`
+
+---
+
+# Day 3: AddIngredientToRecipe Feature
+
+## 🧒 Explain Like I'm 5
+
+Now that we have a recipe, we need to add ingredients!
+
+"For Chocolate Chip Cookies, I need:
+- 500g flour
+- 200g sugar
+- 3 eggs
+- 200g chocolate chips"
+
+Each time we add an ingredient, we automatically calculate how much it costs!
+
+## 🔧 Engineer Language
+
+The **AddIngredientToRecipe** feature adds an ingredient with quantity to an existing recipe. It calculates the item cost and updates the recipe's total cost and margin.
+
+> 📖 **Microsoft Docs**: *"Use Include and ThenInclude to specify related data to include in query results."*
+>
+> — [Loading Related Data](https://learn.microsoft.com/en-us/ef/core/querying/related-data)
+
+### Complete AddIngredientToRecipe Feature:
+
+Create `src/Nastart.Api/Features/Recipes/AddIngredientToRecipe.cs`:
+
+```csharp
+using FluentValidation;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Ingredients;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Recipes;
+
+// ══════════════════════════════════════════════════════════════
+// ADD INGREDIENT TO RECIPE FEATURE SLICE
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
+/// <summary>
+/// Command to add an ingredient to a recipe.
+/// </summary>
+public sealed record AddIngredientToRecipeCommand(
+    Guid RecipeId,
+    Guid UserId,
+    Guid IngredientId,
+    decimal Quantity
+) : IRequest<Result<RecipeResponse>>;
+
+// ── Validator ──
+public sealed class AddIngredientToRecipeValidator 
+    : AbstractValidator<AddIngredientToRecipeCommand>
+{
+    public AddIngredientToRecipeValidator()
+    {
+        RuleFor(x => x.RecipeId)
+            .NotEmpty()
+            .WithMessage("Recipe ID is required");
+        
+        RuleFor(x => x.IngredientId)
+            .NotEmpty()
+            .WithMessage("Ingredient ID is required");
+        
+        RuleFor(x => x.Quantity)
+            .GreaterThan(0)
+            .WithMessage("Quantity must be greater than 0");
+    }
+}
+
+// ── Handler ──
+/// <summary>
+/// Handles adding an ingredient to a recipe.
+/// Calculates cost and updates recipe totals.
+/// </summary>
+public sealed class AddIngredientToRecipeHandler 
+    : IRequestHandler<AddIngredientToRecipeCommand, Result<RecipeResponse>>
+{
+    private readonly NastartDbContext _db;
+    private readonly IMediator _mediator;
+    private readonly ILogger<AddIngredientToRecipeHandler> _logger;
+
+    public AddIngredientToRecipeHandler(
+        NastartDbContext db,
+        IMediator mediator,
+        ILogger<AddIngredientToRecipeHandler> logger)
+    {
+        _db = db;
+        _mediator = mediator;
+        _logger = logger;
+    }
+
+    public async Task<Result<RecipeResponse>> Handle(
+        AddIngredientToRecipeCommand request, 
+        CancellationToken cancellationToken)
+    {
+        // Get recipe with items
+        var recipe = await _db.Recipes
+            .Include(r => r.Items)
+                .ThenInclude(i => i.Ingredient)
+            .FirstOrDefaultAsync(r => 
+                r.Id == request.RecipeId && 
+                r.UserId == request.UserId, 
+                cancellationToken);
+        
+        if (recipe is null)
+        {
+            return Result<RecipeResponse>.Failure(
+                Error.NotFound("RECIPE_NOT_FOUND", 
+                    $"Recipe {request.RecipeId} not found"));
+        }
+        
+        // Get ingredient
+        var ingredient = await _db.Ingredients
+            .FirstOrDefaultAsync(i => i.Id == request.IngredientId, cancellationToken);
+        
+        if (ingredient is null)
+        {
+            return Result<RecipeResponse>.Failure(
+                Error.NotFound("INGREDIENT_NOT_FOUND", 
+                    $"Ingredient {request.IngredientId} not found"));
+        }
+        
+        // Check if ingredient already exists in recipe
+        var existingItem = recipe.Items
+            .FirstOrDefault(i => i.IngredientId == request.IngredientId);
         
         if (existingItem != null)
         {
             // Update existing item
-            existingItem.UpdateQuantity(existingItem.Quantity + quantity);
-            existingItem.UpdateUnitCost(unitCost); // Use latest cost
+            existingItem.Quantity += request.Quantity;
+            existingItem.Cost = existingItem.Quantity * ingredient.CurrentPrice;
+            
+            _logger.LogInformation(
+                "Updated {Ingredient} in recipe '{Recipe}': quantity now {Quantity}",
+                ingredient.Name, recipe.Name, existingItem.Quantity);
         }
         else
         {
             // Add new item
-            var item = new RecipeItem(
-                RecipeItemId.New(),
-                Id,
-                ingredientId,
-                ingredientName,
-                quantity,
-                unit,
-                unitCost
-            );
-            _items.Add(item);
-        }
-        
-        RecalculateCost();
-        ModifiedAt = DateTime.UtcNow;
-        
-        AddDomainEvent(new RecipeIngredientAddedEvent(Id, ingredientId, ingredientName, quantity));
-    }
-
-    /// <summary>
-    /// Removes an ingredient from this recipe.
-    /// </summary>
-    /// <param name="ingredientId">The ingredient to remove.</param>
-    /// <returns>True if the ingredient was found and removed.</returns>
-    public bool RemoveIngredient(IngredientId ingredientId)
-    {
-        var item = _items.FirstOrDefault(i => i.IngredientId == ingredientId);
-        if (item == null)
-            return false;
-        
-        _items.Remove(item);
-        RecalculateCost();
-        ModifiedAt = DateTime.UtcNow;
-        
-        AddDomainEvent(new RecipeIngredientRemovedEvent(Id, ingredientId));
-        return true;
-    }
-
-    /// <summary>
-    /// Updates the quantity of an existing ingredient.
-    /// </summary>
-    public void UpdateIngredientQuantity(IngredientId ingredientId, decimal newQuantity)
-    {
-        var item = _items.FirstOrDefault(i => i.IngredientId == ingredientId)
-            ?? throw new InvalidOperationException($"Ingredient {ingredientId} not found in recipe.");
-        
-        item.UpdateQuantity(newQuantity);
-        RecalculateCost();
-        ModifiedAt = DateTime.UtcNow;
-    }
-
-    /// <summary>
-    /// Updates ingredient costs when prices change.
-    /// Called by application layer when ingredient prices are updated.
-    /// </summary>
-    public void UpdateIngredientCost(IngredientId ingredientId, decimal newUnitCost)
-    {
-        var item = _items.FirstOrDefault(i => i.IngredientId == ingredientId)
-            ?? throw new InvalidOperationException($"Ingredient {ingredientId} not found in recipe.");
-        
-        var oldCost = item.UnitCost;
-        item.UpdateUnitCost(newUnitCost);
-        RecalculateCost();
-        ModifiedAt = DateTime.UtcNow;
-        
-        // Check for significant cost changes
-        var costChange = ((newUnitCost - oldCost) / oldCost) * 100;
-        if (Math.Abs(costChange) > 10) // 10% threshold
-        {
-            AddDomainEvent(new RecipeCostChangedEvent(Id, Name, oldCost, newUnitCost, TotalCost));
-        }
-    }
-
-    /// <summary>
-    /// Updates the selling price and recalculates margin.
-    /// </summary>
-    public void SetSellingPrice(decimal newPrice)
-    {
-        if (newPrice <= 0)
-            throw new ArgumentException("Selling price must be greater than zero.", nameof(newPrice));
-        
-        var oldPrice = SellingPrice;
-        SellingPrice = newPrice;
-        RecalculateCost(); // This also recalculates margin
-        ModifiedAt = DateTime.UtcNow;
-        
-        if (oldPrice > 0 && oldPrice != newPrice)
-        {
-            AddDomainEvent(new RecipePriceChangedEvent(Id, Name, oldPrice, newPrice));
-        }
-    }
-
-    /// <summary>
-    /// Deactivates this recipe (removes from sale).
-    /// </summary>
-    public void Deactivate()
-    {
-        if (!IsActive) return;
-        
-        IsActive = false;
-        ModifiedAt = DateTime.UtcNow;
-        AddDomainEvent(new RecipeDeactivatedEvent(Id, Name));
-    }
-
-    /// <summary>
-    /// Reactivates this recipe.
-    /// </summary>
-    public void Activate()
-    {
-        if (IsActive) return;
-        
-        IsActive = true;
-        ModifiedAt = DateTime.UtcNow;
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // PRIVATE METHODS — Internal logic
-    // ═══════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// Recalculates the total cost and margin.
-    /// Called internally whenever items or prices change.
-    /// </summary>
-    private void RecalculateCost()
-    {
-        TotalCost = _items.Sum(item => item.TotalCost);
-        
-        if (SellingPrice > 0)
-        {
-            CurrentMargin = Margin.Calculate(TotalCost, SellingPrice);
-            
-            // Check for low margin alert
-            if (CurrentMargin.IsBelow(15)) // 15% threshold
+            var recipeItem = new RecipeItem
             {
-                AddDomainEvent(new MarginBelowThresholdEvent(
-                    Id, 
-                    Name, 
-                    CurrentMargin.Percentage, 
-                    thresholdPercentage: 15m
-                ));
-            }
-        }
-    }
-
-    private void SetName(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            throw new ArgumentException("Recipe name cannot be empty.", nameof(name));
-        
-        if (name.Length > 200)
-            throw new ArgumentException("Recipe name cannot exceed 200 characters.", nameof(name));
-        
-        Name = name.Trim();
-    }
-
-    private void SetCategory(string category)
-    {
-        if (string.IsNullOrWhiteSpace(category))
-            throw new ArgumentException("Category cannot be empty.", nameof(category));
-        
-        Category = category.Trim();
-    }
-}
-```
-
-### Key Design Patterns Applied:
-
-| Pattern | Implementation | Purpose |
-|---------|---------------|---------|
-| Private Collection | `private readonly List<RecipeItem> _items` | Encapsulation |
-| Read-Only Exposure | `IReadOnlyCollection<RecipeItem> Items => _items.AsReadOnly()` | Prevent external modification |
-| Domain Methods | `AddIngredient()`, `RemoveIngredient()` | Control all mutations |
-| Invariant Enforcement | `RecalculateCost()` after each change | Consistency |
-| Domain Events | `AddDomainEvent()` on significant changes | Decoupling |
-
-### Recipe State Machine — Draft State Persistence
-
-> 💡 **UX Enhancement**: Users often abandon recipe creation mid-way (network issues, app switches). We need to persist Draft state so they can continue later.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Draft: Start Recipe
-    Draft --> Draft: Add/Edit Ingredients
-    Draft --> Draft: Auto-save (every change)
-    Draft --> Costing: All required fields complete
-    Costing --> Ready: Cost calculated, margin OK
-    Costing --> NeedsPriceAdjustment: Margin below threshold
-    NeedsPriceAdjustment --> Costing: Price adjusted
-    Ready --> Active: Publish for sale
-    Active --> NeedsReview: Ingredient price changed
-    NeedsReview --> Active: User confirms new margin
-    NeedsReview --> Inactive: User pauses recipe
-    Active --> Archived: Discontinued
-    Inactive --> Active: Reactivate
-    
-    note right of Draft
-        Persists in DB after each change.
-        Survives app closure.
-        Expires after 7 days.
-    end note
-```
-
-**RecipeState Enum**:
-
-```csharp
-namespace Nastart.Domain.Recipe.ValueObjects;
-
-/// <summary>
-/// Represents the lifecycle state of a Recipe.
-/// Enables draft persistence for fault tolerance.
-/// </summary>
-public enum RecipeState
-{
-    /// <summary>Recipe is being created, auto-saved on each change.</summary>
-    Draft,
-    
-    /// <summary>All required fields complete, cost being calculated.</summary>
-    Costing,
-    
-    /// <summary>Cost calculated but margin below threshold — needs price adjustment.</summary>
-    NeedsPriceAdjustment,
-    
-    /// <summary>Recipe is ready but not yet published.</summary>
-    Ready,
-    
-    /// <summary>Recipe is active and available for sale.</summary>
-    Active,
-    
-    /// <summary>Recipe needs review due to ingredient price changes.</summary>
-    NeedsReview,
-    
-    /// <summary>Recipe is temporarily paused (not for sale).</summary>
-    Inactive,
-    
-    /// <summary>Recipe is discontinued.</summary>
-    Archived
-}
-```
-
-**Add state to Recipe aggregate**:
-
-```csharp
-// Add to Recipe aggregate properties
-public RecipeState State { get; private set; } = RecipeState.Draft;
-public DateTime? LastAutoSaveAt { get; private set; }
-
-// State transition methods
-public void TransitionToCosting()
-{
-    if (State != RecipeState.Draft)
-        throw new InvalidOperationException($"Cannot transition to Costing from {State}");
-    
-    if (string.IsNullOrEmpty(Name) || SellingPrice <= 0 || _items.Count == 0)
-        throw new InvalidOperationException("Recipe must have name, price, and at least one ingredient");
-    
-    State = RecipeState.Costing;
-    RecalculateCost();
-    
-    // Auto-transition based on margin
-    if (CurrentMargin.IsBelow(15))
-        State = RecipeState.NeedsPriceAdjustment;
-    else
-        State = RecipeState.Ready;
-}
-
-public void Publish()
-{
-    if (State != RecipeState.Ready)
-        throw new InvalidOperationException($"Cannot publish recipe in {State} state");
-    
-    State = RecipeState.Active;
-    AddDomainEvent(new RecipePublishedEvent(Id, Name));
-}
-
-public void MarkForReview(string reason)
-{
-    if (State != RecipeState.Active)
-        throw new InvalidOperationException($"Only active recipes can be marked for review");
-    
-    State = RecipeState.NeedsReview;
-    AddDomainEvent(new RecipeNeedsReviewEvent(Id, Name, reason));
-}
-
-public void AutoSave()
-{
-    LastAutoSaveAt = DateTime.UtcNow;
-    // Draft is persisted — no explicit action needed, just timestamp update
-}
-```
-
-**Why Draft Persistence Matters**:
-- **Fault tolerance**: User loses nothing on network disconnect
-- **Mobile-friendly**: Users switch apps frequently
-- **UX**: "Continue where you left off" experience
-- **Data quality**: Incomplete recipes are still captured
-
----
-
-# Day 3: RecipeItem Entity (Child Collection)
-
-## 🧒 Explain Like I'm 5
-
-Remember the recipe is like a treasure map? Each **RecipeItem** is one line on that map:
-- "You need 2 cups of flour" 🌾
-- "You need 1 egg" 🥚
-
-The treasure map (Recipe) controls adding and removing lines!
-
-## 🔧 Engineer Language
-
-**RecipeItem** is a child entity within the Recipe aggregate. It has its own identity (RecipeItemId) but can only exist within a Recipe. The parent aggregate controls the lifecycle of child entities.
-
-> 📖 **Microsoft Docs**: *"A domain entity in DDD must implement the domain logic or behavior related to the entity data. The entity's methods take care of the invariants and rules of the entity."*
->
-> — [Design a microservice domain model](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model)
-
-### RecipeItem Entity
-
-Create `src/Nastart.Domain/Recipe/Entities/RecipeItem.cs`:
-
-```csharp
-using Nastart.Domain.Common;
-using Nastart.Domain.Recipe.ValueObjects;
-using Nastart.Domain.Inventory.ValueObjects; // For IngredientId
-
-namespace Nastart.Domain.Recipe.Entities;
-
-/// <summary>
-/// Represents an ingredient line item within a Recipe.
-/// This is a child entity — it cannot exist outside of a Recipe aggregate.
-/// </summary>
-/// <remarks>
-/// Key points:
-/// - Has its own identity (RecipeItemId)
-/// - Belongs to a specific Recipe (RecipeId)
-/// - References an Ingredient from Inventory context (IngredientId)
-/// - Lifecycle managed by parent Recipe aggregate
-/// 
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model
-/// </remarks>
-public class RecipeItem : Entity<RecipeItemId>
-{
-    // ═══════════════════════════════════════════════════════════════
-    // PROPERTIES
-    // ═══════════════════════════════════════════════════════════════
-    
-    /// <summary>The Recipe this item belongs to.</summary>
-    public RecipeId RecipeId { get; private set; }
-    
-    /// <summary>Reference to the Ingredient from Inventory context.</summary>
-    public IngredientId IngredientId { get; private set; }
-    
-    /// <summary>Display name of the ingredient (cached for performance).</summary>
-    public string IngredientName { get; private set; } = string.Empty;
-    
-    /// <summary>How much of this ingredient is needed.</summary>
-    public decimal Quantity { get; private set; }
-    
-    /// <summary>The unit of measurement (e.g., "kg", "liters", "pieces").</summary>
-    public string Unit { get; private set; } = string.Empty;
-    
-    /// <summary>The cost per unit of this ingredient.</summary>
-    public decimal UnitCost { get; private set; }
-    
-    /// <summary>Calculated: Quantity × UnitCost.</summary>
-    public decimal TotalCost => Quantity * UnitCost;
-    
-    /// <summary>When this item was added to the recipe.</summary>
-    public DateTime AddedAt { get; private set; }
-    
-    /// <summary>When this item was last modified.</summary>
-    public DateTime? ModifiedAt { get; private set; }
-
-    // ═══════════════════════════════════════════════════════════════
-    // CONSTRUCTORS
-    // ═══════════════════════════════════════════════════════════════
-    
-    /// <summary>EF Core constructor.</summary>
-    private RecipeItem() : base(RecipeItemId.Empty) { }
-
-    /// <summary>
-    /// Creates a new RecipeItem.
-    /// </summary>
-    /// <remarks>
-    /// This constructor is internal — only the Recipe aggregate can create items.
-    /// </remarks>
-    internal RecipeItem(
-        RecipeItemId id,
-        RecipeId recipeId,
-        IngredientId ingredientId,
-        string ingredientName,
-        decimal quantity,
-        string unit,
-        decimal unitCost)
-        : base(id)
-    {
-        if (quantity <= 0)
-            throw new ArgumentException("Quantity must be greater than zero.", nameof(quantity));
-        
-        if (unitCost < 0)
-            throw new ArgumentException("Unit cost cannot be negative.", nameof(unitCost));
-        
-        if (string.IsNullOrWhiteSpace(ingredientName))
-            throw new ArgumentException("Ingredient name cannot be empty.", nameof(ingredientName));
-        
-        if (string.IsNullOrWhiteSpace(unit))
-            throw new ArgumentException("Unit cannot be empty.", nameof(unit));
-        
-        RecipeId = recipeId;
-        IngredientId = ingredientId;
-        IngredientName = ingredientName.Trim();
-        Quantity = quantity;
-        Unit = unit.Trim();
-        UnitCost = unitCost;
-        AddedAt = DateTime.UtcNow;
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // DOMAIN METHODS
-    // ═══════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// Updates the quantity of this ingredient.
-    /// </summary>
-    /// <remarks>
-    /// Internal — can only be called by the parent Recipe aggregate.
-    /// </remarks>
-    internal void UpdateQuantity(decimal newQuantity)
-    {
-        if (newQuantity <= 0)
-            throw new ArgumentException("Quantity must be greater than zero.", nameof(newQuantity));
-        
-        Quantity = newQuantity;
-        ModifiedAt = DateTime.UtcNow;
-    }
-
-    /// <summary>
-    /// Updates the unit cost when ingredient prices change.
-    /// </summary>
-    internal void UpdateUnitCost(decimal newUnitCost)
-    {
-        if (newUnitCost < 0)
-            throw new ArgumentException("Unit cost cannot be negative.", nameof(newUnitCost));
-        
-        UnitCost = newUnitCost;
-        ModifiedAt = DateTime.UtcNow;
-    }
-
-    /// <summary>
-    /// Updates the ingredient name (if it changes in Inventory context).
-    /// </summary>
-    internal void UpdateIngredientName(string newName)
-    {
-        if (string.IsNullOrWhiteSpace(newName))
-            throw new ArgumentException("Ingredient name cannot be empty.", nameof(newName));
-        
-        IngredientName = newName.Trim();
-        ModifiedAt = DateTime.UtcNow;
-    }
-}
-```
-
-### Why `internal` Constructors and Methods?
-
-```csharp
-// ❌ public — Anyone can create or modify
-public RecipeItem(...) { }
-public void UpdateQuantity(decimal newQuantity) { }
-
-// ✅ internal — Only code within the same assembly (Domain project)
-internal RecipeItem(...) { }
-internal void UpdateQuantity(decimal newQuantity) { }
-```
-
-This enforces that only the `Recipe` aggregate can create and modify `RecipeItem` entities.
-
-### Entity Framework Core Configuration (Preview):
-
-```csharp
-// In Nastart.Infrastructure — for reference
-public class RecipeConfiguration : IEntityTypeConfiguration<Recipe>
-{
-    public void Configure(EntityTypeBuilder<Recipe> builder)
-    {
-        builder.HasKey(r => r.Id);
-        
-        // Map RecipeId value object
-        builder.Property(r => r.Id)
-            .HasConversion(
-                id => id.Value,
-                value => new RecipeId(value));
-        
-        // Configure owned collection of RecipeItems
-        builder.OwnsMany(r => r.Items, itemBuilder =>
-        {
-            itemBuilder.WithOwner().HasForeignKey(i => i.RecipeId);
-            itemBuilder.HasKey(i => i.Id);
+                Id = Guid.NewGuid(),
+                RecipeId = recipe.Id,
+                IngredientId = ingredient.Id,
+                Quantity = request.Quantity,
+                Cost = request.Quantity * ingredient.CurrentPrice
+            };
             
-            itemBuilder.Property(i => i.Id)
-                .HasConversion(
-                    id => id.Value,
-                    value => new RecipeItemId(value));
+            recipe.Items.Add(recipeItem);
             
-            itemBuilder.Property(i => i.IngredientId)
-                .HasConversion(
-                    id => id.Value,
-                    value => new IngredientId(value));
-        });
-        
-        // Map Margin value object
-        builder.OwnsOne(r => r.CurrentMargin, marginBuilder =>
-        {
-            marginBuilder.Property(m => m.Percentage).HasColumnName("MarginPercentage");
-            marginBuilder.Property(m => m.Amount).HasColumnName("MarginAmount");
-        });
-    }
-}
-```
-
----
-
-# Day 4: CostCalculationService (Domain Service)
-
-## 🧒 Explain Like I'm 5
-
-Imagine you want to know how much it costs to make 10 lemonades, not just 1. You need a helper who's good at math! 🧮
-
-The **CostCalculationService** is that helper — it calculates costs for different scenarios:
-- "What if ingredient prices go up?"
-- "What's the cost for a big order?"
-
-## 🔧 Engineer Language
-
-A **Domain Service** contains domain logic that doesn't naturally fit within a single Entity or Value Object. It's stateless and operates on domain objects.
-
-> 📖 **Microsoft Docs**: *"Domain services encapsulate domain logic. Domain services are often used to model behavior that spans multiple entities."*
->
-> — [Using tactical DDD to design microservices](https://learn.microsoft.com/en-us/azure/architecture/microservices/model/tactical-ddd)
-
-### When to Use a Domain Service
-
-| Use Domain Service When | Example |
-|-------------------------|---------|
-| Logic spans multiple aggregates | Calculating cost across Recipe + current Ingredient prices |
-| Logic doesn't belong to any entity | Price forecasting, batch calculations |
-| Orchestrating complex calculations | "What-if" scenarios |
-| Stateless operations | Pure functions on domain objects |
-
-### CostCalculationService
-
-Create `src/Nastart.Domain/Recipe/Services/CostCalculationService.cs`:
-
-```csharp
-using Nastart.Domain.Recipe.Aggregates;
-using Nastart.Domain.Recipe.ValueObjects;
-
-namespace Nastart.Domain.Recipe.Services;
-
-/// <summary>
-/// Domain service for recipe cost calculations and projections.
-/// Stateless — all data comes from parameters.
-/// </summary>
-/// <remarks>
-/// Domain services contain logic that:
-/// - Doesn't naturally fit in an entity
-/// - Spans multiple aggregates
-/// - Is stateless/pure
-/// 
-/// See: https://learn.microsoft.com/en-us/azure/architecture/microservices/model/tactical-ddd
-/// </remarks>
-public class CostCalculationService : ICostCalculationService
-{
-    /// <summary>
-    /// Calculates the cost of producing multiple servings of a recipe.
-    /// </summary>
-    /// <param name="recipe">The recipe to calculate for.</param>
-    /// <param name="servings">Number of servings to produce.</param>
-    /// <returns>Total cost for the specified servings.</returns>
-    public decimal CalculateBatchCost(Recipe recipe, int servings)
-    {
-        if (recipe == null)
-            throw new ArgumentNullException(nameof(recipe));
-        
-        if (servings <= 0)
-            throw new ArgumentException("Servings must be greater than zero.", nameof(servings));
-        
-        return recipe.TotalCost * servings;
-    }
-
-    /// <summary>
-    /// Projects what the margin would be with new ingredient costs.
-    /// Useful for "what-if" scenarios when prices change.
-    /// </summary>
-    /// <param name="recipe">The recipe to analyze.</param>
-    /// <param name="newPrices">Dictionary of IngredientId to new unit costs.</param>
-    /// <returns>Projected margin with new prices.</returns>
-    public Margin ProjectMarginWithNewPrices(
-        Recipe recipe,
-        IReadOnlyDictionary<Guid, decimal> newPrices)
-    {
-        if (recipe == null)
-            throw new ArgumentNullException(nameof(recipe));
-        
-        if (newPrices == null || newPrices.Count == 0)
-            return recipe.CurrentMargin;
-        
-        decimal projectedCost = 0;
-        
-        foreach (var item in recipe.Items)
-        {
-            // Use new price if available, otherwise current price
-            var unitCost = newPrices.TryGetValue(item.IngredientId.Value, out var newCost)
-                ? newCost
-                : item.UnitCost;
-            
-            projectedCost += item.Quantity * unitCost;
+            _logger.LogInformation(
+                "Added {Ingredient} to recipe '{Recipe}': {Quantity} {Unit}",
+                ingredient.Name, recipe.Name, request.Quantity, ingredient.Unit);
         }
         
-        return Margin.Calculate(projectedCost, recipe.SellingPrice);
-    }
-
-    /// <summary>
-    /// Calculates the selling price needed to achieve a target margin.
-    /// </summary>
-    /// <param name="recipe">The recipe to calculate for.</param>
-    /// <param name="targetMarginPercentage">Desired margin percentage (e.g., 30 for 30%).</param>
-    /// <returns>Required selling price.</returns>
-    public decimal CalculateRequiredSellingPrice(Recipe recipe, decimal targetMarginPercentage)
-    {
-        if (recipe == null)
-            throw new ArgumentNullException(nameof(recipe));
+        // Recalculate recipe totals
+        var oldMargin = recipe.MarginPercent;
+        RecalculateRecipeTotals(recipe);
         
-        if (targetMarginPercentage < 0 || targetMarginPercentage >= 100)
-            throw new ArgumentOutOfRangeException(
-                nameof(targetMarginPercentage), 
-                "Target margin must be between 0 and 100 (exclusive).");
+        recipe.UpdatedAt = DateTime.UtcNow;
         
-        // Formula: SellingPrice = Cost / (1 - MarginPercentage/100)
-        var marginDecimal = targetMarginPercentage / 100;
-        var requiredPrice = recipe.TotalCost / (1 - marginDecimal);
+        await _db.SaveChangesAsync(cancellationToken);
         
-        return Math.Round(requiredPrice, 2);
-    }
-
-    /// <summary>
-    /// Analyzes the cost breakdown by ingredient category.
-    /// </summary>
-    public CostBreakdown AnalyzeCostBreakdown(Recipe recipe)
-    {
-        if (recipe == null)
-            throw new ArgumentNullException(nameof(recipe));
+        // Check if margin dropped below threshold
+        if (oldMargin >= 20 && recipe.MarginPercent < 20)
+        {
+            await _mediator.Publish(new MarginBelowThresholdNotification(
+                RecipeId: recipe.Id,
+                RecipeName: recipe.Name,
+                NewMargin: recipe.MarginPercent,
+                Threshold: 20,
+                OccurredAt: DateTime.UtcNow
+            ), cancellationToken);
+        }
         
-        var ingredientCosts = recipe.Items
-            .Select(item => new IngredientCostInfo(
-                item.IngredientName,
-                item.TotalCost,
-                recipe.TotalCost > 0 
-                    ? (item.TotalCost / recipe.TotalCost) * 100 
-                    : 0
-            ))
-            .OrderByDescending(x => x.CostPercentage)
-            .ToList();
+        // Build response
+        var costPerUnit = recipe.YieldQuantity > 0 
+            ? recipe.TotalCost / recipe.YieldQuantity 
+            : 0;
         
-        return new CostBreakdown(
+        return Result<RecipeResponse>.Success(new RecipeResponse(
+            Id: recipe.Id,
+            Name: recipe.Name,
+            Description: recipe.Description,
+            Category: recipe.Category,
+            SellPrice: recipe.SellPrice,
             TotalCost: recipe.TotalCost,
-            SellingPrice: recipe.SellingPrice,
-            Margin: recipe.CurrentMargin,
-            IngredientCosts: ingredientCosts,
-            HighestCostIngredient: ingredientCosts.FirstOrDefault()?.IngredientName ?? "None"
-        );
+            MarginPercent: recipe.MarginPercent,
+            Status: recipe.Status,
+            YieldQuantity: recipe.YieldQuantity,
+            YieldUnit: recipe.YieldUnit,
+            CostPerUnit: costPerUnit,
+            Items: recipe.Items.Select(i => new RecipeItemResponse(
+                Id: i.Id,
+                IngredientId: i.IngredientId,
+                IngredientName: i.Ingredient?.Name ?? "Unknown",
+                Quantity: i.Quantity,
+                Unit: i.Ingredient?.Unit ?? "",
+                UnitPrice: i.Ingredient?.CurrentPrice ?? 0,
+                Cost: i.Cost
+            )).ToList(),
+            CreatedAt: recipe.CreatedAt
+        ));
     }
-
+    
     /// <summary>
-    /// Identifies recipes with margins below a threshold.
+    /// Recalculates TotalCost and MarginPercent for a recipe.
     /// </summary>
-    /// <param name="recipes">Collection of recipes to analyze.</param>
-    /// <param name="marginThreshold">Minimum acceptable margin percentage.</param>
-    /// <returns>Recipes with low margins, ordered by margin ascending.</returns>
-    public IEnumerable<LowMarginRecipe> IdentifyLowMarginRecipes(
-        IEnumerable<Recipe> recipes,
-        decimal marginThreshold)
+    private static void RecalculateRecipeTotals(Recipe recipe)
     {
-        if (recipes == null)
-            throw new ArgumentNullException(nameof(recipes));
+        recipe.TotalCost = recipe.Items.Sum(i => i.Cost);
         
-        return recipes
-            .Where(r => r.CurrentMargin.IsBelow(marginThreshold))
-            .OrderBy(r => r.CurrentMargin.Percentage)
-            .Select(r => new LowMarginRecipe(
-                r.Id,
-                r.Name,
-                r.CurrentMargin.Percentage,
-                marginThreshold,
-                CalculateRequiredSellingPrice(r, marginThreshold)
-            ));
-    }
-
-    /// <summary>
-    /// Calculates the impact of a price change on all recipes using an ingredient.
-    /// </summary>
-    public IEnumerable<PriceImpact> CalculatePriceChangeImpact(
-        IEnumerable<Recipe> recipes,
-        Guid ingredientId,
-        decimal oldPrice,
-        decimal newPrice)
-    {
-        if (recipes == null)
-            throw new ArgumentNullException(nameof(recipes));
-        
-        var priceChange = newPrice - oldPrice;
-        
-        return recipes
-            .Where(r => r.Items.Any(i => i.IngredientId.Value == ingredientId))
-            .Select(r =>
-            {
-                var item = r.Items.First(i => i.IngredientId.Value == ingredientId);
-                var costImpact = item.Quantity * priceChange;
-                var currentMargin = r.CurrentMargin;
-                var newCost = r.TotalCost + costImpact;
-                var newMargin = Margin.Calculate(newCost, r.SellingPrice);
-                
-                return new PriceImpact(
-                    r.Id,
-                    r.Name,
-                    costImpact,
-                    currentMargin.Percentage,
-                    newMargin.Percentage,
-                    newMargin.IsBelow(15) // Will fall below 15% threshold?
-                );
-            });
+        if (recipe.SellPrice > 0)
+        {
+            recipe.MarginPercent = ((recipe.SellPrice - recipe.TotalCost) / recipe.SellPrice) * 100;
+        }
+        else
+        {
+            recipe.MarginPercent = 0;
+        }
     }
 }
 
 /// <summary>
-/// Interface for the cost calculation domain service.
+/// Published when a recipe's margin falls below threshold.
 /// </summary>
-public interface ICostCalculationService
-{
-    decimal CalculateBatchCost(Recipe recipe, int servings);
-    Margin ProjectMarginWithNewPrices(Recipe recipe, IReadOnlyDictionary<Guid, decimal> newPrices);
-    decimal CalculateRequiredSellingPrice(Recipe recipe, decimal targetMarginPercentage);
-    CostBreakdown AnalyzeCostBreakdown(Recipe recipe);
-    IEnumerable<LowMarginRecipe> IdentifyLowMarginRecipes(IEnumerable<Recipe> recipes, decimal marginThreshold);
-    IEnumerable<PriceImpact> CalculatePriceChangeImpact(IEnumerable<Recipe> recipes, Guid ingredientId, decimal oldPrice, decimal newPrice);
-}
+public sealed record MarginBelowThresholdNotification(
+    Guid RecipeId,
+    string RecipeName,
+    decimal NewMargin,
+    decimal Threshold,
+    DateTime OccurredAt
+) : INotification;
+```
 
-/// <summary>Result of cost breakdown analysis.</summary>
-public record CostBreakdown(
-    decimal TotalCost,
-    decimal SellingPrice,
-    Margin Margin,
-    IReadOnlyList<IngredientCostInfo> IngredientCosts,
-    string HighestCostIngredient
+### RemoveIngredientFromRecipe Feature:
+
+Create `src/Nastart.Api/Features/Recipes/RemoveIngredientFromRecipe.cs`:
+
+```csharp
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Recipes;
+
+// ══════════════════════════════════════════════════════════════
+// REMOVE INGREDIENT FROM RECIPE FEATURE SLICE
+// ══════════════════════════════════════════════════════════════
+
+public sealed record RemoveIngredientFromRecipeCommand(
+    Guid RecipeId,
+    Guid UserId,
+    Guid IngredientId
+) : IRequest<Result<RecipeResponse>>;
+
+public sealed class RemoveIngredientFromRecipeHandler 
+    : IRequestHandler<RemoveIngredientFromRecipeCommand, Result<RecipeResponse>>
+{
+    private readonly NastartDbContext _db;
+    private readonly ILogger<RemoveIngredientFromRecipeHandler> _logger;
+
+    public RemoveIngredientFromRecipeHandler(
+        NastartDbContext db,
+        ILogger<RemoveIngredientFromRecipeHandler> logger)
+    {
+        _db = db;
+        _logger = logger;
+    }
+
+    public async Task<Result<RecipeResponse>> Handle(
+        RemoveIngredientFromRecipeCommand request, 
+        CancellationToken cancellationToken)
+    {
+        var recipe = await _db.Recipes
+            .Include(r => r.Items)
+                .ThenInclude(i => i.Ingredient)
+            .FirstOrDefaultAsync(r => 
+                r.Id == request.RecipeId && 
+                r.UserId == request.UserId, 
+                cancellationToken);
+        
+        if (recipe is null)
+        {
+            return Result<RecipeResponse>.Failure(
+                Error.NotFound("RECIPE_NOT_FOUND", 
+                    $"Recipe {request.RecipeId} not found"));
+        }
+        
+        var item = recipe.Items
+            .FirstOrDefault(i => i.IngredientId == request.IngredientId);
+        
+        if (item is null)
+        {
+            return Result<RecipeResponse>.Failure(
+                Error.NotFound("ITEM_NOT_FOUND", 
+                    $"Ingredient {request.IngredientId} not found in recipe"));
+        }
+        
+        recipe.Items.Remove(item);
+        _db.RecipeItems.Remove(item);
+        
+        // Recalculate totals
+        recipe.TotalCost = recipe.Items.Sum(i => i.Cost);
+        if (recipe.SellPrice > 0)
+        {
+            recipe.MarginPercent = ((recipe.SellPrice - recipe.TotalCost) / recipe.SellPrice) * 100;
+        }
+        
+        recipe.UpdatedAt = DateTime.UtcNow;
+        
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        _logger.LogInformation(
+            "Removed ingredient from recipe '{Recipe}'",
+            recipe.Name);
+        
+        var costPerUnit = recipe.YieldQuantity > 0 
+            ? recipe.TotalCost / recipe.YieldQuantity 
+            : 0;
+        
+        return Result<RecipeResponse>.Success(new RecipeResponse(
+            Id: recipe.Id,
+            Name: recipe.Name,
+            Description: recipe.Description,
+            Category: recipe.Category,
+            SellPrice: recipe.SellPrice,
+            TotalCost: recipe.TotalCost,
+            MarginPercent: recipe.MarginPercent,
+            Status: recipe.Status,
+            YieldQuantity: recipe.YieldQuantity,
+            YieldUnit: recipe.YieldUnit,
+            CostPerUnit: costPerUnit,
+            Items: recipe.Items.Select(i => new RecipeItemResponse(
+                Id: i.Id,
+                IngredientId: i.IngredientId,
+                IngredientName: i.Ingredient?.Name ?? "Unknown",
+                Quantity: i.Quantity,
+                Unit: i.Ingredient?.Unit ?? "",
+                UnitPrice: i.Ingredient?.CurrentPrice ?? 0,
+                Cost: i.Cost
+            )).ToList(),
+            CreatedAt: recipe.CreatedAt
+        ));
+    }
+}
+```
+
+### Your Task (Day 3):
+
+1. Create `AddIngredientToRecipe.cs` feature
+2. Create `RemoveIngredientFromRecipe.cs` feature
+3. Verify build: `dotnet build`
+
+---
+
+# Day 4: GetRecipeCost Query with Live Calculation
+
+## 🧒 Explain Like I'm 5
+
+Remember when flour prices change? We learned about that in Week 3!
+
+Now imagine you have a recipe that uses flour. When flour gets more expensive, YOUR COOKIES also get more expensive to make!
+
+This feature calculates the **live cost** — using today's ingredient prices, not yesterday's.
+
+## 🔧 Engineer Language
+
+The **GetRecipeCost** query calculates the recipe cost using **current ingredient prices**. This is different from stored `TotalCost` which might be outdated if prices changed.
+
+> 📖 **Microsoft Docs**: *"Projection queries retrieve only specific columns, which can improve performance by reducing data transfer."*
+>
+> — [Querying Data](https://learn.microsoft.com/en-us/ef/core/querying/)
+
+### Complete GetRecipeCost Feature:
+
+Create `src/Nastart.Api/Features/Recipes/GetRecipeCost.cs`:
+
+```csharp
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Recipes;
+
+// ══════════════════════════════════════════════════════════════
+// GET RECIPE COST FEATURE SLICE
+// Calculates live cost using current ingredient prices
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
+public sealed record GetRecipeCostQuery(
+    Guid RecipeId,
+    Guid UserId
+) : IRequest<Result<RecipeCostResponse>>;
+
+// ── Response ──
+/// <summary>
+/// Detailed cost breakdown for a recipe.
+/// </summary>
+public sealed record RecipeCostResponse(
+    Guid RecipeId,
+    string RecipeName,
+    decimal SellPrice,
+    decimal LiveTotalCost,
+    decimal StoredTotalCost,
+    decimal CostDifference,
+    decimal MarginPercent,
+    decimal MarginAmount,
+    decimal CostPerUnit,
+    decimal ProfitPerUnit,
+    int YieldQuantity,
+    string YieldUnit,
+    string MarginStatus,
+    IReadOnlyList<RecipeCostItemResponse> Items
 );
 
-/// <summary>Cost information for a single ingredient.</summary>
-public record IngredientCostInfo(
+/// <summary>
+/// Cost breakdown for a single recipe ingredient.
+/// </summary>
+public sealed record RecipeCostItemResponse(
+    Guid IngredientId,
     string IngredientName,
-    decimal TotalCost,
+    decimal Quantity,
+    string Unit,
+    decimal CurrentUnitPrice,
+    decimal LineCost,
     decimal CostPercentage
 );
 
-/// <summary>Information about a recipe with low margin.</summary>
-public record LowMarginRecipe(
-    RecipeId RecipeId,
-    string RecipeName,
-    decimal CurrentMarginPercentage,
-    decimal ThresholdPercentage,
-    decimal SuggestedSellingPrice
-);
+// ── Handler ──
+public sealed class GetRecipeCostHandler 
+    : IRequestHandler<GetRecipeCostQuery, Result<RecipeCostResponse>>
+{
+    private readonly NastartDbContext _db;
 
-/// <summary>Impact of a price change on a recipe.</summary>
-public record PriceImpact(
-    RecipeId RecipeId,
-    string RecipeName,
-    decimal CostChange,
-    decimal CurrentMarginPercentage,
-    decimal NewMarginPercentage,
-    bool WillBeBelowThreshold
-);
+    public GetRecipeCostHandler(NastartDbContext db)
+    {
+        _db = db;
+    }
+
+    public async Task<Result<RecipeCostResponse>> Handle(
+        GetRecipeCostQuery request, 
+        CancellationToken cancellationToken)
+    {
+        // Get recipe with items and current ingredient prices
+        var recipe = await _db.Recipes
+            .Include(r => r.Items)
+                .ThenInclude(i => i.Ingredient)
+            .FirstOrDefaultAsync(r => 
+                r.Id == request.RecipeId && 
+                r.UserId == request.UserId, 
+                cancellationToken);
+        
+        if (recipe is null)
+        {
+            return Result<RecipeCostResponse>.Failure(
+                Error.NotFound("RECIPE_NOT_FOUND", 
+                    $"Recipe {request.RecipeId} not found"));
+        }
+        
+        // Calculate live cost using current ingredient prices
+        var itemCosts = recipe.Items.Select(item =>
+        {
+            var currentPrice = item.Ingredient?.CurrentPrice ?? 0;
+            var lineCost = item.Quantity * currentPrice;
+            
+            return new
+            {
+                Item = item,
+                CurrentPrice = currentPrice,
+                LineCost = lineCost
+            };
+        }).ToList();
+        
+        var liveTotalCost = itemCosts.Sum(x => x.LineCost);
+        var storedTotalCost = recipe.TotalCost;
+        var costDifference = liveTotalCost - storedTotalCost;
+        
+        // Calculate margin
+        decimal marginPercent = 0;
+        decimal marginAmount = 0;
+        
+        if (recipe.SellPrice > 0)
+        {
+            marginAmount = recipe.SellPrice - liveTotalCost;
+            marginPercent = (marginAmount / recipe.SellPrice) * 100;
+        }
+        
+        // Calculate per-unit metrics
+        var costPerUnit = recipe.YieldQuantity > 0 
+            ? liveTotalCost / recipe.YieldQuantity 
+            : liveTotalCost;
+        
+        var pricePerUnit = recipe.YieldQuantity > 0 
+            ? recipe.SellPrice / recipe.YieldQuantity 
+            : recipe.SellPrice;
+        
+        var profitPerUnit = pricePerUnit - costPerUnit;
+        
+        // Determine margin status
+        var marginStatus = marginPercent switch
+        {
+            < 0 => "Loss",
+            < 10 => "Critical",
+            < 20 => "Warning",
+            _ => "Healthy"
+        };
+        
+        // Build item responses with cost percentage
+        var itemResponses = itemCosts.Select(x => new RecipeCostItemResponse(
+            IngredientId: x.Item.IngredientId,
+            IngredientName: x.Item.Ingredient?.Name ?? "Unknown",
+            Quantity: x.Item.Quantity,
+            Unit: x.Item.Ingredient?.Unit ?? "",
+            CurrentUnitPrice: x.CurrentPrice,
+            LineCost: x.LineCost,
+            CostPercentage: liveTotalCost > 0 
+                ? (x.LineCost / liveTotalCost) * 100 
+                : 0
+        )).OrderByDescending(x => x.LineCost).ToList();
+        
+        return Result<RecipeCostResponse>.Success(new RecipeCostResponse(
+            RecipeId: recipe.Id,
+            RecipeName: recipe.Name,
+            SellPrice: recipe.SellPrice,
+            LiveTotalCost: liveTotalCost,
+            StoredTotalCost: storedTotalCost,
+            CostDifference: costDifference,
+            MarginPercent: Math.Round(marginPercent, 2),
+            MarginAmount: Math.Round(marginAmount, 2),
+            CostPerUnit: Math.Round(costPerUnit, 2),
+            ProfitPerUnit: Math.Round(profitPerUnit, 2),
+            YieldQuantity: recipe.YieldQuantity,
+            YieldUnit: recipe.YieldUnit,
+            MarginStatus: marginStatus,
+            Items: itemResponses
+        ));
+    }
+}
 ```
 
-### Domain Service vs Application Service
+### GetRecipes List Query:
 
-| Aspect | Domain Service | Application Service |
-|--------|---------------|---------------------|
-| Contains | Domain logic, calculations | Orchestration, transaction coordination |
-| Dependencies | Domain objects only | Repositories, external services |
-| State | Stateless | May coordinate stateful operations |
-| Layer | Domain | Application |
-| Example | `CalculateRequiredSellingPrice()` | `UpdateRecipePricesCommand` |
+Create `src/Nastart.Api/Features/Recipes/GetRecipes.cs`:
+
+```csharp
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Recipes;
+
+// ══════════════════════════════════════════════════════════════
+// GET RECIPES LIST FEATURE SLICE
+// ══════════════════════════════════════════════════════════════
+
+public sealed record GetRecipesQuery(
+    Guid UserId,
+    string? Category = null,
+    string? Status = null,
+    bool? LowMarginOnly = null,
+    string? SearchTerm = null
+) : IRequest<Result<IReadOnlyList<RecipeSummaryResponse>>>;
+
+public sealed record RecipeSummaryResponse(
+    Guid Id,
+    string Name,
+    string? Category,
+    decimal SellPrice,
+    decimal TotalCost,
+    decimal MarginPercent,
+    string Status,
+    string MarginStatus,
+    int ItemCount
+);
+
+public sealed class GetRecipesHandler 
+    : IRequestHandler<GetRecipesQuery, Result<IReadOnlyList<RecipeSummaryResponse>>>
+{
+    private readonly NastartDbContext _db;
+
+    public GetRecipesHandler(NastartDbContext db)
+    {
+        _db = db;
+    }
+
+    public async Task<Result<IReadOnlyList<RecipeSummaryResponse>>> Handle(
+        GetRecipesQuery request, 
+        CancellationToken cancellationToken)
+    {
+        var query = _db.Recipes
+            .Include(r => r.Items)
+            .Where(r => r.UserId == request.UserId)
+            .AsQueryable();
+        
+        // Apply filters
+        if (!string.IsNullOrWhiteSpace(request.Category))
+        {
+            query = query.Where(r => r.Category == request.Category);
+        }
+        
+        if (!string.IsNullOrWhiteSpace(request.Status))
+        {
+            query = query.Where(r => r.Status == request.Status);
+        }
+        
+        if (request.LowMarginOnly == true)
+        {
+            query = query.Where(r => r.MarginPercent < 20);
+        }
+        
+        if (!string.IsNullOrWhiteSpace(request.SearchTerm))
+        {
+            query = query.Where(r => 
+                r.Name.Contains(request.SearchTerm) ||
+                (r.Description != null && r.Description.Contains(request.SearchTerm)));
+        }
+        
+        var recipes = await query
+            .OrderBy(r => r.Name)
+            .Select(r => new RecipeSummaryResponse(
+                r.Id,
+                r.Name,
+                r.Category,
+                r.SellPrice,
+                r.TotalCost,
+                r.MarginPercent,
+                r.Status,
+                r.MarginPercent < 0 ? "Loss" :
+                r.MarginPercent < 10 ? "Critical" :
+                r.MarginPercent < 20 ? "Warning" : "Healthy",
+                r.Items.Count
+            ))
+            .ToListAsync(cancellationToken);
+        
+        return Result<IReadOnlyList<RecipeSummaryResponse>>.Success(recipes);
+    }
+}
+```
+
+### Your Task (Day 4):
+
+1. Create `GetRecipeCost.cs` with live calculation
+2. Create `GetRecipes.cs` list query
+3. Verify build: `dotnet build`
 
 ---
 
-# Day 5: Domain Events — MarginBelowThresholdEvent
+# Day 5: Margin Calculation & Threshold Detection
 
 ## 🧒 Explain Like I'm 5
 
-Imagine you have a piggy bank alarm 🚨 that goes off when you have less than $5 left. 
+If you sell cookies for Rp 25.000 and they cost Rp 20.000 to make, you only keep Rp 5.000 — that's only 20%!
 
-**MarginBelowThresholdEvent** is like that alarm — it tells everyone "Hey! This recipe isn't making enough money!"
+If ingredients get expensive and now they cost Rp 23.000, you only keep Rp 2.000 — that's just 8%! 😱
+
+We need to WARN the baker when their profit gets too small!
 
 ## 🔧 Engineer Language
 
-**Domain Events** capture something important that happened in the domain. They're used to:
-- Decouple aggregates
-- Trigger side effects
-- Enable eventual consistency
-- Audit trail
+**Margin threshold detection** identifies when a recipe's profitability falls below acceptable levels. We define thresholds and publish notifications when margins cross them.
 
-> 📖 **Microsoft Docs**: *"Use domain events to explicitly implement side effects of changes within your domain. In DDD terminology, use domain events to explicitly implement side effects across multiple aggregates."*
+> 📖 **Microsoft Docs**: *"Notifications allow multiple handlers to respond to a single event. This is the pub/sub pattern in MediatR."*
 >
-> — [Domain events: Design and implementation](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation)
+> — [MediatR Notifications](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-application-layer-implementation-web-api)
 
-### Recipe Domain Events
+### Recipe Notifications:
 
-Create `src/Nastart.Domain/Recipe/Events/RecipeEvents.cs`:
+Create `src/Nastart.Api/Features/Recipes/RecipeNotifications.cs`:
 
 ```csharp
 using MediatR;
-using Nastart.Domain.Recipe.ValueObjects;
-using Nastart.Domain.Inventory.ValueObjects;
 
-namespace Nastart.Domain.Recipe.Events;
+namespace Nastart.Api.Features.Recipes;
 
 /// <summary>
-/// Base record for Recipe domain events.
-/// Using records for immutability and value equality.
+/// Published when a recipe's margin falls below minimum threshold.
 /// </summary>
-public abstract record RecipeDomainEvent : INotification
-{
-    public DateTime OccurredOn { get; } = DateTime.UtcNow;
-}
-
-/// <summary>
-/// Raised when a new recipe is created.
-/// </summary>
-public record RecipeCreatedEvent(
-    RecipeId RecipeId,
-    string RecipeName
-) : RecipeDomainEvent;
-
-/// <summary>
-/// Raised when an ingredient is added to a recipe.
-/// </summary>
-public record RecipeIngredientAddedEvent(
-    RecipeId RecipeId,
-    IngredientId IngredientId,
-    string IngredientName,
-    decimal Quantity
-) : RecipeDomainEvent;
-
-/// <summary>
-/// Raised when an ingredient is removed from a recipe.
-/// </summary>
-public record RecipeIngredientRemovedEvent(
-    RecipeId RecipeId,
-    IngredientId IngredientId
-) : RecipeDomainEvent;
-
-/// <summary>
-/// Raised when the selling price of a recipe changes.
-/// </summary>
-public record RecipePriceChangedEvent(
-    RecipeId RecipeId,
+public sealed record MarginBelowThresholdNotification(
+    Guid RecipeId,
     string RecipeName,
-    decimal OldPrice,
-    decimal NewPrice
-) : RecipeDomainEvent
+    decimal NewMargin,
+    decimal Threshold,
+    DateTime OccurredAt
+) : INotification
 {
-    public decimal PriceChange => NewPrice - OldPrice;
-    public decimal PercentageChange => OldPrice > 0 
-        ? ((NewPrice - OldPrice) / OldPrice) * 100 
-        : 0;
+    public bool IsCritical => NewMargin < 10;
+    public bool IsLoss => NewMargin < 0;
 }
 
 /// <summary>
-/// Raised when the total cost of a recipe changes significantly.
+/// Published when a recipe is created.
 /// </summary>
-public record RecipeCostChangedEvent(
-    RecipeId RecipeId,
+public sealed record RecipeCreatedNotification(
+    Guid RecipeId,
+    string RecipeName,
+    Guid UserId,
+    DateTime OccurredAt
+) : INotification;
+
+/// <summary>
+/// Published when a recipe's cost changes due to ingredient price updates.
+/// </summary>
+public sealed record RecipeCostChangedNotification(
+    Guid RecipeId,
     string RecipeName,
     decimal OldCost,
     decimal NewCost,
-    decimal TotalRecipeCost
-) : RecipeDomainEvent
+    decimal OldMargin,
+    decimal NewMargin,
+    DateTime OccurredAt
+) : INotification
 {
     public decimal CostChange => NewCost - OldCost;
-    public decimal PercentageChange => OldCost > 0 
-        ? ((NewCost - OldCost) / OldCost) * 100 
-        : 0;
-}
-
-/// <summary>
-/// ⚠️ CRITICAL EVENT: Raised when a recipe's margin falls below the acceptable threshold.
-/// This should trigger alerts and possibly automatic notifications.
-/// </summary>
-/// <remarks>
-/// Threshold-based event pattern from Microsoft docs:
-/// See: https://learn.microsoft.com/en-us/dotnet/standard/events/how-to-raise-and-consume-events
-/// </remarks>
-public record MarginBelowThresholdEvent(
-    RecipeId RecipeId,
-    string RecipeName,
-    decimal CurrentMarginPercentage,
-    decimal ThresholdPercentage
-) : RecipeDomainEvent
-{
-    /// <summary>
-    /// How far below the threshold the margin is.
-    /// </summary>
-    public decimal MarginGap => ThresholdPercentage - CurrentMarginPercentage;
-    
-    /// <summary>
-    /// The severity of this alert.
-    /// </summary>
-    public AlertSeverity Severity => CurrentMarginPercentage switch
-    {
-        < 0 => AlertSeverity.Critical,      // Losing money
-        < 5 => AlertSeverity.High,          // Very low margin
-        < 10 => AlertSeverity.Medium,       // Low margin
-        _ => AlertSeverity.Low              // Just below threshold
-    };
-}
-
-/// <summary>
-/// Raised when a recipe is deactivated (removed from sale).
-/// </summary>
-public record RecipeDeactivatedEvent(
-    RecipeId RecipeId,
-    string RecipeName
-) : RecipeDomainEvent;
-
-/// <summary>
-/// Severity levels for alerts.
-/// </summary>
-public enum AlertSeverity
-{
-    Low,
-    Medium,
-    High,
-    Critical
+    public decimal MarginChange => NewMargin - OldMargin;
 }
 ```
 
-### Event Handler Example (Application Layer Preview):
+### UpdateRecipeSellPrice Feature:
+
+When sell price changes, we need to recalculate margin:
+
+Create `src/Nastart.Api/Features/Recipes/UpdateRecipeSellPrice.cs`:
 
 ```csharp
-// This goes in Nastart.Application — showing for reference
+using FluentValidation;
 using MediatR;
-using Nastart.Domain.Recipe.Events;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
 
-namespace Nastart.Application.Recipe.EventHandlers;
+namespace Nastart.Api.Features.Recipes;
+
+// ══════════════════════════════════════════════════════════════
+// UPDATE RECIPE SELL PRICE FEATURE SLICE
+// ══════════════════════════════════════════════════════════════
+
+public sealed record UpdateRecipeSellPriceCommand(
+    Guid RecipeId,
+    Guid UserId,
+    decimal NewSellPrice
+) : IRequest<Result<RecipeResponse>>;
+
+public sealed class UpdateRecipeSellPriceValidator 
+    : AbstractValidator<UpdateRecipeSellPriceCommand>
+{
+    public UpdateRecipeSellPriceValidator()
+    {
+        RuleFor(x => x.NewSellPrice)
+            .GreaterThan(0)
+            .WithMessage("Sell price must be greater than 0");
+    }
+}
+
+public sealed class UpdateRecipeSellPriceHandler 
+    : IRequestHandler<UpdateRecipeSellPriceCommand, Result<RecipeResponse>>
+{
+    private readonly NastartDbContext _db;
+    private readonly IMediator _mediator;
+    private readonly ILogger<UpdateRecipeSellPriceHandler> _logger;
+
+    public UpdateRecipeSellPriceHandler(
+        NastartDbContext db,
+        IMediator mediator,
+        ILogger<UpdateRecipeSellPriceHandler> logger)
+    {
+        _db = db;
+        _mediator = mediator;
+        _logger = logger;
+    }
+
+    public async Task<Result<RecipeResponse>> Handle(
+        UpdateRecipeSellPriceCommand request, 
+        CancellationToken cancellationToken)
+    {
+        var recipe = await _db.Recipes
+            .Include(r => r.Items)
+                .ThenInclude(i => i.Ingredient)
+            .FirstOrDefaultAsync(r => 
+                r.Id == request.RecipeId && 
+                r.UserId == request.UserId, 
+                cancellationToken);
+        
+        if (recipe is null)
+        {
+            return Result<RecipeResponse>.Failure(
+                Error.NotFound("RECIPE_NOT_FOUND", 
+                    $"Recipe {request.RecipeId} not found"));
+        }
+        
+        var oldPrice = recipe.SellPrice;
+        var oldMargin = recipe.MarginPercent;
+        
+        recipe.SellPrice = request.NewSellPrice;
+        
+        // Recalculate margin
+        if (recipe.SellPrice > 0)
+        {
+            recipe.MarginPercent = 
+                ((recipe.SellPrice - recipe.TotalCost) / recipe.SellPrice) * 100;
+        }
+        
+        recipe.UpdatedAt = DateTime.UtcNow;
+        
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        _logger.LogInformation(
+            "Updated sell price for '{Recipe}': {OldPrice} → {NewPrice}, margin: {OldMargin:F1}% → {NewMargin:F1}%",
+            recipe.Name, oldPrice, request.NewSellPrice, oldMargin, recipe.MarginPercent);
+        
+        // Check if margin fell below threshold
+        if (oldMargin >= 20 && recipe.MarginPercent < 20)
+        {
+            await _mediator.Publish(new MarginBelowThresholdNotification(
+                RecipeId: recipe.Id,
+                RecipeName: recipe.Name,
+                NewMargin: recipe.MarginPercent,
+                Threshold: 20,
+                OccurredAt: DateTime.UtcNow
+            ), cancellationToken);
+        }
+        
+        var costPerUnit = recipe.YieldQuantity > 0 
+            ? recipe.TotalCost / recipe.YieldQuantity 
+            : 0;
+        
+        return Result<RecipeResponse>.Success(new RecipeResponse(
+            Id: recipe.Id,
+            Name: recipe.Name,
+            Description: recipe.Description,
+            Category: recipe.Category,
+            SellPrice: recipe.SellPrice,
+            TotalCost: recipe.TotalCost,
+            MarginPercent: recipe.MarginPercent,
+            Status: recipe.Status,
+            YieldQuantity: recipe.YieldQuantity,
+            YieldUnit: recipe.YieldUnit,
+            CostPerUnit: costPerUnit,
+            Items: recipe.Items.Select(i => new RecipeItemResponse(
+                Id: i.Id,
+                IngredientId: i.IngredientId,
+                IngredientName: i.Ingredient?.Name ?? "Unknown",
+                Quantity: i.Quantity,
+                Unit: i.Ingredient?.Unit ?? "",
+                UnitPrice: i.Ingredient?.CurrentPrice ?? 0,
+                Cost: i.Cost
+            )).ToList(),
+            CreatedAt: recipe.CreatedAt
+        ));
+    }
+}
+```
+
+### Your Task (Day 5):
+
+1. Create `RecipeNotifications.cs` with notification records
+2. Create `UpdateRecipeSellPrice.cs` feature
+3. Verify build: `dotnet build`
+
+---
+
+# Day 6: MarginBelowThresholdNotification
+
+## 🧒 Explain Like I'm 5
+
+When the baker's profit gets too small, we need to:
+1. Write it down in our alert book 📓
+2. Send the baker a message on Telegram 📱
+3. Show a warning on the dashboard 🖥️
+
+This happens AUTOMATICALLY when margins drop!
+
+## 🔧 Engineer Language
+
+The **MarginBelowThresholdNotification** triggers alert creation. Multiple handlers respond: one creates the database alert, another could send Telegram notifications (Week 10).
+
+> 📖 **Microsoft Docs**: *"The notification handler pattern allows cross-cutting concerns to react to domain events without tight coupling."*
+>
+> — [Domain events](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation)
+
+### CreateMarginAlert Handler:
+
+Create `src/Nastart.Api/Features/Recipes/NotificationHandlers/CreateMarginAlertHandler.cs`:
+
+```csharp
+using MediatR;
+using Nastart.Api.Features.Alerts;
+using Nastart.Api.Shared.Data;
+using Microsoft.EntityFrameworkCore;
+
+namespace Nastart.Api.Features.Recipes.NotificationHandlers;
 
 /// <summary>
-/// Handles the MarginBelowThresholdEvent by creating an Alert.
+/// Creates an alert when a recipe's margin falls below threshold.
 /// </summary>
-public class MarginBelowThresholdEventHandler 
-    : INotificationHandler<MarginBelowThresholdEvent>
+public class CreateMarginAlertHandler : INotificationHandler<MarginBelowThresholdNotification>
 {
-    private readonly IAlertRepository _alertRepository;
-    private readonly ILogger<MarginBelowThresholdEventHandler> _logger;
+    private readonly NastartDbContext _db;
+    private readonly ILogger<CreateMarginAlertHandler> _logger;
 
-    public MarginBelowThresholdEventHandler(
-        IAlertRepository alertRepository,
-        ILogger<MarginBelowThresholdEventHandler> logger)
+    public CreateMarginAlertHandler(
+        NastartDbContext db,
+        ILogger<CreateMarginAlertHandler> logger)
     {
-        _alertRepository = alertRepository;
+        _db = db;
         _logger = logger;
     }
 
     public async Task Handle(
-        MarginBelowThresholdEvent notification, 
+        MarginBelowThresholdNotification notification, 
         CancellationToken cancellationToken)
     {
-        _logger.LogWarning(
-            "Low margin alert for recipe {RecipeName}: {Margin}% (threshold: {Threshold}%)",
-            notification.RecipeName,
-            notification.CurrentMarginPercentage,
-            notification.ThresholdPercentage);
-
-        // Create an Alert aggregate
-        var alert = Alert.CreateMarginAlert(
+        // Get recipe to find user
+        var recipe = await _db.Recipes
+            .FirstOrDefaultAsync(r => r.Id == notification.RecipeId, cancellationToken);
+        
+        if (recipe is null)
+        {
+            _logger.LogWarning(
+                "Cannot create alert: Recipe {RecipeId} not found",
+                notification.RecipeId);
+            return;
+        }
+        
+        // Determine severity
+        var severity = notification.NewMargin switch
+        {
+            < 0 => "Danger",   // Loss
+            < 10 => "Danger",  // Critical
+            < 20 => "Warning", // Below threshold
+            _ => "Warning"
+        };
+        
+        var alertType = notification.IsLoss ? "MarginLoss" : "MarginDanger";
+        
+        var message = notification.IsLoss
+            ? $"🔴 LOSS: Recipe '{notification.RecipeName}' is losing money! Margin: {notification.NewMargin:F1}%"
+            : $"🟠 Low margin: Recipe '{notification.RecipeName}' margin dropped to {notification.NewMargin:F1}%";
+        
+        var alertData = new
+        {
             notification.RecipeId,
             notification.RecipeName,
-            notification.CurrentMarginPercentage,
-            notification.ThresholdPercentage,
-            notification.Severity
-        );
-
-        await _alertRepository.AddAsync(alert, cancellationToken);
+            notification.NewMargin,
+            notification.Threshold
+        };
+        
+        var alert = new Alert
+        {
+            Id = Guid.NewGuid(),
+            UserId = recipe.UserId,
+            Type = alertType,
+            Severity = severity,
+            Message = message,
+            Data = System.Text.Json.JsonSerializer.Serialize(alertData),
+            IsRead = false,
+            CreatedAt = DateTime.UtcNow
+        };
+        
+        _db.Alerts.Add(alert);
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        _logger.LogInformation(
+            "Created {Severity} margin alert for recipe '{Recipe}': {Message}",
+            severity, notification.RecipeName, message);
     }
 }
 ```
 
----
+### Integrate with PriceChanged (from Week 3):
 
-# Day 6: Alert Aggregate
-
-## 🧒 Explain Like I'm 5
-
-When something important happens (like your recipe not making enough money), we want to tell people about it. An **Alert** is like a sticky note 📝 that says:
-
-- "Hey! The pizza margin is too low!"
-- "Check this out!"
-
-And we can mark it as "done" ✅ when someone looks at it.
-
-## 🔧 Engineer Language
-
-The **Alert** aggregate represents a domain notification that requires attention. It has its own lifecycle (created → acknowledged → resolved) and can be triggered by domain events from other aggregates.
-
-### Alert Aggregate
-
-Create `src/Nastart.Domain/Recipe/Aggregates/Alert.cs`:
-
-```csharp
-using Nastart.Domain.Common;
-using Nastart.Domain.Recipe.Events;
-using Nastart.Domain.Recipe.ValueObjects;
-
-namespace Nastart.Domain.Recipe.Aggregates;
-
-/// <summary>
-/// Represents a business alert that requires attention.
-/// Aggregates notifications from various domain events.
-/// </summary>
-public class Alert : AggregateRoot<AlertId>
-{
-    // ═══════════════════════════════════════════════════════════════
-    // PROPERTIES
-    // ═══════════════════════════════════════════════════════════════
-    
-    /// <summary>The type of alert.</summary>
-    public AlertType Type { get; private set; }
-    
-    /// <summary>The severity level.</summary>
-    public AlertSeverity Severity { get; private set; }
-    
-    /// <summary>Short title for the alert.</summary>
-    public string Title { get; private set; } = string.Empty;
-    
-    /// <summary>Detailed message.</summary>
-    public string Message { get; private set; } = string.Empty;
-    
-    /// <summary>The entity this alert relates to (e.g., RecipeId).</summary>
-    public Guid? RelatedEntityId { get; private set; }
-    
-    /// <summary>The type of related entity.</summary>
-    public string? RelatedEntityType { get; private set; }
-    
-    /// <summary>Current status of the alert.</summary>
-    public AlertStatus Status { get; private set; } = AlertStatus.New;
-    
-    /// <summary>When the alert was created.</summary>
-    public DateTime CreatedAt { get; private set; }
-    
-    /// <summary>When the alert was acknowledged.</summary>
-    public DateTime? AcknowledgedAt { get; private set; }
-    
-    /// <summary>Who acknowledged the alert.</summary>
-    public string? AcknowledgedBy { get; private set; }
-    
-    /// <summary>When the alert was resolved.</summary>
-    public DateTime? ResolvedAt { get; private set; }
-    
-    /// <summary>Who resolved the alert.</summary>
-    public string? ResolvedBy { get; private set; }
-    
-    /// <summary>Resolution notes.</summary>
-    public string? ResolutionNotes { get; private set; }
-
-    // ═══════════════════════════════════════════════════════════════
-    // CONSTRUCTORS
-    // ═══════════════════════════════════════════════════════════════
-    
-    /// <summary>EF Core constructor.</summary>
-    private Alert() : base(AlertId.Empty) { }
-
-    private Alert(
-        AlertId id,
-        AlertType type,
-        AlertSeverity severity,
-        string title,
-        string message,
-        Guid? relatedEntityId = null,
-        string? relatedEntityType = null)
-        : base(id)
-    {
-        if (string.IsNullOrWhiteSpace(title))
-            throw new ArgumentException("Alert title cannot be empty.", nameof(title));
-        
-        Type = type;
-        Severity = severity;
-        Title = title;
-        Message = message;
-        RelatedEntityId = relatedEntityId;
-        RelatedEntityType = relatedEntityType;
-        CreatedAt = DateTime.UtcNow;
-        
-        AddDomainEvent(new AlertCreatedEvent(Id, Type, Severity, Title));
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // FACTORY METHODS — Semantic construction
-    // ═══════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// Creates a margin alert for a recipe.
-    /// </summary>
-    public static Alert CreateMarginAlert(
-        RecipeId recipeId,
-        string recipeName,
-        decimal currentMargin,
-        decimal threshold,
-        AlertSeverity severity)
-    {
-        return new Alert(
-            AlertId.New(),
-            AlertType.LowMargin,
-            severity,
-            title: $"Low Margin: {recipeName}",
-            message: $"Recipe '{recipeName}' has a margin of {currentMargin:F1}%, " +
-                     $"which is below the threshold of {threshold:F1}%.",
-            relatedEntityId: recipeId.Value,
-            relatedEntityType: "Recipe"
-        );
-    }
-
-    /// <summary>
-    /// Creates a price spike alert for an ingredient.
-    /// </summary>
-    public static Alert CreatePriceSpikeAlert(
-        Guid ingredientId,
-        string ingredientName,
-        decimal oldPrice,
-        decimal newPrice,
-        decimal changePercentage)
-    {
-        var severity = changePercentage switch
-        {
-            > 50 => AlertSeverity.Critical,
-            > 30 => AlertSeverity.High,
-            > 15 => AlertSeverity.Medium,
-            _ => AlertSeverity.Low
-        };
-        
-        return new Alert(
-            AlertId.New(),
-            AlertType.PriceSpike,
-            severity,
-            title: $"Price Spike: {ingredientName}",
-            message: $"Ingredient '{ingredientName}' price changed from " +
-                     $"${oldPrice:F2} to ${newPrice:F2} ({changePercentage:F1}% increase).",
-            relatedEntityId: ingredientId,
-            relatedEntityType: "Ingredient"
-        );
-    }
-
-    /// <summary>
-    /// Creates a low stock alert for an ingredient.
-    /// </summary>
-    public static Alert CreateLowStockAlert(
-        Guid ingredientId,
-        string ingredientName,
-        decimal currentStock,
-        decimal minimumStock,
-        string unit)
-    {
-        return new Alert(
-            AlertId.New(),
-            AlertType.LowStock,
-            AlertSeverity.Medium,
-            title: $"Low Stock: {ingredientName}",
-            message: $"Ingredient '{ingredientName}' stock is {currentStock} {unit}, " +
-                     $"below the minimum of {minimumStock} {unit}.",
-            relatedEntityId: ingredientId,
-            relatedEntityType: "Ingredient"
-        );
-    }
-
-    /// <summary>
-    /// Creates a general informational alert.
-    /// </summary>
-    public static Alert CreateInfo(string title, string message)
-    {
-        return new Alert(
-            AlertId.New(),
-            AlertType.Information,
-            AlertSeverity.Low,
-            title,
-            message
-        );
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // DOMAIN METHODS
-    // ═══════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// Acknowledges the alert — someone has seen it.
-    /// </summary>
-    /// <param name="acknowledgedBy">Who acknowledged the alert.</param>
-    public void Acknowledge(string acknowledgedBy)
-    {
-        if (Status != AlertStatus.New)
-            return; // Already acknowledged or resolved
-        
-        if (string.IsNullOrWhiteSpace(acknowledgedBy))
-            throw new ArgumentException("Acknowledged by cannot be empty.", nameof(acknowledgedBy));
-        
-        Status = AlertStatus.Acknowledged;
-        AcknowledgedAt = DateTime.UtcNow;
-        AcknowledgedBy = acknowledgedBy;
-        
-        AddDomainEvent(new AlertAcknowledgedEvent(Id, acknowledgedBy));
-    }
-
-    /// <summary>
-    /// Resolves the alert — the issue has been addressed.
-    /// </summary>
-    /// <param name="resolvedBy">Who resolved the alert.</param>
-    /// <param name="notes">Optional notes about how it was resolved.</param>
-    public void Resolve(string resolvedBy, string? notes = null)
-    {
-        if (Status == AlertStatus.Resolved)
-            return; // Already resolved
-        
-        if (string.IsNullOrWhiteSpace(resolvedBy))
-            throw new ArgumentException("Resolved by cannot be empty.", nameof(resolvedBy));
-        
-        Status = AlertStatus.Resolved;
-        ResolvedAt = DateTime.UtcNow;
-        ResolvedBy = resolvedBy;
-        ResolutionNotes = notes;
-        
-        AddDomainEvent(new AlertResolvedEvent(Id, resolvedBy, notes));
-    }
-
-    /// <summary>
-    /// Escalates the severity of this alert.
-    /// </summary>
-    public void Escalate()
-    {
-        if (Status == AlertStatus.Resolved)
-            throw new InvalidOperationException("Cannot escalate a resolved alert.");
-        
-        Severity = Severity switch
-        {
-            AlertSeverity.Low => AlertSeverity.Medium,
-            AlertSeverity.Medium => AlertSeverity.High,
-            AlertSeverity.High => AlertSeverity.Critical,
-            _ => Severity
-        };
-        
-        AddDomainEvent(new AlertEscalatedEvent(Id, Severity));
-    }
-
-    /// <summary>
-    /// Checks if this alert is still active (not resolved).
-    /// </summary>
-    public bool IsActive => Status != AlertStatus.Resolved;
-
-    /// <summary>
-    /// Gets how long since this alert was created.
-    /// </summary>
-    public TimeSpan Age => DateTime.UtcNow - CreatedAt;
-}
-
-/// <summary>
-/// Types of alerts.
-/// </summary>
-public enum AlertType
-{
-    LowMargin,
-    PriceSpike,
-    LowStock,
-    ExpiringIngredient,
-    SalesAnomaly,
-    Information
-}
-
-/// <summary>
-/// Status of an alert in its lifecycle.
-/// </summary>
-public enum AlertStatus
-{
-    New,          // Just created, not seen
-    Acknowledged, // Someone has seen it
-    Resolved      // Issue addressed
-}
-```
-
-### Alert Domain Events
-
-Add to `src/Nastart.Domain/Recipe/Events/AlertEvents.cs`:
+Update `src/Nastart.Api/Features/Recipes/NotificationHandlers/RecalculateRecipeCostsHandler.cs`:
 
 ```csharp
 using MediatR;
-using Nastart.Domain.Recipe.ValueObjects;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Ingredients;
+using Nastart.Api.Shared.Data;
 
-namespace Nastart.Domain.Recipe.Events;
-
-/// <summary>
-/// Raised when a new alert is created.
-/// </summary>
-public record AlertCreatedEvent(
-    AlertId AlertId,
-    AlertType Type,
-    AlertSeverity Severity,
-    string Title
-) : INotification
-{
-    public DateTime OccurredOn { get; } = DateTime.UtcNow;
-}
+namespace Nastart.Api.Features.Recipes.NotificationHandlers;
 
 /// <summary>
-/// Raised when an alert is acknowledged.
+/// When ingredient price changes, recalculate all affected recipe costs.
 /// </summary>
-public record AlertAcknowledgedEvent(
-    AlertId AlertId,
-    string AcknowledgedBy
-) : INotification
+public class RecalculateRecipeCostsHandler : INotificationHandler<PriceChangedNotification>
 {
-    public DateTime OccurredOn { get; } = DateTime.UtcNow;
-}
+    private readonly NastartDbContext _db;
+    private readonly IMediator _mediator;
+    private readonly ILogger<RecalculateRecipeCostsHandler> _logger;
 
-/// <summary>
-/// Raised when an alert is resolved.
-/// </summary>
-public record AlertResolvedEvent(
-    AlertId AlertId,
-    string ResolvedBy,
-    string? Notes
-) : INotification
-{
-    public DateTime OccurredOn { get; } = DateTime.UtcNow;
-}
+    public RecalculateRecipeCostsHandler(
+        NastartDbContext db,
+        IMediator mediator,
+        ILogger<RecalculateRecipeCostsHandler> logger)
+    {
+        _db = db;
+        _mediator = mediator;
+        _logger = logger;
+    }
 
-/// <summary>
-/// Raised when an alert is escalated.
-/// </summary>
-public record AlertEscalatedEvent(
-    AlertId AlertId,
-    AlertSeverity NewSeverity
-) : INotification
-{
-    public DateTime OccurredOn { get; } = DateTime.UtcNow;
+    public async Task Handle(
+        PriceChangedNotification notification, 
+        CancellationToken cancellationToken)
+    {
+        // Find all recipes using this ingredient
+        var affectedRecipes = await _db.Recipes
+            .Include(r => r.Items)
+                .ThenInclude(i => i.Ingredient)
+            .Where(r => r.Items.Any(i => i.IngredientId == notification.IngredientId))
+            .ToListAsync(cancellationToken);
+        
+        if (affectedRecipes.Count == 0)
+        {
+            return;
+        }
+        
+        _logger.LogInformation(
+            "Recalculating costs for {Count} recipes affected by {Ingredient} price change",
+            affectedRecipes.Count,
+            notification.IngredientName);
+        
+        foreach (var recipe in affectedRecipes)
+        {
+            var oldCost = recipe.TotalCost;
+            var oldMargin = recipe.MarginPercent;
+            
+            // Recalculate item costs
+            foreach (var item in recipe.Items)
+            {
+                if (item.IngredientId == notification.IngredientId)
+                {
+                    item.Cost = item.Quantity * notification.NewPrice;
+                }
+                else if (item.Ingredient != null)
+                {
+                    item.Cost = item.Quantity * item.Ingredient.CurrentPrice;
+                }
+            }
+            
+            // Recalculate recipe totals
+            recipe.TotalCost = recipe.Items.Sum(i => i.Cost);
+            
+            if (recipe.SellPrice > 0)
+            {
+                recipe.MarginPercent = 
+                    ((recipe.SellPrice - recipe.TotalCost) / recipe.SellPrice) * 100;
+            }
+            
+            recipe.UpdatedAt = DateTime.UtcNow;
+            
+            _logger.LogInformation(
+                "Recipe '{Recipe}': cost {OldCost:N0} → {NewCost:N0}, margin {OldMargin:F1}% → {NewMargin:F1}%",
+                recipe.Name, oldCost, recipe.TotalCost, oldMargin, recipe.MarginPercent);
+            
+            // Check if margin dropped below threshold
+            if (oldMargin >= 20 && recipe.MarginPercent < 20)
+            {
+                await _mediator.Publish(new MarginBelowThresholdNotification(
+                    RecipeId: recipe.Id,
+                    RecipeName: recipe.Name,
+                    NewMargin: recipe.MarginPercent,
+                    Threshold: 20,
+                    OccurredAt: DateTime.UtcNow
+                ), cancellationToken);
+            }
+            
+            // Publish cost changed notification
+            await _mediator.Publish(new RecipeCostChangedNotification(
+                RecipeId: recipe.Id,
+                RecipeName: recipe.Name,
+                OldCost: oldCost,
+                NewCost: recipe.TotalCost,
+                OldMargin: oldMargin,
+                NewMargin: recipe.MarginPercent,
+                OccurredAt: DateTime.UtcNow
+            ), cancellationToken);
+        }
+        
+        await _db.SaveChangesAsync(cancellationToken);
+    }
 }
 ```
+
+### Notification Flow Diagram:
+
+```
+PriceChangedNotification (from Week 3)
+       │
+       ▼
+RecalculateRecipeCostsHandler
+       │
+       ├──▶ Updates recipe.TotalCost
+       │
+       ├──▶ Updates recipe.MarginPercent
+       │
+       ├──▶ MarginBelowThresholdNotification (if margin < 20%)
+       │           │
+       │           └──▶ CreateMarginAlertHandler → Creates Alert
+       │
+       └──▶ RecipeCostChangedNotification
+```
+
+### Your Task (Day 6):
+
+1. Create `Features/Recipes/NotificationHandlers/` folder
+2. Create `CreateMarginAlertHandler.cs`
+3. Create `RecalculateRecipeCostsHandler.cs`
+4. Verify build: `dotnet build`
 
 ---
 
-# Day 7: Unit Testing Recipe Domain
+# Day 7: Testing Recipe Features
 
 ## 🧒 Explain Like I'm 5
 
-Before you serve food to customers, you taste it first! 🍝👅
-
-**Unit tests** are like tasting the recipe:
-- "Does this taste right?"
-- "Is it too salty?"
-
-We test our code to make sure it works correctly before using it.
+Before selling our toys, we test them:
+- Can we create a recipe? ✓
+- Can we add ingredients? ✓
+- Does the cost calculate correctly? ✓
+- Does the alert trigger when margin is low? ✓
 
 ## 🔧 Engineer Language
 
-Unit tests verify that individual domain components behave correctly in isolation. We use **FluentAssertions** for readable assertions and follow the **Arrange-Act-Assert** pattern.
+Unit tests verify that each recipe feature works correctly. We test handlers, validators, and notification flows.
 
-### Testing the Recipe Aggregate
+> 📖 **Microsoft Docs**: *"Unit tests verify the behavior of individual units of code in isolation."*
+>
+> — [Unit testing in .NET](https://learn.microsoft.com/en-us/dotnet/core/testing/)
 
-Create `tests/Nastart.Domain.Tests/Recipe/RecipeTests.cs`:
+### CreateRecipe Handler Tests:
+
+Create `tests/Nastart.Api.Tests/Features/Recipes/CreateRecipeTests.cs`:
 
 ```csharp
 using FluentAssertions;
-using Nastart.Domain.Recipe.Aggregates;
-using Nastart.Domain.Recipe.Events;
-using Nastart.Domain.Recipe.ValueObjects;
-using Nastart.Domain.Inventory.ValueObjects;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Moq;
+using Nastart.Api.Features.Recipes;
+using Nastart.Api.Shared.Data;
 
-namespace Nastart.Domain.Tests.Recipe;
+namespace Nastart.Api.Tests.Features.Recipes;
 
-public class RecipeTests
+public class CreateRecipeTests
 {
-    // ═══════════════════════════════════════════════════════════════
-    // CREATION TESTS
-    // ═══════════════════════════════════════════════════════════════
+    private readonly NastartDbContext _db;
+    private readonly CreateRecipeHandler _handler;
+
+    public CreateRecipeTests()
+    {
+        var options = new DbContextOptionsBuilder<NastartDbContext>()
+            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+            .Options;
+        
+        _db = new NastartDbContext(options);
+        var logger = new Mock<ILogger<CreateRecipeHandler>>();
+        
+        _handler = new CreateRecipeHandler(_db, logger.Object);
+    }
 
     [Fact]
-    public void Create_WithValidData_ShouldCreateRecipe()
+    public async Task Handle_ValidCommand_CreatesRecipe()
     {
-        // Arrange & Act
-        var recipe = Aggregates.Recipe.Create(
-            name: "Margherita Pizza",
-            sellingPrice: 15.00m,
-            category: "Main Course",
-            description: "Classic Italian pizza"
+        // Arrange
+        var command = new CreateRecipeCommand(
+            UserId: Guid.NewGuid(),
+            Name: "Chocolate Chip Cookies",
+            SellPrice: 25000,
+            Description: "Delicious homemade cookies",
+            Category: "Cookies",
+            YieldQuantity: 24,
+            YieldUnit: "pieces"
         );
-
+        
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+        
         // Assert
-        recipe.Name.Should().Be("Margherita Pizza");
-        recipe.SellingPrice.Should().Be(15.00m);
-        recipe.Category.Should().Be("Main Course");
-        recipe.Description.Should().Be("Classic Italian pizza");
-        recipe.IsActive.Should().BeTrue();
-        recipe.Items.Should().BeEmpty();
-        recipe.TotalCost.Should().Be(0);
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().NotBeNull();
+        result.Value!.Name.Should().Be("Chocolate Chip Cookies");
+        result.Value.SellPrice.Should().Be(25000);
+        result.Value.TotalCost.Should().Be(0);  // No ingredients yet
+        result.Value.MarginPercent.Should().Be(100);  // 100% margin with no costs
+        result.Value.Status.Should().Be("Draft");
+        
+        // Verify saved to database
+        var savedRecipe = await _db.Recipes.FirstOrDefaultAsync();
+        savedRecipe.Should().NotBeNull();
+        savedRecipe!.Name.Should().Be("Chocolate Chip Cookies");
     }
 
     [Fact]
-    public void Create_ShouldRaiseRecipeCreatedEvent()
+    public async Task Handle_WithYieldQuantity_SetsCorrectly()
     {
-        // Act
-        var recipe = Aggregates.Recipe.Create(
-            name: "Caesar Salad",
-            sellingPrice: 12.00m,
-            category: "Appetizer"
+        // Arrange
+        var command = new CreateRecipeCommand(
+            UserId: Guid.NewGuid(),
+            Name: "Banana Bread",
+            SellPrice: 50000,
+            YieldQuantity: 2,
+            YieldUnit: "loaves"
         );
-
-        // Assert
-        var events = recipe.DomainEvents.ToList();
-        events.Should().ContainSingle()
-            .Which.Should().BeOfType<RecipeCreatedEvent>()
-            .Which.RecipeName.Should().Be("Caesar Salad");
-    }
-
-    [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    [InlineData(null)]
-    public void Create_WithEmptyName_ShouldThrowException(string? invalidName)
-    {
+        
         // Act
-        var act = () => Aggregates.Recipe.Create(
-            name: invalidName!,
-            sellingPrice: 10.00m,
-            category: "Main"
-        );
-
+        var result = await _handler.Handle(command, CancellationToken.None);
+        
         // Assert
-        act.Should().Throw<ArgumentException>()
-            .WithMessage("*name*");
-    }
-
-    [Fact]
-    public void Create_WithZeroOrNegativePrice_ShouldThrowException()
-    {
-        // Act & Assert
-        var act1 = () => Aggregates.Recipe.Create("Test", 0m, "Main");
-        var act2 = () => Aggregates.Recipe.Create("Test", -5m, "Main");
-
-        act1.Should().Throw<ArgumentException>();
-        act2.Should().Throw<ArgumentException>();
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // ADD INGREDIENT TESTS
-    // ═══════════════════════════════════════════════════════════════
-
-    [Fact]
-    public void AddIngredient_ShouldAddItemToCollection()
-    {
-        // Arrange
-        var recipe = CreateTestRecipe();
-        var ingredientId = IngredientId.New();
-
-        // Act
-        recipe.AddIngredient(
-            ingredientId: ingredientId,
-            ingredientName: "Flour",
-            quantity: 0.5m,
-            unit: "kg",
-            unitCost: 2.00m
-        );
-
-        // Assert
-        recipe.Items.Should().HaveCount(1);
-        var item = recipe.Items.First();
-        item.IngredientId.Should().Be(ingredientId);
-        item.IngredientName.Should().Be("Flour");
-        item.Quantity.Should().Be(0.5m);
-        item.Unit.Should().Be("kg");
-        item.UnitCost.Should().Be(2.00m);
-    }
-
-    [Fact]
-    public void AddIngredient_ShouldRecalculateTotalCost()
-    {
-        // Arrange
-        var recipe = CreateTestRecipe(sellingPrice: 20.00m);
-
-        // Act
-        recipe.AddIngredient(IngredientId.New(), "Flour", 1m, "kg", 3.00m);
-        recipe.AddIngredient(IngredientId.New(), "Eggs", 2m, "pieces", 0.50m);
-
-        // Assert
-        recipe.TotalCost.Should().Be(4.00m); // 3.00 + 1.00
-    }
-
-    [Fact]
-    public void AddIngredient_ShouldRecalculateMargin()
-    {
-        // Arrange
-        var recipe = CreateTestRecipe(sellingPrice: 20.00m);
-
-        // Act
-        recipe.AddIngredient(IngredientId.New(), "Flour", 1m, "kg", 5.00m);
-
-        // Assert
-        // Margin = (20 - 5) / 20 * 100 = 75%
-        recipe.CurrentMargin.Percentage.Should().Be(75.00m);
-        recipe.CurrentMargin.Amount.Should().Be(15.00m);
-    }
-
-    [Fact]
-    public void AddIngredient_WhenSameIngredientExists_ShouldConsolidate()
-    {
-        // Arrange
-        var recipe = CreateTestRecipe();
-        var ingredientId = IngredientId.New();
-
-        // Act
-        recipe.AddIngredient(ingredientId, "Flour", 0.5m, "kg", 2.00m);
-        recipe.AddIngredient(ingredientId, "Flour", 0.3m, "kg", 2.50m); // Same ingredient
-
-        // Assert
-        recipe.Items.Should().HaveCount(1);
-        var item = recipe.Items.First();
-        item.Quantity.Should().Be(0.8m);    // Consolidated quantity
-        item.UnitCost.Should().Be(2.50m);   // Latest cost
-    }
-
-    [Fact]
-    public void AddIngredient_ShouldRaiseEvent()
-    {
-        // Arrange
-        var recipe = CreateTestRecipe();
-        recipe.ClearDomainEvents();
-        var ingredientId = IngredientId.New();
-
-        // Act
-        recipe.AddIngredient(ingredientId, "Tomatoes", 0.2m, "kg", 4.00m);
-
-        // Assert
-        recipe.DomainEvents.Should().ContainSingle()
-            .Which.Should().BeOfType<RecipeIngredientAddedEvent>();
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // REMOVE INGREDIENT TESTS
-    // ═══════════════════════════════════════════════════════════════
-
-    [Fact]
-    public void RemoveIngredient_WhenExists_ShouldRemoveAndReturnTrue()
-    {
-        // Arrange
-        var recipe = CreateTestRecipe();
-        var ingredientId = IngredientId.New();
-        recipe.AddIngredient(ingredientId, "Flour", 1m, "kg", 2.00m);
-        recipe.ClearDomainEvents();
-
-        // Act
-        var result = recipe.RemoveIngredient(ingredientId);
-
-        // Assert
-        result.Should().BeTrue();
-        recipe.Items.Should().BeEmpty();
-        recipe.TotalCost.Should().Be(0);
-    }
-
-    [Fact]
-    public void RemoveIngredient_WhenNotExists_ShouldReturnFalse()
-    {
-        // Arrange
-        var recipe = CreateTestRecipe();
-
-        // Act
-        var result = recipe.RemoveIngredient(IngredientId.New());
-
-        // Assert
-        result.Should().BeFalse();
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // MARGIN THRESHOLD TESTS
-    // ═══════════════════════════════════════════════════════════════
-
-    [Fact]
-    public void AddIngredient_WhenMarginFallsBelowThreshold_ShouldRaiseAlert()
-    {
-        // Arrange
-        var recipe = CreateTestRecipe(sellingPrice: 10.00m);
-        recipe.ClearDomainEvents();
-
-        // Act - Add expensive ingredient that drops margin below 15%
-        recipe.AddIngredient(IngredientId.New(), "Premium Truffle", 1m, "g", 9.00m);
-        // Cost = 9.00, Selling = 10.00, Margin = 10%
-
-        // Assert
-        recipe.CurrentMargin.Percentage.Should().Be(10.00m);
-        recipe.DomainEvents.Should().Contain(e => e is MarginBelowThresholdEvent);
-    }
-
-    [Fact]
-    public void UpdateSellingPrice_ShouldRecalculateMargin()
-    {
-        // Arrange
-        var recipe = CreateTestRecipe(sellingPrice: 10.00m);
-        recipe.AddIngredient(IngredientId.New(), "Ingredient", 1m, "unit", 5.00m);
-        // Initial margin = 50%
-        recipe.ClearDomainEvents();
-
-        // Act
-        recipe.SetSellingPrice(20.00m);
-
-        // Assert
-        // New margin = (20 - 5) / 20 * 100 = 75%
-        recipe.CurrentMargin.Percentage.Should().Be(75.00m);
-        recipe.DomainEvents.Should().Contain(e => e is RecipePriceChangedEvent);
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // HELPER METHODS
-    // ═══════════════════════════════════════════════════════════════
-
-    private static Aggregates.Recipe CreateTestRecipe(
-        string name = "Test Recipe",
-        decimal sellingPrice = 10.00m,
-        string category = "Test")
-    {
-        return Aggregates.Recipe.Create(name, sellingPrice, category);
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.YieldQuantity.Should().Be(2);
+        result.Value.YieldUnit.Should().Be("loaves");
     }
 }
 ```
 
-### Testing the Margin Value Object
+### GetRecipeCost Handler Tests:
 
-Create `tests/Nastart.Domain.Tests/Recipe/MarginTests.cs`:
-
-```csharp
-using FluentAssertions;
-using Nastart.Domain.Recipe.ValueObjects;
-
-namespace Nastart.Domain.Tests.Recipe;
-
-public class MarginTests
-{
-    [Fact]
-    public void Calculate_WithValidInputs_ShouldComputeCorrectMargin()
-    {
-        // Arrange
-        decimal cost = 7.00m;
-        decimal sellingPrice = 10.00m;
-
-        // Act
-        var margin = Margin.Calculate(cost, sellingPrice);
-
-        // Assert
-        margin.Percentage.Should().Be(30.00m);  // (10 - 7) / 10 * 100
-        margin.Amount.Should().Be(3.00m);
-        margin.Cost.Should().Be(7.00m);
-        margin.SellingPrice.Should().Be(10.00m);
-    }
-
-    [Fact]
-    public void Calculate_WithZeroCost_ShouldReturn100PercentMargin()
-    {
-        // Act
-        var margin = Margin.Calculate(cost: 0m, sellingPrice: 10.00m);
-
-        // Assert
-        margin.Percentage.Should().Be(100.00m);
-    }
-
-    [Fact]
-    public void Calculate_WithCostGreaterThanPrice_ShouldReturnNegativeMargin()
-    {
-        // Act - Cost more than selling price (loss)
-        var margin = Margin.Calculate(cost: 12.00m, sellingPrice: 10.00m);
-
-        // Assert
-        margin.Percentage.Should().Be(-20.00m);
-        margin.Amount.Should().Be(-2.00m);
-        margin.IsLoss.Should().BeTrue();
-    }
-
-    [Fact]
-    public void Calculate_WithZeroOrNegativePrice_ShouldThrow()
-    {
-        // Act & Assert
-        var act1 = () => Margin.Calculate(5m, 0m);
-        var act2 = () => Margin.Calculate(5m, -10m);
-
-        act1.Should().Throw<ArgumentException>();
-        act2.Should().Throw<ArgumentException>();
-    }
-
-    [Theory]
-    [InlineData(20, 15, true)]   // 20% is below 15% threshold? No
-    [InlineData(10, 15, true)]   // 10% is below 15% threshold? Yes
-    [InlineData(15, 15, false)]  // 15% is below 15% threshold? No (equal)
-    [InlineData(5, 10, true)]    // 5% is below 10% threshold? Yes
-    public void IsBelow_ShouldReturnCorrectResult(
-        decimal marginPercentage, 
-        decimal threshold, 
-        bool expected)
-    {
-        // Arrange - Create margin with specific percentage
-        var margin = Margin.FromPercentage(marginPercentage, sellingPrice: 100m);
-
-        // Act
-        var result = margin.IsBelow(threshold);
-
-        // Assert
-        result.Should().Be(expected);
-    }
-
-    [Theory]
-    [InlineData(30, MarginStatus.Healthy)]
-    [InlineData(12, MarginStatus.Warning)]    // Between 10 and 15
-    [InlineData(8, MarginStatus.Critical)]    // Below 10
-    [InlineData(-5, MarginStatus.Loss)]       // Negative margin
-    public void GetStatus_ShouldReturnCorrectStatus(
-        decimal marginPercentage, 
-        MarginStatus expectedStatus)
-    {
-        // Arrange
-        var margin = Margin.FromPercentage(marginPercentage, sellingPrice: 100m);
-
-        // Act
-        var status = margin.GetStatus(warningThreshold: 15m, criticalThreshold: 10m);
-
-        // Assert
-        status.Should().Be(expectedStatus);
-    }
-
-    [Fact]
-    public void FromPercentage_ShouldCalculateCorrectCost()
-    {
-        // Arrange
-        decimal targetMargin = 30m;
-        decimal sellingPrice = 100m;
-
-        // Act
-        var margin = Margin.FromPercentage(targetMargin, sellingPrice);
-
-        // Assert
-        margin.Percentage.Should().Be(30m);
-        margin.Amount.Should().Be(30m);
-        margin.Cost.Should().Be(70m);  // 100 - 30
-    }
-}
-```
-
-### Testing the CostCalculationService
-
-Create `tests/Nastart.Domain.Tests/Recipe/CostCalculationServiceTests.cs`:
+Create `tests/Nastart.Api.Tests/Features/Recipes/GetRecipeCostTests.cs`:
 
 ```csharp
 using FluentAssertions;
-using Nastart.Domain.Recipe.Aggregates;
-using Nastart.Domain.Recipe.Services;
-using Nastart.Domain.Recipe.ValueObjects;
-using Nastart.Domain.Inventory.ValueObjects;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Ingredients;
+using Nastart.Api.Features.Recipes;
+using Nastart.Api.Shared.Data;
 
-namespace Nastart.Domain.Tests.Recipe;
+namespace Nastart.Api.Tests.Features.Recipes;
 
-public class CostCalculationServiceTests
+public class GetRecipeCostTests
 {
-    private readonly CostCalculationService _service = new();
+    private readonly NastartDbContext _db;
+    private readonly GetRecipeCostHandler _handler;
 
-    [Fact]
-    public void CalculateBatchCost_ShouldMultiplyCostByServings()
+    public GetRecipeCostTests()
     {
-        // Arrange
-        var recipe = CreateRecipeWithIngredients(totalCost: 5.00m);
-
-        // Act
-        var batchCost = _service.CalculateBatchCost(recipe, servings: 10);
-
-        // Assert
-        batchCost.Should().Be(50.00m);
+        var options = new DbContextOptionsBuilder<NastartDbContext>()
+            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+            .Options;
+        
+        _db = new NastartDbContext(options);
+        _handler = new GetRecipeCostHandler(_db);
     }
 
     [Fact]
-    public void CalculateRequiredSellingPrice_ShouldReturnCorrectPrice()
+    public async Task Handle_RecipeWithIngredients_CalculatesLiveCost()
     {
         // Arrange
-        var recipe = CreateRecipeWithIngredients(totalCost: 7.00m, sellingPrice: 10.00m);
-
-        // Act - Calculate price needed for 30% margin
-        var requiredPrice = _service.CalculateRequiredSellingPrice(recipe, targetMarginPercentage: 30m);
-
-        // Assert
-        // Required Price = Cost / (1 - 0.30) = 7.00 / 0.70 = 10.00
-        requiredPrice.Should().Be(10.00m);
-    }
-
-    [Fact]
-    public void ProjectMarginWithNewPrices_ShouldCalculateProjectedMargin()
-    {
-        // Arrange
-        var ingredientId = IngredientId.New();
-        var recipe = Aggregates.Recipe.Create("Test", 20.00m, "Main");
-        recipe.AddIngredient(ingredientId, "Ingredient", 2m, "kg", 3.00m);
-        // Current cost = 6.00, margin = 70%
-
-        var newPrices = new Dictionary<Guid, decimal>
+        var userId = Guid.NewGuid();
+        
+        var flour = new Ingredient
         {
-            { ingredientId.Value, 5.00m } // Price increase from 3.00 to 5.00
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Name = "Flour",
+            Unit = "kg",
+            CurrentPrice = 20000,  // Current price
+            CurrentStock = 10,
+            MinimumStock = 2
         };
-
-        // Act
-        var projectedMargin = _service.ProjectMarginWithNewPrices(recipe, newPrices);
-
-        // Assert
-        // New cost = 2 * 5 = 10.00
-        // New margin = (20 - 10) / 20 * 100 = 50%
-        projectedMargin.Percentage.Should().Be(50.00m);
-    }
-
-    [Fact]
-    public void IdentifyLowMarginRecipes_ShouldReturnRecipesBelowThreshold()
-    {
-        // Arrange
-        var recipes = new List<Aggregates.Recipe>
+        
+        var recipe = new Recipe
         {
-            CreateRecipeWithIngredients("High Margin", totalCost: 5m, sellingPrice: 20m),  // 75%
-            CreateRecipeWithIngredients("Medium Margin", totalCost: 15m, sellingPrice: 20m), // 25%
-            CreateRecipeWithIngredients("Low Margin", totalCost: 18m, sellingPrice: 20m)    // 10%
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Name = "Bread",
+            SellPrice = 50000,
+            TotalCost = 10000,  // Old stored cost
+            MarginPercent = 80,
+            Status = "Active",
+            YieldQuantity = 2,
+            YieldUnit = "loaves"
         };
-
+        
+        var recipeItem = new RecipeItem
+        {
+            Id = Guid.NewGuid(),
+            RecipeId = recipe.Id,
+            IngredientId = flour.Id,
+            Quantity = 1,  // 1 kg of flour
+            Cost = 10000,  // Old stored cost
+            Ingredient = flour
+        };
+        
+        recipe.Items.Add(recipeItem);
+        
+        _db.Ingredients.Add(flour);
+        _db.Recipes.Add(recipe);
+        await _db.SaveChangesAsync();
+        
         // Act
-        var lowMarginRecipes = _service.IdentifyLowMarginRecipes(recipes, marginThreshold: 20m).ToList();
-
+        var result = await _handler.Handle(
+            new GetRecipeCostQuery(recipe.Id, userId), 
+            CancellationToken.None);
+        
         // Assert
-        lowMarginRecipes.Should().HaveCount(1);
-        lowMarginRecipes.First().RecipeName.Should().Be("Low Margin");
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.LiveTotalCost.Should().Be(20000);  // 1 × 20000
+        result.Value.StoredTotalCost.Should().Be(10000);  // Old value
+        result.Value.CostDifference.Should().Be(10000);  // Increased!
+        result.Value.MarginPercent.Should().Be(60);  // (50000 - 20000) / 50000 × 100
+        result.Value.CostPerUnit.Should().Be(10000);  // 20000 / 2 loaves
+        result.Value.MarginStatus.Should().Be("Healthy");
     }
 
     [Fact]
-    public void AnalyzeCostBreakdown_ShouldReturnIngredientCosts()
+    public async Task Handle_LowMarginRecipe_ReturnsWarningStatus()
     {
         // Arrange
-        var recipe = Aggregates.Recipe.Create("Pizza", 15.00m, "Main");
-        recipe.AddIngredient(IngredientId.New(), "Cheese", 0.2m, "kg", 20.00m); // 4.00
-        recipe.AddIngredient(IngredientId.New(), "Dough", 0.3m, "kg", 5.00m);   // 1.50
-        // Total = 5.50
-
+        var userId = Guid.NewGuid();
+        
+        var sugar = new Ingredient
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Name = "Sugar",
+            Unit = "kg",
+            CurrentPrice = 45000,  // Expensive!
+            CurrentStock = 5,
+            MinimumStock = 1
+        };
+        
+        var recipe = new Recipe
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Name = "Sugar Cookies",
+            SellPrice = 50000,
+            TotalCost = 0,
+            MarginPercent = 0,
+            Status = "Active",
+            YieldQuantity = 1,
+            YieldUnit = "batch"
+        };
+        
+        var item = new RecipeItem
+        {
+            Id = Guid.NewGuid(),
+            RecipeId = recipe.Id,
+            IngredientId = sugar.Id,
+            Quantity = 1,
+            Cost = 0,
+            Ingredient = sugar
+        };
+        
+        recipe.Items.Add(item);
+        
+        _db.Ingredients.Add(sugar);
+        _db.Recipes.Add(recipe);
+        await _db.SaveChangesAsync();
+        
         // Act
-        var breakdown = _service.AnalyzeCostBreakdown(recipe);
-
+        var result = await _handler.Handle(
+            new GetRecipeCostQuery(recipe.Id, userId), 
+            CancellationToken.None);
+        
         // Assert
-        breakdown.TotalCost.Should().Be(5.50m);
-        breakdown.HighestCostIngredient.Should().Be("Cheese");
-        breakdown.IngredientCosts.Should().HaveCount(2);
-        breakdown.IngredientCosts.First().IngredientName.Should().Be("Cheese"); // Highest first
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.MarginPercent.Should().Be(10);  // (50000 - 45000) / 50000 × 100
+        result.Value.MarginStatus.Should().Be("Critical");  // < 10%
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // HELPER METHODS
-    // ═══════════════════════════════════════════════════════════════
-
-    private static Aggregates.Recipe CreateRecipeWithIngredients(
-        string name = "Test",
-        decimal totalCost = 5.00m,
-        decimal sellingPrice = 10.00m)
+    [Fact]
+    public async Task Handle_RecipeNotFound_ReturnsFailure()
     {
-        var recipe = Aggregates.Recipe.Create(name, sellingPrice, "Main");
-        recipe.AddIngredient(IngredientId.New(), "Ingredient", 1m, "unit", totalCost);
-        return recipe;
+        // Act
+        var result = await _handler.Handle(
+            new GetRecipeCostQuery(Guid.NewGuid(), Guid.NewGuid()), 
+            CancellationToken.None);
+        
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be("RECIPE_NOT_FOUND");
     }
 }
 ```
 
-### Testing the Alert Aggregate
+### Validator Tests:
 
-Create `tests/Nastart.Domain.Tests/Recipe/AlertTests.cs`:
+Create `tests/Nastart.Api.Tests/Features/Recipes/CreateRecipeValidatorTests.cs`:
 
 ```csharp
 using FluentAssertions;
-using Nastart.Domain.Recipe.Aggregates;
-using Nastart.Domain.Recipe.Events;
-using Nastart.Domain.Recipe.ValueObjects;
+using Nastart.Api.Features.Recipes;
 
-namespace Nastart.Domain.Tests.Recipe;
+namespace Nastart.Api.Tests.Features.Recipes;
 
-public class AlertTests
+public class CreateRecipeValidatorTests
 {
+    private readonly CreateRecipeValidator _validator = new();
+
     [Fact]
-    public void CreateMarginAlert_ShouldSetCorrectProperties()
+    public void Validate_ValidCommand_PassesValidation()
     {
         // Arrange
-        var recipeId = RecipeId.New();
-
-        // Act
-        var alert = Alert.CreateMarginAlert(
-            recipeId,
-            recipeName: "Pizza",
-            currentMargin: 8m,
-            threshold: 15m,
-            AlertSeverity.High
+        var command = new CreateRecipeCommand(
+            UserId: Guid.NewGuid(),
+            Name: "Test Recipe",
+            SellPrice: 10000
         );
-
-        // Assert
-        alert.Type.Should().Be(AlertType.LowMargin);
-        alert.Severity.Should().Be(AlertSeverity.High);
-        alert.Title.Should().Contain("Pizza");
-        alert.Message.Should().Contain("8");
-        alert.Message.Should().Contain("15");
-        alert.Status.Should().Be(AlertStatus.New);
-        alert.RelatedEntityId.Should().Be(recipeId.Value);
-    }
-
-    [Fact]
-    public void Acknowledge_ShouldUpdateStatusAndTimestamp()
-    {
-        // Arrange
-        var alert = Alert.CreateInfo("Test", "Message");
-        alert.ClearDomainEvents();
-
+        
         // Act
-        alert.Acknowledge("john.doe");
-
+        var result = _validator.Validate(command);
+        
         // Assert
-        alert.Status.Should().Be(AlertStatus.Acknowledged);
-        alert.AcknowledgedAt.Should().NotBeNull();
-        alert.AcknowledgedBy.Should().Be("john.doe");
-        alert.DomainEvents.Should().ContainSingle()
-            .Which.Should().BeOfType<AlertAcknowledgedEvent>();
+        result.IsValid.Should().BeTrue();
     }
 
     [Fact]
-    public void Resolve_ShouldUpdateStatusWithNotes()
+    public void Validate_EmptyName_FailsValidation()
     {
         // Arrange
-        var alert = Alert.CreateInfo("Test", "Message");
-        alert.Acknowledge("user1");
-        alert.ClearDomainEvents();
-
+        var command = new CreateRecipeCommand(
+            UserId: Guid.NewGuid(),
+            Name: "",
+            SellPrice: 10000
+        );
+        
         // Act
-        alert.Resolve("user2", "Fixed by adjusting price");
-
+        var result = _validator.Validate(command);
+        
         // Assert
-        alert.Status.Should().Be(AlertStatus.Resolved);
-        alert.ResolvedAt.Should().NotBeNull();
-        alert.ResolvedBy.Should().Be("user2");
-        alert.ResolutionNotes.Should().Be("Fixed by adjusting price");
-        alert.IsActive.Should().BeFalse();
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "Name");
     }
 
     [Fact]
-    public void Escalate_ShouldIncreaseSeverity()
+    public void Validate_ZeroSellPrice_FailsValidation()
     {
         // Arrange
-        var alert = Alert.CreateInfo("Test", "Message");
-        alert.Severity.Should().Be(AlertSeverity.Low);
-
+        var command = new CreateRecipeCommand(
+            UserId: Guid.NewGuid(),
+            Name: "Test",
+            SellPrice: 0
+        );
+        
         // Act
-        alert.Escalate();
-
+        var result = _validator.Validate(command);
+        
         // Assert
-        alert.Severity.Should().Be(AlertSeverity.Medium);
-    }
-
-    [Fact]
-    public void Escalate_WhenResolved_ShouldThrow()
-    {
-        // Arrange
-        var alert = Alert.CreateInfo("Test", "Message");
-        alert.Resolve("user");
-
-        // Act & Assert
-        var act = () => alert.Escalate();
-        act.Should().Throw<InvalidOperationException>();
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "SellPrice");
     }
 }
 ```
 
-### Running the Tests
+### Run Tests:
 
 ```powershell
-# Run all Recipe domain tests
-cd c:\Users\AU1833\Documents\personal\nastart\backend
-dotnet test tests/Nastart.Domain.Tests --filter "FullyQualifiedName~Recipe"
+cd C:\Users\AU1833\Documents\personal\nastart\backend
 
-# Run with verbose output
-dotnet test tests/Nastart.Domain.Tests --filter "FullyQualifiedName~Recipe" --logger "console;verbosity=detailed"
+dotnet test --filter "FullyQualifiedName~Recipes"
 ```
+
+### Your Task (Day 7):
+
+1. Create test files for recipe features
+2. Run all tests with `dotnet test`
+3. Ensure >80% coverage on handlers
 
 ---
 
 # Resources
 
-## Microsoft Official Documentation (Verified)
+## Microsoft Official Documentation
 
 | Topic | Link |
 |-------|------|
-| Design a microservice domain model | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model |
-| Implement a domain model with .NET | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model |
-| Implement Value Objects | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/implement-value-objects |
-| Domain events: Design and implementation | https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation |
-| Using tactical DDD to design microservices | https://learn.microsoft.com/en-us/azure/architecture/microservices/model/tactical-ddd |
-| Value generation for DDD guarded types | https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-7.0/whatsnew#value-generation-for-ddd-guarded-types |
-| How to raise and consume events | https://learn.microsoft.com/en-us/dotnet/standard/events/how-to-raise-and-consume-events |
-
-## Folder Structure After Week 4
-
-```
-src/Nastart.Domain/
-├── Common/                           # Week 2
-│   ├── Entity.cs
-│   ├── AggregateRoot.cs
-│   ├── ValueObject.cs
-│   └── IAggregateRoot.cs
-├── Inventory/                        # Week 2
-│   ├── Aggregates/
-│   │   └── Ingredient.cs
-│   ├── Events/
-│   │   └── IngredientEvents.cs
-│   └── ValueObjects/
-│       └── InventoryIds.cs
-├── Finance/                          # Week 3
-│   ├── Aggregates/
-│   │   ├── Purchase.cs
-│   │   └── PriceHistory.cs
-│   ├── Entities/
-│   │   └── PurchaseItem.cs
-│   ├── Events/
-│   │   └── FinanceEvents.cs
-│   ├── Services/
-│   │   └── PriceAnalysisService.cs
-│   └── ValueObjects/
-│       └── FinanceIds.cs
-├── Recipe/                           # Week 4 ⭐
-│   ├── Aggregates/
-│   │   ├── Recipe.cs              ✅
-│   │   └── Alert.cs               ✅
-│   ├── Entities/
-│   │   └── RecipeItem.cs          ✅
-│   ├── Events/
-│   │   ├── RecipeEvents.cs        ✅
-│   │   └── AlertEvents.cs         ✅
-│   ├── Services/
-│   │   └── CostCalculationService.cs ✅
-│   └── ValueObjects/
-│       ├── RecipeIds.cs           ✅
-│       └── Margin.cs              ✅
-
-tests/Nastart.Domain.Tests/
-├── Inventory/
-├── Finance/
-└── Recipe/                          # Week 4 ⭐
-    ├── RecipeTests.cs             ✅
-    ├── MarginTests.cs             ✅
-    ├── CostCalculationServiceTests.cs ✅
-    └── AlertTests.cs              ✅
-```
+| **EF Core Modeling** | [learn.microsoft.com/ef/core/modeling](https://learn.microsoft.com/en-us/ef/core/modeling/) |
+| **Loading Related Data** | [learn.microsoft.com/ef/core/querying/related-data](https://learn.microsoft.com/en-us/ef/core/querying/related-data) |
+| **Minimal APIs** | [learn.microsoft.com/aspnet/core/fundamentals/minimal-apis](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/overview) |
+| **MediatR Notifications** | [learn.microsoft.com/dotnet/architecture/microservices](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-application-layer-implementation-web-api) |
+| **Domain Events** | [learn.microsoft.com/dotnet/architecture/microservices](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation) |
+| **Unit Testing** | [learn.microsoft.com/dotnet/core/testing](https://learn.microsoft.com/en-us/dotnet/core/testing/) |
 
 ## Week 4 Checklist
 
-- [x] Create `RecipeId`, `RecipeItemId`, `AlertId` strongly-typed IDs
-- [x] Create `Margin` value object with `IsBelow()`, `GetStatus()`
-- [x] Build `Recipe` aggregate with private `_items` collection
-- [x] Implement `AddIngredient()`, `RemoveIngredient()`, `RecalculateCost()`
-- [x] Create `RecipeItem` child entity with internal constructors
-- [x] Build `CostCalculationService` domain service
-- [x] Write `MarginBelowThresholdEvent` and other recipe events
-- [x] Create `Alert` aggregate with lifecycle methods
-- [x] Write comprehensive unit tests
+- [ ] Created `Recipe` and `RecipeItem` entity models
+- [ ] Created `CreateRecipe` feature slice with validation
+- [ ] Created `AddIngredientToRecipe` feature
+- [ ] Created `RemoveIngredientFromRecipe` feature
+- [ ] Created `GetRecipeCost` query with live calculation
+- [ ] Created `GetRecipes` list query
+- [ ] Created `RecipeNotifications.cs` with notification records
+- [ ] Created `UpdateRecipeSellPrice` feature
+- [ ] Created `CreateMarginAlertHandler` notification handler
+- [ ] Created `RecalculateRecipeCostsHandler` for price changes
+- [ ] Unit tests for recipe handlers
+- [ ] All builds pass: `dotnet build`
+- [ ] All tests pass: `dotnet test`
 
 ---
 
-## Next Week Preview: Week 5 — Application Layer
+## What's Next?
 
-In Week 5, we'll build the Application Layer:
-- **Commands**: `CreateRecipeCommand`, `AddIngredientCommand`
-- **Queries**: `GetRecipeByIdQuery`, `GetLowMarginRecipesQuery`
-- **MediatR Handlers**: Command and Query handlers
-- **Domain Event Handlers**: React to `MarginBelowThresholdEvent`
-- **DTOs**: Data Transfer Objects for API responses
+**Week 5: Database & Shared Services** — Configure EF Core mappings, create migrations, seed data, and build the `Result<T>` pattern with validation pipeline behaviors.
 
 ---
 
-*Last Updated: Week 4 Lesson*
-*Stack: .NET 10, C# 13, DDD, Clean Architecture*
+*Nastart — Start smart, bake profitable*

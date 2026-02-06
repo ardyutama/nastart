@@ -1,1621 +1,1791 @@
-# Week 3: Finance Context Domain 💰
+# Week 3: Purchase Features 💰
 
-> **Goal**: Build the Finance bounded context — Purchase aggregate with PurchaseItem entities, PriceHistory for tracking, and PriceAnalysisService for detecting price spikes.
+> **Goal**: Build the Purchase feature slices — record purchases from receipts, track price changes, and detect price spikes that notify the user.
 
 ---
 
 ## Table of Contents
-1. [Day 1: Strongly-Typed IDs](#day-1-strongly-typed-ids)
-2. [Day 2: Purchase Aggregate Root](#day-2-purchase-aggregate-root)
-3. [Day 3: PurchaseItem Entity](#day-3-purchaseitem-entity)
-4. [Day 4: PriceHistory Aggregate](#day-4-pricehistory-aggregate)
-5. [Day 5: Domain Service — PriceAnalysisService](#day-5-domain-service--priceanalysisservice)
-6. [Day 6: Domain Events — PriceSpikeDetectedEvent](#day-6-domain-events--pricespikedetectedevent)
-7. [Day 7: Unit Testing Finance Domain](#day-7-unit-testing-finance-domain)
+1. [Day 1: Purchase & PurchaseItem Models](#day-1-purchase--purchaseitem-models)
+2. [Day 2: RecordPurchase Feature Slice](#day-2-recordpurchase-feature-slice)
+3. [Day 3: GetPurchaseHistory Query](#day-3-getpurchasehistory-query)
+4. [Day 4: Price Change Detection](#day-4-price-change-detection)
+5. [Day 5: PriceChangedNotification Flow](#day-5-pricechangednotification-flow)
+6. [Day 6: PriceSpikeNotification & Alerts](#day-6-pricespikenotification--alerts)
+7. [Day 7: Testing Purchase Features](#day-7-testing-purchase-features)
 8. [Resources](#resources) *(Microsoft Official Docs Verified)*
 
 ---
 
-# Day 1: Strongly-Typed IDs
+# Day 1: Purchase & PurchaseItem Models
 
 ## 🧒 Explain Like I'm 5
 
-Imagine you have a toy box with numbers on each toy. Your teddy bear is #5 and your car is also #5. If you just say "Give me toy #5" — which one do you mean?
+When mom goes shopping, she gets a **receipt** — a paper that shows what she bought:
+- 2kg flour — Rp 25.000
+- 1 dozen eggs — Rp 35.000
+- 500g butter — Rp 45.000
+- **Total: Rp 105.000**
 
-**Strongly-Typed IDs** are like labels that say:
-- "Teddy Bear #5" 🧸
-- "Car #5" 🚗
-
-Now we can never mix them up!
+In our app:
+- The **Purchase** is like the whole receipt (where you shopped, when, total cost)
+- Each **PurchaseItem** is one line on the receipt (which ingredient, how much, what price)
 
 ## 🔧 Engineer Language
 
-**Strongly-Typed IDs** (also called "Typed IDs" or "Wrapper Types") wrap primitive types (like `int` or `Guid`) in domain-specific types. This prevents accidentally passing an `IngredientId` where a `PurchaseId` is expected.
+A **Purchase** represents a shopping transaction — the header of a receipt. **PurchaseItem** represents each line item. In Vertical Slice Architecture, these models live inside the `Features/Purchases/` folder.
 
-> 📖 **Microsoft Docs**: *"In domain-driven design (DDD), 'guarded keys' can improve the type safety of key properties. This is achieved by wrapping the key type in another type which is specific to the use of the key."*
+> 📖 **Microsoft Docs**: *"Entity types are typically mapped to tables. EF Core can model one-to-many relationships using navigation properties."*
 >
-> — [What's New in EF Core 7.0 - Value Generation for DDD](https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-7.0/whatsnew#value-generation-for-ddd-guarded-types)
+> — [Relationships](https://learn.microsoft.com/en-us/ef/core/modeling/relationships)
 
-### Why Use Strongly-Typed IDs?
+### Purchase Entity Model:
 
-| Problem | Without Typed IDs | With Typed IDs |
-|---------|-------------------|----------------|
-| Parameter mix-up | `ProcessPurchase(int purchaseId, int ingredientId)` — easy to swap! | `ProcessPurchase(PurchaseId id, IngredientId ingId)` — compiler catches mistakes |
-| Code readability | `int id` — What kind of ID? | `PurchaseId id` — Clear intent |
-| Refactoring | Change `int` to `Guid`? Massive search/replace | Change internal type once |
-
-### Implementation Using `record struct` (.NET 10 Best Practice):
-
-Create `src/Nastart.Domain/Finance/ValueObjects/FinanceIds.cs`:
+Create `src/Nastart.Api/Features/Purchases/Purchase.cs`:
 
 ```csharp
-namespace Nastart.Domain.Finance.ValueObjects;
+namespace Nastart.Api.Features.Purchases;
 
 /// <summary>
-/// Strongly-typed ID for Purchase aggregate.
-/// Using record struct for value semantics and zero allocation.
+/// Represents a shopping transaction (receipt).
+/// Contains multiple PurchaseItems as line items.
 /// </summary>
 /// <remarks>
-/// See: https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-7.0/whatsnew#value-generation-for-ddd-guarded-types
+/// Entity model following EF Core conventions.
+/// Business logic is in feature handlers, not entity classes.
+/// See: https://learn.microsoft.com/en-us/ef/core/modeling/
 /// </remarks>
-public readonly record struct PurchaseId(Guid Value)
+public class Purchase
 {
-    /// <summary>Creates a new unique PurchaseId.</summary>
-    public static PurchaseId New() => new(Guid.NewGuid());
+    public Guid Id { get; set; }
     
-    /// <summary>Represents an empty/unset PurchaseId.</summary>
-    public static PurchaseId Empty => new(Guid.Empty);
+    /// <summary>
+    /// The user who made this purchase.
+    /// </summary>
+    public required Guid UserId { get; set; }
     
-    /// <summary>Checks if this ID has been set.</summary>
-    public bool IsEmpty => Value == Guid.Empty;
-
-    public override string ToString() => Value.ToString();
-
-    /// <summary>Implicit conversion from Guid for convenience.</summary>
-    public static implicit operator Guid(PurchaseId id) => id.Value;
+    /// <summary>
+    /// Shop where purchase was made (optional).
+    /// </summary>
+    public Guid? ShopId { get; set; }
     
-    /// <summary>Explicit conversion to PurchaseId requires intention.</summary>
-    public static explicit operator PurchaseId(Guid guid) => new(guid);
+    /// <summary>
+    /// Date of purchase.
+    /// </summary>
+    public required DateOnly PurchaseDate { get; set; }
+    
+    /// <summary>
+    /// URL to the receipt image in storage (optional).
+    /// </summary>
+    public string? ReceiptImageUrl { get; set; }
+    
+    /// <summary>
+    /// Total amount of the purchase.
+    /// </summary>
+    public decimal Total { get; set; }
+    
+    /// <summary>
+    /// Processing status: Received, Processing, Parsed, Confirmed, Saved.
+    /// </summary>
+    public required string Status { get; set; } = "Received";
+    
+    /// <summary>
+    /// When this purchase was recorded.
+    /// </summary>
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    
+    // Navigation properties
+    public Shop? Shop { get; set; }
+    public ICollection<PurchaseItem> Items { get; set; } = [];
 }
 
 /// <summary>
-/// Strongly-typed ID for PurchaseItem entity.
+/// Represents one line item on a purchase receipt.
 /// </summary>
-public readonly record struct PurchaseItemId(Guid Value)
+public class PurchaseItem
 {
-    public static PurchaseItemId New() => new(Guid.NewGuid());
-    public static PurchaseItemId Empty => new(Guid.Empty);
-    public bool IsEmpty => Value == Guid.Empty;
-    public override string ToString() => Value.ToString();
+    public Guid Id { get; set; }
+    
+    /// <summary>
+    /// Parent purchase this item belongs to.
+    /// </summary>
+    public required Guid PurchaseId { get; set; }
+    
+    /// <summary>
+    /// The ingredient purchased.
+    /// </summary>
+    public required Guid IngredientId { get; set; }
+    
+    /// <summary>
+    /// Quantity purchased (e.g., 2.5 for 2.5 kg).
+    /// </summary>
+    public required decimal Quantity { get; set; }
+    
+    /// <summary>
+    /// Unit price at time of purchase.
+    /// </summary>
+    public required decimal UnitPrice { get; set; }
+    
+    /// <summary>
+    /// Line total (Quantity × UnitPrice).
+    /// </summary>
+    public decimal LineTotal => Quantity * UnitPrice;
+    
+    // Navigation properties
+    public Purchase? Purchase { get; set; }
+    public Ingredient? Ingredient { get; set; }
 }
 
 /// <summary>
-/// Strongly-typed ID for Sale entity.
+/// Represents a shop/supplier where purchases are made.
 /// </summary>
-public readonly record struct SaleId(Guid Value)
+public class Shop
 {
-    public static SaleId New() => new(Guid.NewGuid());
-    public static SaleId Empty => new(Guid.Empty);
-    public bool IsEmpty => Value == Guid.Empty;
-    public override string ToString() => Value.ToString();
-}
-
-/// <summary>
-/// Strongly-typed ID for PriceHistory record.
-/// </summary>
-public readonly record struct PriceHistoryId(Guid Value)
-{
-    public static PriceHistoryId New() => new(Guid.NewGuid());
-    public static PriceHistoryId Empty => new(Guid.Empty);
-    public bool IsEmpty => Value == Guid.Empty;
-    public override string ToString() => Value.ToString();
+    public Guid Id { get; set; }
+    
+    public required Guid UserId { get; set; }
+    
+    public required string Name { get; set; }
+    
+    public string? Address { get; set; }
+    
+    public ICollection<Purchase> Purchases { get; set; } = [];
 }
 ```
 
-### EF Core Value Converter (for Infrastructure layer later):
+### Add DbSets to Context:
+
+Update `src/Nastart.Api/Shared/Data/NastartDbContext.cs`:
 
 ```csharp
-// This goes in Nastart.Infrastructure — showing for reference
-using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Ingredients;
+using Nastart.Api.Features.Purchases;
 
-public class PurchaseIdConverter : ValueConverter<PurchaseId, Guid>
+namespace Nastart.Api.Shared.Data;
+
+public class NastartDbContext : DbContext
 {
-    public PurchaseIdConverter() 
-        : base(
-            id => id.Value,           // To database
-            guid => new PurchaseId(guid))  // From database
-    { }
+    public NastartDbContext(DbContextOptions<NastartDbContext> options) 
+        : base(options) { }
+    
+    // Ingredients
+    public DbSet<Ingredient> Ingredients => Set<Ingredient>();
+    public DbSet<Category> Categories => Set<Category>();
+    
+    // Purchases
+    public DbSet<Purchase> Purchases => Set<Purchase>();
+    public DbSet<PurchaseItem> PurchaseItems => Set<PurchaseItem>();
+    public DbSet<Shop> Shops => Set<Shop>();
+    
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        // Configure Purchase -> PurchaseItem relationship
+        modelBuilder.Entity<Purchase>()
+            .HasMany(p => p.Items)
+            .WithOne(i => i.Purchase)
+            .HasForeignKey(i => i.PurchaseId)
+            .OnDelete(DeleteBehavior.Cascade);
+        
+        // Configure PurchaseItem -> Ingredient relationship
+        modelBuilder.Entity<PurchaseItem>()
+            .HasOne(pi => pi.Ingredient)
+            .WithMany()
+            .HasForeignKey(pi => pi.IngredientId)
+            .OnDelete(DeleteBehavior.Restrict);
+        
+        // Configure decimal precision for money
+        modelBuilder.Entity<Purchase>()
+            .Property(p => p.Total)
+            .HasPrecision(18, 2);
+        
+        modelBuilder.Entity<PurchaseItem>()
+            .Property(pi => pi.UnitPrice)
+            .HasPrecision(18, 2);
+    }
 }
 ```
 
-### Modern .NET 10 Features Used:
+### .NET 10 Features Used:
 
-| Feature | Example | Benefit |
-|---------|---------|---------|
-| `record struct` | `public readonly record struct PurchaseId` | Value semantics, stack-allocated |
-| `readonly` modifier | `readonly record struct` | Immutable, thread-safe |
-| Primary constructor | `PurchaseId(Guid Value)` | Concise syntax |
-| Implicit operators | `public static implicit operator Guid` | Seamless interop |
-
-### Folder Structure After Day 1:
-
-```
-src/Nastart.Domain/
-├── Common/                        # From Week 2
-│   ├── Entity.cs
-│   ├── AggregateRoot.cs
-│   └── ValueObject.cs
-├── Finance/
-│   ├── Aggregates/               # Coming Day 2-4
-│   ├── Entities/                 # Coming Day 3
-│   ├── ValueObjects/
-│   │   └── FinanceIds.cs         # ← Created today
-│   ├── Events/                   # Coming Day 6
-│   └── Services/                 # Coming Day 5
-└── Inventory/                    # From Week 2
-```
+| Feature | Usage |
+|---------|-------|
+| **Required members** | `required Guid UserId` ensures initialization |
+| **Collection expressions** | `Items { get; set; } = [];` |
+| **Computed property** | `LineTotal => Quantity * UnitPrice` |
+| **File-scoped namespace** | `namespace Nastart.Api.Features.Purchases;` |
 
 ### Your Task (Day 1):
 
 ```powershell
-cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Domain
+cd C:\Users\AU1833\Documents\personal\nastart\backend\src\Nastart.Api
 
-# Create Finance folder structure
-mkdir Finance\Aggregates
-mkdir Finance\Entities  
-mkdir Finance\ValueObjects
-mkdir Finance\Events
-mkdir Finance\Services
+# Create Purchases feature folder
+mkdir Features\Purchases
 
-# Create the FinanceIds.cs file
-# (Use VS Code or your editor)
+# Create the Purchase model
+New-Item Features\Purchases\Purchase.cs
+
+# Verify build
+dotnet build
 ```
 
 ---
 
-# Day 2: Purchase Aggregate Root
+# Day 2: RecordPurchase Feature Slice
 
 ## 🧒 Explain Like I'm 5
 
-When you go shopping with mom, you get a **receipt**. The receipt shows:
-- 📅 When you shopped (date)
-- 🏪 Where you shopped (store name)
-- 📝 What you bought (list of items)
-- 💰 How much everything cost (total)
-
-A **Purchase** is like that receipt in our app!
+When someone finishes shopping and wants to save the receipt:
+1. They tell us what they bought (the items list)
+2. We check if it makes sense (prices aren't weird)
+3. We save everything to our notebook (database)
+4. We tell them "Done! Here's your purchase ID"
 
 ## 🔧 Engineer Language
 
-The **Purchase** aggregate is the root of a consistency boundary that includes:
-- The purchase itself (date, shop, receipt image)
-- A collection of **PurchaseItem** entities (what was bought)
-- Business rules for adding items and calculating totals
+The **RecordPurchase** feature slice handles creating a new purchase with its items. This is a **Command** (changes state) that includes validation and persists to the database.
 
-> 📖 **Microsoft Docs**: *"An aggregate is composed of at least one entity: the aggregate root. Additionally, it can have multiple child entities and value objects, with all entities and objects working together to implement required behavior and transactions."*
+> 📖 **Microsoft Docs**: *"Minimal APIs supports binding to complex types. The framework binds route parameters, query string values, headers, and body content."*
 >
-> — [Design a microservice domain model - The Aggregate Root pattern](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model#the-aggregate-root-or-root-entity-pattern)
+> — [Parameter binding in Minimal APIs](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/parameter-binding)
 
-### Key DDD Rules for Aggregates:
+### Complete RecordPurchase Feature:
 
-| Rule | Application to Purchase |
-|------|-------------------------|
-| **Single entry point** | All changes go through `Purchase` methods |
-| **Encapsulate child entities** | `PurchaseItems` collection is private, exposed as `IReadOnlyCollection` |
-| **Maintain invariants** | Total is always recalculated when items change |
-| **Raise domain events** | Raises `PurchaseRecordedEvent` when completed |
-
-### Purchase Aggregate Implementation:
-
-Create `src/Nastart.Domain/Finance/Aggregates/Purchase.cs`:
+Create `src/Nastart.Api/Features/Purchases/RecordPurchase.cs`:
 
 ```csharp
-using Nastart.Domain.Common;
-using Nastart.Domain.Finance.Entities;
-using Nastart.Domain.Finance.ValueObjects;
-using Nastart.Domain.Finance.Events;
-using Nastart.Domain.Inventory.ValueObjects;
+using FluentValidation;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Ingredients;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
 
-namespace Nastart.Domain.Finance.Aggregates;
+namespace Nastart.Api.Features.Purchases;
+
+// ══════════════════════════════════════════════════════════════
+// RECORD PURCHASE FEATURE SLICE
+// Everything needed to record a purchase in one file
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
+/// <summary>
+/// Command to record a new purchase with items.
+/// </summary>
+public sealed record RecordPurchaseCommand(
+    Guid UserId,
+    DateOnly PurchaseDate,
+    Guid? ShopId,
+    string? ReceiptImageUrl,
+    IReadOnlyList<PurchaseItemInput> Items
+) : IRequest<Result<PurchaseResponse>>;
 
 /// <summary>
-/// Purchase aggregate root — represents a shopping transaction with receipt.
-/// All modifications to purchase items must go through this aggregate root.
+/// Input for a single purchase item.
+/// </summary>
+public sealed record PurchaseItemInput(
+    Guid IngredientId,
+    decimal Quantity,
+    decimal UnitPrice
+);
+
+// ── Response ──
+/// <summary>
+/// Response DTO for purchase operations.
+/// </summary>
+public sealed record PurchaseResponse(
+    Guid Id,
+    DateOnly PurchaseDate,
+    string? ShopName,
+    decimal Total,
+    string Status,
+    IReadOnlyList<PurchaseItemResponse> Items,
+    DateTime CreatedAt
+);
+
+/// <summary>
+/// Response DTO for a purchase item.
+/// </summary>
+public sealed record PurchaseItemResponse(
+    Guid Id,
+    Guid IngredientId,
+    string IngredientName,
+    decimal Quantity,
+    string Unit,
+    decimal UnitPrice,
+    decimal LineTotal
+);
+
+// ── Validator ──
+/// <summary>
+/// Validates RecordPurchaseCommand input.
 /// </summary>
 /// <remarks>
-/// Follows eShopOnContainers pattern for aggregate design.
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model
+/// FluentValidation provides rich, fluent validation rules.
+/// See: https://docs.fluentvalidation.net/
 /// </remarks>
-public class Purchase : AggregateRoot
+public sealed class RecordPurchaseValidator : AbstractValidator<RecordPurchaseCommand>
 {
-    // Private backing field for child entities
-    private readonly List<PurchaseItem> _purchaseItems;
-
-    // Private setters ensure encapsulation
-    public PurchaseId PurchaseId { get; private set; }
-    public DateOnly PurchaseDate { get; private set; }
-    public Guid ShopId { get; private set; }  // FK to Shop aggregate
-    public Guid UserId { get; private set; }  // FK to User
-    public string? ReceiptImageUrl { get; private set; }
-    public Money Total { get; private set; }
-    public PurchaseStatus Status { get; private set; }
-
-    /// <summary>
-    /// Exposes items as read-only collection.
-    /// External code cannot modify the collection directly.
-    /// </summary>
-    public IReadOnlyCollection<PurchaseItem> PurchaseItems => _purchaseItems.AsReadOnly();
-
-    /// <summary>
-    /// Private constructor for EF Core.
-    /// </summary>
-    private Purchase()
+    public RecordPurchaseValidator()
     {
-        _purchaseItems = [];
-        PurchaseId = PurchaseId.Empty;
-        Total = Money.Zero;
-        Status = PurchaseStatus.Draft;
-    }
-
-    /// <summary>
-    /// Creates a new Purchase aggregate.
-    /// </summary>
-    /// <param name="userId">The user who made the purchase.</param>
-    /// <param name="shopId">The shop where purchase was made.</param>
-    /// <param name="purchaseDate">Date of purchase.</param>
-    /// <param name="receiptImageUrl">Optional URL to receipt image.</param>
-    public Purchase(
-        Guid userId,
-        Guid shopId,
-        DateOnly purchaseDate,
-        string? receiptImageUrl = null)
-    {
-        if (userId == Guid.Empty)
-            throw new ArgumentException("User ID is required.", nameof(userId));
+        RuleFor(x => x.UserId)
+            .NotEmpty()
+            .WithMessage("User ID is required");
         
-        if (shopId == Guid.Empty)
-            throw new ArgumentException("Shop ID is required.", nameof(shopId));
-
-        PurchaseId = PurchaseId.New();
-        UserId = userId;
-        ShopId = shopId;
-        PurchaseDate = purchaseDate;
-        ReceiptImageUrl = receiptImageUrl;
-        Total = Money.Zero;
-        Status = PurchaseStatus.Draft;
-        _purchaseItems = [];
-    }
-
-    /// <summary>
-    /// Adds a new item to this purchase.
-    /// Recalculates total automatically.
-    /// </summary>
-    /// <remarks>
-    /// This is the ONLY way to add items — enforces business rules.
-    /// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model#encapsulate-data-in-the-domain-entities
-    /// </remarks>
-    public PurchaseItem AddItem(
-        IngredientId ingredientId,
-        string ingredientName,
-        Quantity quantity,
-        Money unitPrice)
-    {
-        if (Status == PurchaseStatus.Confirmed)
-            throw new InvalidOperationException("Cannot modify a confirmed purchase.");
-
-        // Check for duplicate ingredient in this purchase
-        var existingItem = _purchaseItems.FirstOrDefault(
-            i => i.IngredientId == ingredientId);
-
-        if (existingItem is not null)
+        RuleFor(x => x.PurchaseDate)
+            .NotEmpty()
+            .LessThanOrEqualTo(DateOnly.FromDateTime(DateTime.UtcNow))
+            .WithMessage("Purchase date cannot be in the future");
+        
+        RuleFor(x => x.Items)
+            .NotEmpty()
+            .WithMessage("At least one item is required");
+        
+        RuleForEach(x => x.Items).ChildRules(item =>
         {
-            // Update existing item instead of adding duplicate
-            existingItem.UpdateQuantity(
-                existingItem.Quantity.Add(quantity), 
-                unitPrice);
-            RecalculateTotal();
-            return existingItem;
-        }
-
-        // Create new item
-        var item = new PurchaseItem(
-            purchaseId: PurchaseId,
-            ingredientId: ingredientId,
-            ingredientName: ingredientName,
-            quantity: quantity,
-            unitPrice: unitPrice);
-
-        _purchaseItems.Add(item);
-        RecalculateTotal();
-
-        return item;
-    }
-
-    /// <summary>
-    /// Removes an item from this purchase by its ID.
-    /// </summary>
-    public void RemoveItem(PurchaseItemId itemId)
-    {
-        if (Status == PurchaseStatus.Confirmed)
-            throw new InvalidOperationException("Cannot modify a confirmed purchase.");
-
-        var item = _purchaseItems.FirstOrDefault(i => i.ItemId == itemId);
-        
-        if (item is null)
-            throw new InvalidOperationException($"Item {itemId} not found in this purchase.");
-
-        _purchaseItems.Remove(item);
-        RecalculateTotal();
-    }
-
-    /// <summary>
-    /// Updates the quantity and price of an existing item.
-    /// </summary>
-    public void UpdateItem(PurchaseItemId itemId, Quantity newQuantity, Money newUnitPrice)
-    {
-        if (Status == PurchaseStatus.Confirmed)
-            throw new InvalidOperationException("Cannot modify a confirmed purchase.");
-
-        var item = _purchaseItems.FirstOrDefault(i => i.ItemId == itemId)
-            ?? throw new InvalidOperationException($"Item {itemId} not found in this purchase.");
-
-        item.UpdateQuantity(newQuantity, newUnitPrice);
-        RecalculateTotal();
-    }
-
-    /// <summary>
-    /// Confirms the purchase, making it immutable.
-    /// Raises domain events for each price change detected.
-    /// </summary>
-    public void Confirm()
-    {
-        if (_purchaseItems.Count == 0)
-            throw new InvalidOperationException("Cannot confirm an empty purchase.");
-
-        if (Status == PurchaseStatus.Confirmed)
-            throw new InvalidOperationException("Purchase is already confirmed.");
-
-        Status = PurchaseStatus.Confirmed;
-
-        // Raise domain event
-        AddDomainEvent(new PurchaseRecordedEvent(
-            PurchaseId,
-            UserId,
-            ShopId,
-            PurchaseDate,
-            Total,
-            _purchaseItems.Select(i => new PurchaseRecordedEvent.ItemInfo(
-                i.IngredientId,
-                i.IngredientName,
-                i.UnitPrice)).ToList()));
-    }
-
-    /// <summary>
-    /// Attaches or updates the receipt image URL.
-    /// </summary>
-    public void AttachReceiptImage(string imageUrl)
-    {
-        if (string.IsNullOrWhiteSpace(imageUrl))
-            throw new ArgumentException("Image URL cannot be empty.", nameof(imageUrl));
-
-        ReceiptImageUrl = imageUrl;
-    }
-
-    /// <summary>
-    /// Recalculates the total from all items.
-    /// Called automatically when items change.
-    /// </summary>
-    private void RecalculateTotal()
-    {
-        Total = _purchaseItems
-            .Select(item => item.LineTotal)
-            .Aggregate(Money.Zero, (acc, lineTotal) => acc.Add(lineTotal));
+            item.RuleFor(i => i.IngredientId)
+                .NotEmpty()
+                .WithMessage("Ingredient ID is required");
+            
+            item.RuleFor(i => i.Quantity)
+                .GreaterThan(0)
+                .WithMessage("Quantity must be greater than 0");
+            
+            item.RuleFor(i => i.UnitPrice)
+                .GreaterThanOrEqualTo(0)
+                .WithMessage("Unit price cannot be negative");
+        });
     }
 }
 
+// ── Handler ──
 /// <summary>
-/// Purchase status enumeration.
+/// Handles RecordPurchaseCommand by creating purchase and items.
+/// Also triggers price update notifications.
 /// </summary>
-public enum PurchaseStatus
+public sealed class RecordPurchaseHandler 
+    : IRequestHandler<RecordPurchaseCommand, Result<PurchaseResponse>>
 {
-    /// <summary>Purchase is being created, can be modified.</summary>
-    Draft = 0,
-    
-    /// <summary>Purchase is confirmed and immutable.</summary>
-    Confirmed = 1,
-    
-    /// <summary>Purchase was cancelled.</summary>
-    Cancelled = 2
+    private readonly NastartDbContext _db;
+    private readonly IMediator _mediator;
+    private readonly ILogger<RecordPurchaseHandler> _logger;
+
+    public RecordPurchaseHandler(
+        NastartDbContext db, 
+        IMediator mediator,
+        ILogger<RecordPurchaseHandler> logger)
+    {
+        _db = db;
+        _mediator = mediator;
+        _logger = logger;
+    }
+
+    public async Task<Result<PurchaseResponse>> Handle(
+        RecordPurchaseCommand request, 
+        CancellationToken cancellationToken)
+    {
+        // Validate all ingredients exist
+        var ingredientIds = request.Items.Select(i => i.IngredientId).Distinct().ToList();
+        var ingredients = await _db.Ingredients
+            .Where(i => ingredientIds.Contains(i.Id))
+            .ToDictionaryAsync(i => i.Id, cancellationToken);
+        
+        var missingIngredients = ingredientIds.Except(ingredients.Keys).ToList();
+        if (missingIngredients.Count > 0)
+        {
+            return Result<PurchaseResponse>.Failure(
+                Error.NotFound("INGREDIENTS_NOT_FOUND", 
+                    $"Ingredients not found: {string.Join(", ", missingIngredients)}"));
+        }
+        
+        // Get shop name if provided
+        string? shopName = null;
+        if (request.ShopId.HasValue)
+        {
+            var shop = await _db.Shops
+                .FirstOrDefaultAsync(s => s.Id == request.ShopId.Value, cancellationToken);
+            shopName = shop?.Name;
+        }
+        
+        // Create purchase
+        var purchase = new Purchase
+        {
+            Id = Guid.NewGuid(),
+            UserId = request.UserId,
+            PurchaseDate = request.PurchaseDate,
+            ShopId = request.ShopId,
+            ReceiptImageUrl = request.ReceiptImageUrl,
+            Status = "Confirmed",
+            CreatedAt = DateTime.UtcNow
+        };
+        
+        // Create purchase items
+        var itemResponses = new List<PurchaseItemResponse>();
+        var priceNotifications = new List<PriceChangedNotification>();
+        
+        foreach (var itemInput in request.Items)
+        {
+            var ingredient = ingredients[itemInput.IngredientId];
+            var previousPrice = ingredient.CurrentPrice;
+            
+            var purchaseItem = new PurchaseItem
+            {
+                Id = Guid.NewGuid(),
+                PurchaseId = purchase.Id,
+                IngredientId = itemInput.IngredientId,
+                Quantity = itemInput.Quantity,
+                UnitPrice = itemInput.UnitPrice
+            };
+            
+            purchase.Items.Add(purchaseItem);
+            
+            // Check for price change
+            if (itemInput.UnitPrice != previousPrice)
+            {
+                var percentageChange = previousPrice > 0 
+                    ? ((itemInput.UnitPrice - previousPrice) / previousPrice) * 100
+                    : 0;
+                
+                // Update ingredient's current price
+                ingredient.CurrentPrice = itemInput.UnitPrice;
+                ingredient.UpdatedAt = DateTime.UtcNow;
+                
+                priceNotifications.Add(new PriceChangedNotification(
+                    IngredientId: ingredient.Id,
+                    IngredientName: ingredient.Name,
+                    OldPrice: previousPrice,
+                    NewPrice: itemInput.UnitPrice,
+                    PercentageChange: percentageChange,
+                    OccurredAt: DateTime.UtcNow
+                ));
+                
+                _logger.LogInformation(
+                    "Price changed for {Ingredient}: {OldPrice} → {NewPrice} ({Change:+0.0;-0.0}%)",
+                    ingredient.Name, previousPrice, itemInput.UnitPrice, percentageChange);
+            }
+            
+            // Update ingredient stock
+            ingredient.CurrentStock += itemInput.Quantity;
+            
+            itemResponses.Add(new PurchaseItemResponse(
+                Id: purchaseItem.Id,
+                IngredientId: ingredient.Id,
+                IngredientName: ingredient.Name,
+                Quantity: itemInput.Quantity,
+                Unit: ingredient.Unit,
+                UnitPrice: itemInput.UnitPrice,
+                LineTotal: purchaseItem.LineTotal
+            ));
+        }
+        
+        // Calculate total
+        purchase.Total = purchase.Items.Sum(i => i.LineTotal);
+        
+        // Save to database
+        _db.Purchases.Add(purchase);
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        _logger.LogInformation(
+            "Recorded purchase {PurchaseId} with {ItemCount} items, total: {Total}",
+            purchase.Id, purchase.Items.Count, purchase.Total);
+        
+        // Publish price change notifications (side effects)
+        foreach (var notification in priceNotifications)
+        {
+            await _mediator.Publish(notification, cancellationToken);
+        }
+        
+        return Result<PurchaseResponse>.Success(new PurchaseResponse(
+            Id: purchase.Id,
+            PurchaseDate: purchase.PurchaseDate,
+            ShopName: shopName,
+            Total: purchase.Total,
+            Status: purchase.Status,
+            Items: itemResponses,
+            CreatedAt: purchase.CreatedAt
+        ));
+    }
 }
 ```
 
-### Key Design Decisions:
+### Feature Breakdown:
 
-| Decision | Rationale |
-|----------|-----------|
-| `_purchaseItems` is private `List<>` | Only aggregate root can modify |
-| `PurchaseItems` returns `IReadOnlyCollection` | Prevents external modification |
-| `AddItem()` handles duplicates | Business logic stays in domain |
-| `RecalculateTotal()` is private | Called automatically, ensures consistency |
-| `Confirm()` raises domain event | Triggers price tracking workflow |
+| Component | Purpose |
+|-----------|---------|
+| `RecordPurchaseCommand` | Input with all purchase data |
+| `PurchaseItemInput` | Nested input for each line item |
+| `PurchaseResponse` | Output with saved purchase details |
+| `RecordPurchaseValidator` | Validates items, prices, dates |
+| `RecordPurchaseHandler` | Creates purchase, updates prices, publishes notifications |
 
 ### Your Task (Day 2):
 
-1. Create the `Purchase.cs` file
-2. Note we need `AggregateRoot` base class from Week 2
-3. Note we need value objects (`Money`, `Quantity`, `IngredientId`) from Week 2
-4. Build to check for errors: `dotnet build`
+1. Create `RecordPurchase.cs` in `Features/Purchases/`
+2. Ensure `PriceChangedNotification` exists from Week 2
+3. Verify build: `dotnet build`
 
 ---
 
-# Day 3: PurchaseItem Entity
+# Day 3: GetPurchaseHistory Query
 
 ## 🧒 Explain Like I'm 5
 
-When you look at a receipt, each LINE is different:
-- Line 1: Flour, 1 kg, Rp 15,000
-- Line 2: Sugar, 500g, Rp 8,000
-- Line 3: Eggs, 10 pcs, Rp 25,000
+Sometimes you want to look back at all your old receipts:
+- "What did I buy last week?"
+- "How much did I spend on flour this month?"
+- "Show me all my purchases from the big supermarket"
 
-Each line is a **PurchaseItem**! It tells us:
-- WHAT you bought
-- HOW MUCH you bought
-- HOW MUCH it cost
+This is like opening a filing cabinet and finding all your old receipts!
 
 ## 🔧 Engineer Language
 
-A **PurchaseItem** is a **child entity** within the Purchase aggregate. It has:
-- Its own identity (`PurchaseItemId`)
-- Belongs to exactly one Purchase
-- Cannot exist without a parent Purchase
+The **GetPurchaseHistory** feature is a **Query** (reads state). It returns paginated results with filtering options — a common pattern for list endpoints.
 
-> 📖 **Microsoft Docs**: *"An order item will usually be an entity. But it will be a child entity within the order aggregate, which will also contain the order entity as its root entity."*
+> 📖 **Microsoft Docs**: *"Pagination in web apps is important for performance. Returning all entities from a database can overwhelm clients and servers."*
 >
-> — [Design a microservice domain model - The Aggregate pattern](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model#the-aggregate-pattern)
+> — [Pagination in ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/data/ef-mvc/sort-filter-page#add-paging)
 
-### PurchaseItem Entity Implementation:
+### Complete GetPurchaseHistory Feature:
 
-Create `src/Nastart.Domain/Finance/Entities/PurchaseItem.cs`:
+Create `src/Nastart.Api/Features/Purchases/GetPurchaseHistory.cs`:
 
 ```csharp
-using Nastart.Domain.Common;
-using Nastart.Domain.Finance.ValueObjects;
-using Nastart.Domain.Inventory.ValueObjects;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
 
-namespace Nastart.Domain.Finance.Entities;
+namespace Nastart.Api.Features.Purchases;
 
+// ══════════════════════════════════════════════════════════════
+// GET PURCHASE HISTORY FEATURE SLICE
+// Query with pagination and filtering
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
 /// <summary>
-/// Child entity within the Purchase aggregate.
-/// Represents a single line item on a receipt.
+/// Query to get purchase history with pagination and filtering.
 /// </summary>
-/// <remarks>
-/// Based on OrderItem pattern from eShopOnContainers.
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model
-/// </remarks>
-public class PurchaseItem : Entity
+public sealed record GetPurchaseHistoryQuery(
+    Guid UserId,
+    DateOnly? FromDate = null,
+    DateOnly? ToDate = null,
+    Guid? ShopId = null,
+    Guid? IngredientId = null,
+    int Page = 1,
+    int PageSize = 20
+) : IRequest<Result<PagedResult<PurchaseSummaryResponse>>>;
+
+// ── Response ──
+/// <summary>
+/// Summary response for purchase history listing.
+/// </summary>
+public sealed record PurchaseSummaryResponse(
+    Guid Id,
+    DateOnly PurchaseDate,
+    string? ShopName,
+    decimal Total,
+    int ItemCount,
+    string Status
+);
+
+// ── Handler ──
+/// <summary>
+/// Handles GetPurchaseHistoryQuery with efficient EF Core queries.
+/// </summary>
+public sealed class GetPurchaseHistoryHandler 
+    : IRequestHandler<GetPurchaseHistoryQuery, Result<PagedResult<PurchaseSummaryResponse>>>
 {
-    public PurchaseItemId ItemId { get; private set; }
-    public PurchaseId PurchaseId { get; private set; }  // FK to parent aggregate
-    public IngredientId IngredientId { get; private set; }
-    public string IngredientName { get; private set; }
-    public Quantity Quantity { get; private set; }
-    public Money UnitPrice { get; private set; }
-    public Money LineTotal { get; private set; }
+    private readonly NastartDbContext _db;
 
-    /// <summary>
-    /// Private constructor for EF Core.
-    /// </summary>
-    private PurchaseItem()
+    public GetPurchaseHistoryHandler(NastartDbContext db)
     {
-        ItemId = PurchaseItemId.Empty;
-        PurchaseId = PurchaseId.Empty;
-        IngredientId = IngredientId.Empty;
-        IngredientName = string.Empty;
-        Quantity = Quantity.Zero("pcs");
-        UnitPrice = Money.Zero;
-        LineTotal = Money.Zero;
+        _db = db;
     }
 
-    /// <summary>
-    /// Creates a new PurchaseItem.
-    /// Should only be called by the parent Purchase aggregate.
-    /// </summary>
-    internal PurchaseItem(
-        PurchaseId purchaseId,
-        IngredientId ingredientId,
-        string ingredientName,
-        Quantity quantity,
-        Money unitPrice)
+    public async Task<Result<PagedResult<PurchaseSummaryResponse>>> Handle(
+        GetPurchaseHistoryQuery request, 
+        CancellationToken cancellationToken)
     {
-        if (ingredientId.IsEmpty)
-            throw new ArgumentException("Ingredient ID is required.", nameof(ingredientId));
+        // Build query with filters
+        var query = _db.Purchases
+            .Where(p => p.UserId == request.UserId)
+            .AsQueryable();
         
-        if (string.IsNullOrWhiteSpace(ingredientName))
-            throw new ArgumentException("Ingredient name is required.", nameof(ingredientName));
+        // Apply date filters
+        if (request.FromDate.HasValue)
+        {
+            query = query.Where(p => p.PurchaseDate >= request.FromDate.Value);
+        }
         
-        if (quantity.Value <= 0)
-            throw new ArgumentException("Quantity must be positive.", nameof(quantity));
+        if (request.ToDate.HasValue)
+        {
+            query = query.Where(p => p.PurchaseDate <= request.ToDate.Value);
+        }
         
-        if (unitPrice.Amount < 0)
-            throw new ArgumentException("Unit price cannot be negative.", nameof(unitPrice));
-
-        ItemId = PurchaseItemId.New();
-        PurchaseId = purchaseId;
-        IngredientId = ingredientId;
-        IngredientName = ingredientName;
-        Quantity = quantity;
-        UnitPrice = unitPrice;
+        // Filter by shop
+        if (request.ShopId.HasValue)
+        {
+            query = query.Where(p => p.ShopId == request.ShopId.Value);
+        }
         
-        CalculateLineTotal();
-    }
-
-    /// <summary>
-    /// Updates the quantity and recalculates line total.
-    /// Internal — can only be called by parent aggregate.
-    /// </summary>
-    internal void UpdateQuantity(Quantity newQuantity, Money newUnitPrice)
-    {
-        if (newQuantity.Value <= 0)
-            throw new ArgumentException("Quantity must be positive.", nameof(newQuantity));
+        // Filter by ingredient (purchases containing this ingredient)
+        if (request.IngredientId.HasValue)
+        {
+            query = query.Where(p => 
+                p.Items.Any(i => i.IngredientId == request.IngredientId.Value));
+        }
         
-        if (newUnitPrice.Amount < 0)
-            throw new ArgumentException("Unit price cannot be negative.", nameof(newUnitPrice));
-
-        Quantity = newQuantity;
-        UnitPrice = newUnitPrice;
-        CalculateLineTotal();
-    }
-
-    /// <summary>
-    /// Calculates the line total (quantity × unit price).
-    /// </summary>
-    private void CalculateLineTotal()
-    {
-        // LineTotal = Quantity.Value × UnitPrice.Amount
-        var totalAmount = Quantity.Value * UnitPrice.Amount;
-        LineTotal = new Money(totalAmount, UnitPrice.Currency);
+        // Get total count for pagination
+        var totalCount = await query.CountAsync(cancellationToken);
+        
+        // Apply pagination and projection
+        var purchases = await query
+            .OrderByDescending(p => p.PurchaseDate)
+            .ThenByDescending(p => p.CreatedAt)
+            .Skip((request.Page - 1) * request.PageSize)
+            .Take(request.PageSize)
+            .Select(p => new PurchaseSummaryResponse(
+                p.Id,
+                p.PurchaseDate,
+                p.Shop != null ? p.Shop.Name : null,
+                p.Total,
+                p.Items.Count,
+                p.Status
+            ))
+            .ToListAsync(cancellationToken);
+        
+        return Result<PagedResult<PurchaseSummaryResponse>>.Success(
+            new PagedResult<PurchaseSummaryResponse>(
+                Items: purchases,
+                TotalCount: totalCount,
+                Page: request.Page,
+                PageSize: request.PageSize
+            ));
     }
 }
 ```
 
-### Key Design Decisions:
+### Add PagedResult to Shared Models:
 
-| Decision | Rationale |
-|----------|-----------|
-| Constructor is `internal` | Only `Purchase` aggregate can create items |
-| `UpdateQuantity` is `internal` | Only parent can trigger updates |
-| `CalculateLineTotal` is private | Called automatically, ensures consistency |
-| Stores `IngredientName` | Denormalized for display (ingredient name might change) |
+Create/update `src/Nastart.Api/Shared/Models/PagedResult.cs`:
+
+```csharp
+namespace Nastart.Api.Shared.Models;
+
+/// <summary>
+/// Represents a paginated result set.
+/// </summary>
+/// <remarks>
+/// Common pattern for list APIs with pagination metadata.
+/// See: https://learn.microsoft.com/en-us/aspnet/core/data/ef-mvc/sort-filter-page
+/// </remarks>
+public sealed record PagedResult<T>(
+    IReadOnlyList<T> Items,
+    int TotalCount,
+    int Page,
+    int PageSize
+)
+{
+    /// <summary>
+    /// Total number of pages.
+    /// </summary>
+    public int TotalPages => (int)Math.Ceiling((double)TotalCount / PageSize);
+    
+    /// <summary>
+    /// Whether there's a next page.
+    /// </summary>
+    public bool HasNextPage => Page < TotalPages;
+    
+    /// <summary>
+    /// Whether there's a previous page.
+    /// </summary>
+    public bool HasPreviousPage => Page > 1;
+}
+```
+
+### Get Single Purchase Detail:
+
+Create `src/Nastart.Api/Features/Purchases/GetPurchase.cs`:
+
+```csharp
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Purchases;
+
+// ══════════════════════════════════════════════════════════════
+// GET PURCHASE DETAIL FEATURE SLICE
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
+public sealed record GetPurchaseQuery(
+    Guid PurchaseId,
+    Guid UserId
+) : IRequest<Result<PurchaseResponse>>;
+
+// ── Handler ──
+public sealed class GetPurchaseHandler 
+    : IRequestHandler<GetPurchaseQuery, Result<PurchaseResponse>>
+{
+    private readonly NastartDbContext _db;
+
+    public GetPurchaseHandler(NastartDbContext db)
+    {
+        _db = db;
+    }
+
+    public async Task<Result<PurchaseResponse>> Handle(
+        GetPurchaseQuery request, 
+        CancellationToken cancellationToken)
+    {
+        var purchase = await _db.Purchases
+            .Include(p => p.Shop)
+            .Include(p => p.Items)
+                .ThenInclude(i => i.Ingredient)
+            .FirstOrDefaultAsync(p => 
+                p.Id == request.PurchaseId && 
+                p.UserId == request.UserId, 
+                cancellationToken);
+        
+        if (purchase is null)
+        {
+            return Result<PurchaseResponse>.Failure(
+                Error.NotFound("PURCHASE_NOT_FOUND", 
+                    $"Purchase {request.PurchaseId} not found"));
+        }
+        
+        return Result<PurchaseResponse>.Success(new PurchaseResponse(
+            Id: purchase.Id,
+            PurchaseDate: purchase.PurchaseDate,
+            ShopName: purchase.Shop?.Name,
+            Total: purchase.Total,
+            Status: purchase.Status,
+            Items: purchase.Items.Select(i => new PurchaseItemResponse(
+                Id: i.Id,
+                IngredientId: i.IngredientId,
+                IngredientName: i.Ingredient?.Name ?? "Unknown",
+                Quantity: i.Quantity,
+                Unit: i.Ingredient?.Unit ?? "",
+                UnitPrice: i.UnitPrice,
+                LineTotal: i.LineTotal
+            )).ToList(),
+            CreatedAt: purchase.CreatedAt
+        ));
+    }
+}
+```
 
 ### Your Task (Day 3):
 
-1. Create the `PurchaseItem.cs` file
-2. Make sure you have `IngredientId` from Week 2 (in Inventory/ValueObjects)
-3. Build to check: `dotnet build`
+1. Create `GetPurchaseHistory.cs` and `GetPurchase.cs`
+2. Create/update `PagedResult.cs` in `Shared/Models/`
+3. Verify build: `dotnet build`
 
 ---
 
-# Day 4: PriceHistory Aggregate
+# Day 4: Price Change Detection
 
 ## 🧒 Explain Like I'm 5
 
-Imagine you have a notebook 📓 where you write down the price of flour every time mom buys it:
-- January 1: Flour was Rp 14,000
-- January 15: Flour was Rp 15,000 (went UP!)
-- February 1: Flour was Rp 15,500 (went UP again!)
+Imagine you always buy candy for Rp 5.000. One day, the store says "Now it's Rp 6.000!"
 
-**PriceHistory** is like that notebook — it remembers all the prices!
+You'd want to know:
+- "Wait, the price went UP!"
+- "It went up by Rp 1.000"
+- "That's 20% more expensive!"
+
+Our app does this automatically — every time you record a purchase, it checks if prices changed.
 
 ## 🔧 Engineer Language
 
-**PriceHistory** tracks price changes for ingredients over time. This is crucial for:
-- Detecting price spikes (alerts)
-- Showing price trends (analytics)
-- Calculating cost changes in recipes
+**Price change detection** happens inside the `RecordPurchaseHandler`. When we record a purchase, we compare the new price with the ingredient's `CurrentPrice`. If they differ, we:
+1. Update the ingredient's current price
+2. Calculate the percentage change
+3. Publish a `PriceChangedNotification`
 
-### PriceHistory Aggregate Implementation:
+> 📖 **Microsoft Docs**: *"IMediator.Publish sends a notification to multiple handlers. Unlike Send which targets a single handler, Publish broadcasts to all registered handlers."*
+>
+> — [MediatR Notifications](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-application-layer-implementation-web-api#use-mediatr-to-reduce-coupling-between-command-handlers)
 
-Create `src/Nastart.Domain/Finance/Aggregates/PriceHistory.cs`:
+### Price History Tracking:
+
+Create `src/Nastart.Api/Features/Purchases/PriceHistory.cs`:
 
 ```csharp
-using Nastart.Domain.Common;
-using Nastart.Domain.Finance.ValueObjects;
-using Nastart.Domain.Inventory.ValueObjects;
-
-namespace Nastart.Domain.Finance.Aggregates;
+namespace Nastart.Api.Features.Purchases;
 
 /// <summary>
-/// Aggregate for tracking price history of ingredients.
-/// Each record represents a price point at a specific date.
+/// Tracks price changes for ingredients over time.
+/// Created automatically when prices change during purchase recording.
 /// </summary>
-public class PriceHistory : AggregateRoot
+public class PriceHistory
 {
-    public PriceHistoryId HistoryId { get; private set; }
-    public IngredientId IngredientId { get; private set; }
-    public Guid ShopId { get; private set; }
-    public DateOnly RecordedDate { get; private set; }
-    public Money Price { get; private set; }
-    public Money? PreviousPrice { get; private set; }
-    public Percentage? ChangePercentage { get; private set; }
-    public PurchaseId SourcePurchaseId { get; private set; }
-
+    public Guid Id { get; set; }
+    
+    public required Guid IngredientId { get; set; }
+    
     /// <summary>
-    /// Private constructor for EF Core.
+    /// Date when price was recorded.
     /// </summary>
-    private PriceHistory()
+    public required DateOnly RecordedDate { get; set; }
+    
+    /// <summary>
+    /// The new price.
+    /// </summary>
+    public required decimal Price { get; set; }
+    
+    /// <summary>
+    /// Previous price before this change.
+    /// </summary>
+    public decimal? PreviousPrice { get; set; }
+    
+    /// <summary>
+    /// Percentage change from previous price.
+    /// </summary>
+    public decimal? ChangePercent { get; set; }
+    
+    /// <summary>
+    /// ID of the purchase that triggered this price record.
+    /// </summary>
+    public Guid? PurchaseId { get; set; }
+    
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    
+    // Navigation
+    public Ingredient? Ingredient { get; set; }
+}
+```
+
+### Price Change Notification (from Week 2):
+
+Ensure `src/Nastart.Api/Features/Ingredients/IngredientNotifications.cs` contains:
+
+```csharp
+using MediatR;
+
+namespace Nastart.Api.Features.Ingredients;
+
+/// <summary>
+/// Published when an ingredient's price changes.
+/// </summary>
+public sealed record PriceChangedNotification(
+    Guid IngredientId,
+    string IngredientName,
+    decimal OldPrice,
+    decimal NewPrice,
+    decimal PercentageChange,
+    DateTime OccurredAt
+) : INotification
+{
+    /// <summary>
+    /// Price spike defined as >15% increase.
+    /// </summary>
+    public bool IsPriceSpike => PercentageChange > 15;
+}
+```
+
+### Create Price History Handler:
+
+Create `src/Nastart.Api/Features/Purchases/NotificationHandlers/RecordPriceHistoryHandler.cs`:
+
+```csharp
+using MediatR;
+using Nastart.Api.Features.Ingredients;
+using Nastart.Api.Shared.Data;
+
+namespace Nastart.Api.Features.Purchases.NotificationHandlers;
+
+/// <summary>
+/// Records price changes to PriceHistory table for trend analysis.
+/// </summary>
+public class RecordPriceHistoryHandler : INotificationHandler<PriceChangedNotification>
+{
+    private readonly NastartDbContext _db;
+    private readonly ILogger<RecordPriceHistoryHandler> _logger;
+
+    public RecordPriceHistoryHandler(
+        NastartDbContext db,
+        ILogger<RecordPriceHistoryHandler> logger)
     {
-        HistoryId = PriceHistoryId.Empty;
-        IngredientId = IngredientId.Empty;
-        Price = Money.Zero;
-        SourcePurchaseId = PurchaseId.Empty;
+        _db = db;
+        _logger = logger;
     }
 
-    /// <summary>
-    /// Creates a new price history record.
-    /// </summary>
-    public PriceHistory(
-        IngredientId ingredientId,
-        Guid shopId,
-        DateOnly recordedDate,
-        Money price,
-        Money? previousPrice,
-        PurchaseId sourcePurchaseId)
+    public async Task Handle(
+        PriceChangedNotification notification, 
+        CancellationToken cancellationToken)
     {
-        if (ingredientId.IsEmpty)
-            throw new ArgumentException("Ingredient ID is required.", nameof(ingredientId));
-        
-        if (price.Amount < 0)
-            throw new ArgumentException("Price cannot be negative.", nameof(price));
-
-        HistoryId = PriceHistoryId.New();
-        IngredientId = ingredientId;
-        ShopId = shopId;
-        RecordedDate = recordedDate;
-        Price = price;
-        PreviousPrice = previousPrice;
-        SourcePurchaseId = sourcePurchaseId;
-
-        CalculateChangePercentage();
-    }
-
-    /// <summary>
-    /// Calculates the percentage change from previous price.
-    /// </summary>
-    private void CalculateChangePercentage()
-    {
-        if (PreviousPrice is null || PreviousPrice.Amount == 0)
+        var priceHistory = new PriceHistory
         {
-            ChangePercentage = null;
-            return;
-        }
-
-        var change = ((Price.Amount - PreviousPrice.Amount) / PreviousPrice.Amount) * 100;
-        ChangePercentage = new Percentage(Math.Round(change, 2));
-    }
-
-    /// <summary>
-    /// Checks if this price represents a significant increase (spike).
-    /// </summary>
-    /// <param name="spikeThreshold">Percentage threshold (default 15%).</param>
-    public bool IsPriceSpike(decimal spikeThreshold = 15m)
-    {
-        return ChangePercentage is not null && ChangePercentage.IsAbove(spikeThreshold);
-    }
-
-    /// <summary>
-    /// Checks if this price represents a significant decrease.
-    /// </summary>
-    /// <param name="dropThreshold">Percentage threshold (default -10%).</param>
-    public bool IsPriceDrop(decimal dropThreshold = -10m)
-    {
-        return ChangePercentage is not null && ChangePercentage.Value < dropThreshold;
+            Id = Guid.NewGuid(),
+            IngredientId = notification.IngredientId,
+            RecordedDate = DateOnly.FromDateTime(notification.OccurredAt),
+            Price = notification.NewPrice,
+            PreviousPrice = notification.OldPrice,
+            ChangePercent = notification.PercentageChange,
+            CreatedAt = DateTime.UtcNow
+        };
+        
+        _db.Set<PriceHistory>().Add(priceHistory);
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        _logger.LogInformation(
+            "Recorded price history for {Ingredient}: {OldPrice} → {NewPrice}",
+            notification.IngredientName,
+            notification.OldPrice,
+            notification.NewPrice);
     }
 }
+```
+
+### Update DbContext:
+
+Add to `NastartDbContext.cs`:
+
+```csharp
+public DbSet<PriceHistory> PriceHistories => Set<PriceHistory>();
 ```
 
 ### Your Task (Day 4):
 
-1. Create the `PriceHistory.cs` file
-2. Build to verify: `dotnet build`
+1. Create `PriceHistory.cs` model
+2. Create `RecordPriceHistoryHandler.cs` notification handler
+3. Update `NastartDbContext.cs` with new DbSet
+4. Verify build: `dotnet build`
 
 ---
 
-# Day 5: Domain Service — PriceAnalysisService
+# Day 5: PriceChangedNotification Flow
 
 ## 🧒 Explain Like I'm 5
 
-Remember how a calculator helps you do math? 🧮
+When someone shouts "THE PRICE CHANGED!", different people react differently:
+- The accountant writes it down in the book
+- The chef re-calculates recipe costs
+- The manager decides if it's a "big deal" alert
 
-**PriceAnalysisService** is like a calculator for prices. It looks at all the prices and tells you:
-- "This flour price went UP by 20%! ⚠️"
-- "Sugar has been getting more expensive over 30 days"
-- "Good news! Eggs are cheaper now 🎉"
+In our app, one notification triggers MULTIPLE handlers — each doing their own job!
 
 ## 🔧 Engineer Language
 
-A **Domain Service** contains domain logic that:
-1. Doesn't naturally belong to any single entity/aggregate
-2. Requires data from multiple aggregates
-3. Performs calculations or analysis
+**MediatR Notifications** follow the **pub/sub pattern**. One publisher, multiple subscribers:
 
-> 📖 **Microsoft Docs**: *"Domain entities must implement behavior in addition to implementing data attributes. [...] The entity's methods take care of the invariants and rules of the entity."*
+```
+┌─────────────────┐     ┌───────────────┐     ┌────────────────────────────┐
+│ RecordPurchase  │────▶│ MediatR       │────▶│ RecordPriceHistoryHandler  │
+│ Handler         │     │ Publish()     │     │ RecalculateRecipeCosts     │
+│                 │     │               │     │ CheckForPriceSpikeHandler  │
+└─────────────────┘     └───────────────┘     └────────────────────────────┘
+```
+
+> 📖 **Microsoft Docs**: *"The notification handler pattern allows multiple handlers to respond to a single event. This is useful for cross-cutting concerns."*
 >
-> For cross-aggregate logic, we use Domain Services.
->
-> — [Design a microservice domain model](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model#the-domain-entity-pattern)
+> — [MediatR in ASP.NET Core](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-application-layer-implementation-web-api)
 
-### Key Characteristics of Domain Services:
+### RecalculateRecipeCosts Handler:
 
-| Characteristic | PriceAnalysisService |
-|----------------|---------------------|
-| **Stateless** | No internal state, pure functions |
-| **Domain logic** | Price spike detection, trend analysis |
-| **Cross-aggregate** | Analyzes data from PriceHistory, Purchase |
-| **Named with domain term** | "Price Analysis" is ubiquitous language |
-
-### PriceAnalysisService Implementation:
-
-Create `src/Nastart.Domain/Finance/Services/PriceAnalysisService.cs`:
+Create `src/Nastart.Api/Features/Recipes/NotificationHandlers/RecalculateRecipeCostsHandler.cs`:
 
 ```csharp
-using Nastart.Domain.Finance.Aggregates;
-using Nastart.Domain.Finance.ValueObjects;
-using Nastart.Domain.Inventory.ValueObjects;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Ingredients;
+using Nastart.Api.Shared.Data;
 
-namespace Nastart.Domain.Finance.Services;
+namespace Nastart.Api.Features.Recipes.NotificationHandlers;
 
 /// <summary>
-/// Domain service for analyzing price changes and detecting anomalies.
-/// Stateless — contains pure business logic for price analysis.
+/// When ingredient price changes, recalculate all recipes using that ingredient.
 /// </summary>
-/// <remarks>
-/// Domain services contain logic that doesn't belong to a single aggregate.
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/ddd-oriented-microservice
-/// </remarks>
-public class PriceAnalysisService : IPriceAnalysisService
+public class RecalculateRecipeCostsHandler : INotificationHandler<PriceChangedNotification>
 {
-    /// <summary>
-    /// Default threshold for price spike detection (15%).
-    /// Configured in Nastart as per business requirements.
-    /// </summary>
-    public const decimal DefaultSpikeThreshold = 15m;
+    private readonly NastartDbContext _db;
+    private readonly IMediator _mediator;
+    private readonly ILogger<RecalculateRecipeCostsHandler> _logger;
 
-    /// <summary>
-    /// Default threshold for inflation trend detection over time (10%).
-    /// </summary>
-    public const decimal DefaultInflationThreshold = 10m;
-
-    /// <summary>
-    /// Default number of days for trend analysis.
-    /// </summary>
-    public const int DefaultTrendDays = 30;
-
-    /// <summary>
-    /// Analyzes a new price against the previous price to detect a spike.
-    /// </summary>
-    /// <param name="currentPrice">The new/current price.</param>
-    /// <param name="previousPrice">The previous/old price.</param>
-    /// <param name="spikeThreshold">Percentage threshold for spike (default 15%).</param>
-    /// <returns>Analysis result with spike detection info.</returns>
-    public PriceAnalysisResult AnalyzePriceChange(
-        Money currentPrice,
-        Money? previousPrice,
-        decimal spikeThreshold = DefaultSpikeThreshold)
+    public RecalculateRecipeCostsHandler(
+        NastartDbContext db,
+        IMediator mediator,
+        ILogger<RecalculateRecipeCostsHandler> logger)
     {
-        if (previousPrice is null || previousPrice.Amount == 0)
+        _db = db;
+        _mediator = mediator;
+        _logger = logger;
+    }
+
+    public async Task Handle(
+        PriceChangedNotification notification, 
+        CancellationToken cancellationToken)
+    {
+        // Find all recipes using this ingredient
+        var affectedRecipes = await _db.Set<Recipe>()
+            .Include(r => r.Items)
+                .ThenInclude(i => i.Ingredient)
+            .Where(r => r.Items.Any(i => i.IngredientId == notification.IngredientId))
+            .ToListAsync(cancellationToken);
+        
+        if (affectedRecipes.Count == 0)
         {
-            return new PriceAnalysisResult(
-                CurrentPrice: currentPrice,
-                PreviousPrice: previousPrice,
-                ChangeAmount: null,
-                ChangePercentage: null,
-                IsSpike: false,
-                IsDrop: false,
-                AnalysisType: PriceAnalysisType.FirstRecord);
+            return;
         }
-
-        var changeAmount = currentPrice.Amount - previousPrice.Amount;
-        var changePercentage = (changeAmount / previousPrice.Amount) * 100;
-        var roundedPercentage = Math.Round(changePercentage, 2);
-
-        var isSpike = roundedPercentage >= spikeThreshold;
-        var isDrop = roundedPercentage <= -spikeThreshold;
-
-        return new PriceAnalysisResult(
-            CurrentPrice: currentPrice,
-            PreviousPrice: previousPrice,
-            ChangeAmount: new Money(changeAmount, currentPrice.Currency),
-            ChangePercentage: new Percentage(roundedPercentage),
-            IsSpike: isSpike,
-            IsDrop: isDrop,
-            AnalysisType: isSpike ? PriceAnalysisType.Spike :
-                          isDrop ? PriceAnalysisType.Drop :
-                          PriceAnalysisType.Normal);
-    }
-
-    /// <summary>
-    /// Analyzes price trend over a period using historical data.
-    /// </summary>
-    /// <param name="priceHistory">Historical price records, ordered by date.</param>
-    /// <param name="inflationThreshold">Threshold for inflation alert (default 10%).</param>
-    /// <returns>Trend analysis result.</returns>
-    public PriceTrendResult AnalyzeTrend(
-        IReadOnlyList<PriceHistory> priceHistory,
-        decimal inflationThreshold = DefaultInflationThreshold)
-    {
-        if (priceHistory.Count < 2)
+        
+        _logger.LogInformation(
+            "Recalculating costs for {Count} recipes affected by {Ingredient} price change",
+            affectedRecipes.Count,
+            notification.IngredientName);
+        
+        foreach (var recipe in affectedRecipes)
         {
-            return new PriceTrendResult(
-                StartPrice: priceHistory.FirstOrDefault()?.Price,
-                EndPrice: priceHistory.LastOrDefault()?.Price,
-                TotalChangePercentage: null,
-                AveragePrice: priceHistory.FirstOrDefault()?.Price,
-                TrendDirection: TrendDirection.Stable,
-                IsInflationAlert: false,
-                DataPoints: priceHistory.Count);
+            var oldCost = recipe.TotalCost;
+            var oldMargin = recipe.MarginPercent;
+            
+            // Recalculate total cost from all ingredients
+            recipe.TotalCost = recipe.Items.Sum(item => 
+                (item.Ingredient?.CurrentPrice ?? 0) * item.Quantity);
+            
+            // Recalculate margin
+            if (recipe.SellPrice > 0)
+            {
+                recipe.MarginPercent = ((recipe.SellPrice - recipe.TotalCost) / recipe.SellPrice) * 100;
+            }
+            
+            _logger.LogInformation(
+                "Recipe '{Recipe}': cost {OldCost} → {NewCost}, margin {OldMargin:F1}% → {NewMargin:F1}%",
+                recipe.Name, oldCost, recipe.TotalCost, oldMargin, recipe.MarginPercent);
+            
+            // Check if margin dropped below threshold (e.g., 20%)
+            if (recipe.MarginPercent < 20 && oldMargin >= 20)
+            {
+                await _mediator.Publish(new MarginBelowThresholdNotification(
+                    RecipeId: recipe.Id,
+                    RecipeName: recipe.Name,
+                    NewMargin: recipe.MarginPercent,
+                    Threshold: 20,
+                    OccurredAt: DateTime.UtcNow
+                ), cancellationToken);
+            }
         }
-
-        var orderedHistory = priceHistory.OrderBy(h => h.RecordedDate).ToList();
-        var startPrice = orderedHistory.First().Price;
-        var endPrice = orderedHistory.Last().Price;
-
-        var totalChange = ((endPrice.Amount - startPrice.Amount) / startPrice.Amount) * 100;
-        var roundedChange = Math.Round(totalChange, 2);
-
-        var avgPrice = orderedHistory.Average(h => h.Price.Amount);
-        var averagePrice = new Money(Math.Round(avgPrice, 2), startPrice.Currency);
-
-        var trendDirection = roundedChange switch
-        {
-            > 5 => TrendDirection.Rising,
-            < -5 => TrendDirection.Falling,
-            _ => TrendDirection.Stable
-        };
-
-        var isInflationAlert = roundedChange >= inflationThreshold;
-
-        return new PriceTrendResult(
-            StartPrice: startPrice,
-            EndPrice: endPrice,
-            TotalChangePercentage: new Percentage(roundedChange),
-            AveragePrice: averagePrice,
-            TrendDirection: trendDirection,
-            IsInflationAlert: isInflationAlert,
-            DataPoints: priceHistory.Count);
+        
+        await _db.SaveChangesAsync(cancellationToken);
     }
+}
 
-    /// <summary>
-    /// Detects all ingredients with price spikes from a list of recent price changes.
-    /// </summary>
-    /// <param name="recentPriceHistory">Recent price history records.</param>
-    /// <param name="spikeThreshold">Threshold for spike detection.</param>
-    /// <returns>List of ingredients with detected spikes.</returns>
-    public IReadOnlyList<PriceSpikeInfo> DetectSpikes(
-        IEnumerable<PriceHistory> recentPriceHistory,
-        decimal spikeThreshold = DefaultSpikeThreshold)
+/// <summary>
+/// Published when a recipe's margin falls below the minimum threshold.
+/// </summary>
+public sealed record MarginBelowThresholdNotification(
+    Guid RecipeId,
+    string RecipeName,
+    decimal NewMargin,
+    decimal Threshold,
+    DateTime OccurredAt
+) : INotification;
+```
+
+### CheckForPriceSpike Handler:
+
+Create `src/Nastart.Api/Features/Purchases/NotificationHandlers/CheckForPriceSpikeHandler.cs`:
+
+```csharp
+using MediatR;
+using Nastart.Api.Features.Ingredients;
+
+namespace Nastart.Api.Features.Purchases.NotificationHandlers;
+
+/// <summary>
+/// Checks if a price change qualifies as a "spike" (>15%) and publishes alert notification.
+/// </summary>
+public class CheckForPriceSpikeHandler : INotificationHandler<PriceChangedNotification>
+{
+    private readonly IMediator _mediator;
+    private readonly ILogger<CheckForPriceSpikeHandler> _logger;
+
+    public CheckForPriceSpikeHandler(
+        IMediator mediator,
+        ILogger<CheckForPriceSpikeHandler> logger)
     {
-        return recentPriceHistory
-            .Where(h => h.IsPriceSpike(spikeThreshold))
-            .Select(h => new PriceSpikeInfo(
-                IngredientId: h.IngredientId,
-                ShopId: h.ShopId,
-                RecordedDate: h.RecordedDate,
-                CurrentPrice: h.Price,
-                PreviousPrice: h.PreviousPrice!,
-                ChangePercentage: h.ChangePercentage!,
-                SourcePurchaseId: h.SourcePurchaseId))
-            .ToList();
+        _mediator = mediator;
+        _logger = logger;
+    }
+
+    public async Task Handle(
+        PriceChangedNotification notification, 
+        CancellationToken cancellationToken)
+    {
+        if (!notification.IsPriceSpike)
+        {
+            return;
+        }
+        
+        _logger.LogWarning(
+            "🔴 PRICE SPIKE detected for {Ingredient}: {OldPrice} → {NewPrice} ({Change:+0.0}%)",
+            notification.IngredientName,
+            notification.OldPrice,
+            notification.NewPrice,
+            notification.PercentageChange);
+        
+        // Publish price spike notification for alert creation
+        await _mediator.Publish(new PriceSpikeNotification(
+            IngredientId: notification.IngredientId,
+            IngredientName: notification.IngredientName,
+            OldPrice: notification.OldPrice,
+            NewPrice: notification.NewPrice,
+            PercentageChange: notification.PercentageChange,
+            OccurredAt: notification.OccurredAt
+        ), cancellationToken);
     }
 }
 
 /// <summary>
-/// Interface for price analysis domain service.
+/// Published when a price spike (>15% increase) is detected.
 /// </summary>
-public interface IPriceAnalysisService
-{
-    PriceAnalysisResult AnalyzePriceChange(Money currentPrice, Money? previousPrice, decimal spikeThreshold = 15m);
-    PriceTrendResult AnalyzeTrend(IReadOnlyList<PriceHistory> priceHistory, decimal inflationThreshold = 10m);
-    IReadOnlyList<PriceSpikeInfo> DetectSpikes(IEnumerable<PriceHistory> recentPriceHistory, decimal spikeThreshold = 15m);
-}
+public sealed record PriceSpikeNotification(
+    Guid IngredientId,
+    string IngredientName,
+    decimal OldPrice,
+    decimal NewPrice,
+    decimal PercentageChange,
+    DateTime OccurredAt
+) : INotification;
+```
 
-/// <summary>
-/// Result of single price change analysis.
-/// </summary>
-public sealed record PriceAnalysisResult(
-    Money CurrentPrice,
-    Money? PreviousPrice,
-    Money? ChangeAmount,
-    Percentage? ChangePercentage,
-    bool IsSpike,
-    bool IsDrop,
-    PriceAnalysisType AnalysisType);
+### Notification Flow Diagram:
 
-/// <summary>
-/// Result of price trend analysis over time.
-/// </summary>
-public sealed record PriceTrendResult(
-    Money? StartPrice,
-    Money? EndPrice,
-    Percentage? TotalChangePercentage,
-    Money? AveragePrice,
-    TrendDirection TrendDirection,
-    bool IsInflationAlert,
-    int DataPoints);
-
-/// <summary>
-/// Information about a detected price spike.
-/// </summary>
-public sealed record PriceSpikeInfo(
-    IngredientId IngredientId,
-    Guid ShopId,
-    DateOnly RecordedDate,
-    Money CurrentPrice,
-    Money PreviousPrice,
-    Percentage ChangePercentage,
-    PurchaseId SourcePurchaseId);
-
-/// <summary>
-/// Type of price analysis result.
-/// </summary>
-public enum PriceAnalysisType
-{
-    /// <summary>First price record, no comparison available.</summary>
-    FirstRecord,
-    
-    /// <summary>Price is within normal range.</summary>
-    Normal,
-    
-    /// <summary>Price increased significantly (spike).</summary>
-    Spike,
-    
-    /// <summary>Price decreased significantly.</summary>
-    Drop
-}
-
-/// <summary>
-/// Direction of price trend over time.
-/// </summary>
-public enum TrendDirection
-{
-    /// <summary>Prices are relatively stable.</summary>
-    Stable,
-    
-    /// <summary>Prices are rising.</summary>
-    Rising,
-    
-    /// <summary>Prices are falling.</summary>
-    Falling
-}
+```
+Purchase Recorded
+       │
+       ▼
+PriceChangedNotification
+       │
+       ├──▶ RecordPriceHistoryHandler    → Saves to PriceHistory table
+       │
+       ├──▶ RecalculateRecipeCostsHandler → Updates affected recipes
+       │           │
+       │           └──▶ MarginBelowThresholdNotification (if margin drops)
+       │
+       └──▶ CheckForPriceSpikeHandler    → If >15% increase
+                   │
+                   └──▶ PriceSpikeNotification → Creates alert
 ```
 
 ### Your Task (Day 5):
 
-1. Create the `PriceAnalysisService.cs` file
-2. Build to verify: `dotnet build`
-3. Note how the service is **stateless** — it receives data as parameters
+1. Create `Features/Recipes/NotificationHandlers/` folder
+2. Create `RecalculateRecipeCostsHandler.cs`
+3. Create `CheckForPriceSpikeHandler.cs`
+4. Verify build: `dotnet build`
 
 ---
 
-# Day 6: Domain Events — PriceSpikeDetectedEvent
+# Day 6: PriceSpikeNotification & Alerts
 
 ## 🧒 Explain Like I'm 5
 
-When something important happens, we shout about it! 📢
+When flour suddenly costs WAY more than before, we need to tell the baker right away:
 
-- When flour price goes UP a lot → "HEY! FLOUR IS EXPENSIVE NOW!"
-- When you buy something → "HEY! I JUST BOUGHT STUFF!"
+> "🔴 ALERT: Flour price jumped 20%! Was Rp 25.000, now Rp 30.000!"
 
-**Domain Events** are like those shouts — they tell other parts of the app when something important happened.
+The baker can then:
+- Check if the new price is a mistake
+- Decide to find a cheaper supplier
+- Raise the prices of their products
 
 ## 🔧 Engineer Language
 
-**Domain Events** capture something that happened in the domain that domain experts care about. They:
-- Are past-tense ("PriceSpikeDetected", not "DetectPriceSpike")
-- Carry data about what happened
-- Trigger side effects (notifications, updates)
+The **Alert** system stores notifications for users. When a `PriceSpikeNotification` is published, an alert handler creates a persistent alert record.
 
-> 📖 **Microsoft Docs**: *"Use domain events to explicitly implement side effects of changes within your domain. [...] Domain events help you to express, explicitly, the domain rules, based in the ubiquitous language provided by the domain experts."*
+> 📖 **Microsoft Docs**: *"Events represent facts that have occurred. Event handlers perform side effects in response to these facts."*
 >
-> — [Domain events: Design and implementation](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation)
+> — [Domain events pattern](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation)
 
-### Finance Domain Events:
+### Alert Entity Model:
 
-Create `src/Nastart.Domain/Finance/Events/FinanceEvents.cs`:
+Create `src/Nastart.Api/Features/Alerts/Alert.cs`:
+
+```csharp
+namespace Nastart.Api.Features.Alerts;
+
+/// <summary>
+/// Represents a notification/alert for a user.
+/// </summary>
+public class Alert
+{
+    public Guid Id { get; set; }
+    
+    public required Guid UserId { get; set; }
+    
+    /// <summary>
+    /// Alert type: PriceSpike, LowStock, MarginDanger, Inflation.
+    /// </summary>
+    public required string Type { get; set; }
+    
+    /// <summary>
+    /// Alert severity: Info, Warning, Danger.
+    /// </summary>
+    public required string Severity { get; set; }
+    
+    /// <summary>
+    /// Human-readable alert message.
+    /// </summary>
+    public required string Message { get; set; }
+    
+    /// <summary>
+    /// JSON data with alert details for the UI.
+    /// </summary>
+    public string? Data { get; set; }
+    
+    /// <summary>
+    /// Whether the user has read/dismissed this alert.
+    /// </summary>
+    public bool IsRead { get; set; }
+    
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    
+    public DateTime? ReadAt { get; set; }
+}
+```
+
+### CreateAlert Feature:
+
+Create `src/Nastart.Api/Features/Alerts/CreateAlert.cs`:
+
+```csharp
+using System.Text.Json;
+using MediatR;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Alerts;
+
+// ══════════════════════════════════════════════════════════════
+// CREATE ALERT FEATURE SLICE
+// ══════════════════════════════════════════════════════════════
+
+// ── Request ──
+public sealed record CreateAlertCommand(
+    Guid UserId,
+    string Type,
+    string Severity,
+    string Message,
+    object? Data = null
+) : IRequest<Result<AlertResponse>>;
+
+// ── Response ──
+public sealed record AlertResponse(
+    Guid Id,
+    string Type,
+    string Severity,
+    string Message,
+    bool IsRead,
+    DateTime CreatedAt
+);
+
+// ── Handler ──
+public sealed class CreateAlertHandler 
+    : IRequestHandler<CreateAlertCommand, Result<AlertResponse>>
+{
+    private readonly NastartDbContext _db;
+    private readonly ILogger<CreateAlertHandler> _logger;
+
+    public CreateAlertHandler(
+        NastartDbContext db,
+        ILogger<CreateAlertHandler> logger)
+    {
+        _db = db;
+        _logger = logger;
+    }
+
+    public async Task<Result<AlertResponse>> Handle(
+        CreateAlertCommand request, 
+        CancellationToken cancellationToken)
+    {
+        var alert = new Alert
+        {
+            Id = Guid.NewGuid(),
+            UserId = request.UserId,
+            Type = request.Type,
+            Severity = request.Severity,
+            Message = request.Message,
+            Data = request.Data != null 
+                ? JsonSerializer.Serialize(request.Data) 
+                : null,
+            IsRead = false,
+            CreatedAt = DateTime.UtcNow
+        };
+        
+        _db.Set<Alert>().Add(alert);
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        _logger.LogInformation(
+            "Created {Severity} alert [{Type}] for user {UserId}: {Message}",
+            request.Severity, request.Type, request.UserId, request.Message);
+        
+        return Result<AlertResponse>.Success(new AlertResponse(
+            Id: alert.Id,
+            Type: alert.Type,
+            Severity: alert.Severity,
+            Message: alert.Message,
+            IsRead: alert.IsRead,
+            CreatedAt: alert.CreatedAt
+        ));
+    }
+}
+```
+
+### PriceSpike Alert Handler:
+
+Create `src/Nastart.Api/Features/Alerts/NotificationHandlers/CreatePriceSpikeAlertHandler.cs`:
 
 ```csharp
 using MediatR;
-using Nastart.Domain.Finance.ValueObjects;
-using Nastart.Domain.Inventory.ValueObjects;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Features.Purchases.NotificationHandlers;
+using Nastart.Api.Shared.Data;
 
-namespace Nastart.Domain.Finance.Events;
+namespace Nastart.Api.Features.Alerts.NotificationHandlers;
 
 /// <summary>
-/// Raised when a purchase is recorded and confirmed.
-/// Triggers price tracking and inventory updates.
+/// Creates an alert when a price spike is detected.
 /// </summary>
-/// <remarks>
-/// See: https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation
-/// </remarks>
-public sealed record PurchaseRecordedEvent(
-    PurchaseId PurchaseId,
-    Guid UserId,
-    Guid ShopId,
-    DateOnly PurchaseDate,
-    Money Total,
-    IReadOnlyList<PurchaseRecordedEvent.ItemInfo> Items) : INotification
+public class CreatePriceSpikeAlertHandler : INotificationHandler<PriceSpikeNotification>
 {
-    /// <summary>
-    /// Information about each purchased item.
-    /// </summary>
-    public sealed record ItemInfo(
-        IngredientId IngredientId,
-        string IngredientName,
-        Money UnitPrice);
+    private readonly NastartDbContext _db;
+    private readonly IMediator _mediator;
+    private readonly ILogger<CreatePriceSpikeAlertHandler> _logger;
+
+    public CreatePriceSpikeAlertHandler(
+        NastartDbContext db,
+        IMediator mediator,
+        ILogger<CreatePriceSpikeAlertHandler> logger)
+    {
+        _db = db;
+        _mediator = mediator;
+        _logger = logger;
+    }
+
+    public async Task Handle(
+        PriceSpikeNotification notification, 
+        CancellationToken cancellationToken)
+    {
+        // Get ingredient to find the user
+        var ingredient = await _db.Ingredients
+            .FirstOrDefaultAsync(i => i.Id == notification.IngredientId, cancellationToken);
+        
+        if (ingredient is null)
+        {
+            _logger.LogWarning(
+                "Cannot create alert: Ingredient {IngredientId} not found",
+                notification.IngredientId);
+            return;
+        }
+        
+        // Create alert for the ingredient owner
+        var alertData = new
+        {
+            notification.IngredientId,
+            notification.IngredientName,
+            notification.OldPrice,
+            notification.NewPrice,
+            notification.PercentageChange
+        };
+        
+        var alert = new Alert
+        {
+            Id = Guid.NewGuid(),
+            UserId = ingredient.UserId,
+            Type = "PriceSpike",
+            Severity = notification.PercentageChange > 25 ? "Danger" : "Warning",
+            Message = $"🔴 Price spike: {notification.IngredientName} increased " +
+                      $"{notification.PercentageChange:F1}% " +
+                      $"(Rp {notification.OldPrice:N0} → Rp {notification.NewPrice:N0})",
+            Data = System.Text.Json.JsonSerializer.Serialize(alertData),
+            IsRead = false,
+            CreatedAt = DateTime.UtcNow
+        };
+        
+        _db.Set<Alert>().Add(alert);
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        _logger.LogInformation(
+            "Created price spike alert for user {UserId}: {Message}",
+            ingredient.UserId, alert.Message);
+    }
 }
-
-/// <summary>
-/// Raised when a significant price increase is detected.
-/// Triggers alerts to the user.
-/// </summary>
-public sealed record PriceSpikeDetectedEvent(
-    IngredientId IngredientId,
-    string IngredientName,
-    Guid UserId,
-    Guid ShopId,
-    DateOnly DetectedDate,
-    Money CurrentPrice,
-    Money PreviousPrice,
-    Percentage ChangePercentage,
-    PurchaseId SourcePurchaseId) : INotification
-{
-    /// <summary>
-    /// Gets a human-readable description of the spike.
-    /// </summary>
-    public string Description => 
-        $"{IngredientName} price increased by {ChangePercentage} " +
-        $"(from {PreviousPrice} to {CurrentPrice})";
-}
-
-/// <summary>
-/// Raised when price trend analysis detects inflation.
-/// Triggers weekly/monthly reports.
-/// </summary>
-public sealed record InflationTrendDetectedEvent(
-    IngredientId IngredientId,
-    string IngredientName,
-    Guid UserId,
-    DateOnly StartDate,
-    DateOnly EndDate,
-    Money StartPrice,
-    Money EndPrice,
-    Percentage TotalChangePercentage) : INotification;
-
-/// <summary>
-/// Raised when an ingredient price is updated.
-/// Triggers recipe cost recalculation.
-/// </summary>
-public sealed record IngredientPriceUpdatedEvent(
-    IngredientId IngredientId,
-    Money NewPrice,
-    Money? PreviousPrice,
-    DateOnly UpdatedDate,
-    PurchaseId SourcePurchaseId) : INotification;
 ```
 
-### Event Flow Diagram:
+### GetUnreadAlerts Query:
 
+Create `src/Nastart.Api/Features/Alerts/GetUnreadAlerts.cs`:
+
+```csharp
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+using Nastart.Api.Shared.Models;
+
+namespace Nastart.Api.Features.Alerts;
+
+// ══════════════════════════════════════════════════════════════
+// GET UNREAD ALERTS FEATURE SLICE
+// ══════════════════════════════════════════════════════════════
+
+public sealed record GetUnreadAlertsQuery(
+    Guid UserId
+) : IRequest<Result<IReadOnlyList<AlertResponse>>>;
+
+public sealed class GetUnreadAlertsHandler 
+    : IRequestHandler<GetUnreadAlertsQuery, Result<IReadOnlyList<AlertResponse>>>
+{
+    private readonly NastartDbContext _db;
+
+    public GetUnreadAlertsHandler(NastartDbContext db)
+    {
+        _db = db;
+    }
+
+    public async Task<Result<IReadOnlyList<AlertResponse>>> Handle(
+        GetUnreadAlertsQuery request, 
+        CancellationToken cancellationToken)
+    {
+        var alerts = await _db.Set<Alert>()
+            .Where(a => a.UserId == request.UserId && !a.IsRead)
+            .OrderByDescending(a => a.CreatedAt)
+            .Select(a => new AlertResponse(
+                a.Id,
+                a.Type,
+                a.Severity,
+                a.Message,
+                a.IsRead,
+                a.CreatedAt
+            ))
+            .ToListAsync(cancellationToken);
+        
+        return Result<IReadOnlyList<AlertResponse>>.Success(alerts);
+    }
+}
 ```
-┌─────────────────┐
-│   Purchase      │
-│   .Confirm()    │
-└────────┬────────┘
-         │ raises
-         ▼
-┌─────────────────────────────────┐
-│  PurchaseRecordedEvent          │
-│  - PurchaseId                   │
-│  - Items[] with prices          │
-└────────┬────────────────────────┘
-         │ handled by
-         ▼
-┌─────────────────────────────────┐
-│  PriceTrackingHandler           │
-│  (Application Layer)            │
-│  1. Create PriceHistory         │
-│  2. Call PriceAnalysisService   │
-│  3. If spike → raise event      │
-└────────┬────────────────────────┘
-         │ raises
-         ▼
-┌─────────────────────────────────┐
-│  PriceSpikeDetectedEvent        │
-│  - IngredientId                 │
-│  - ChangePercentage             │
-└────────┬────────────────────────┘
-         │ handled by
-         ▼
-┌─────────────────────────────────┐
-│  AlertNotificationHandler       │
-│  1. Create Alert in DB          │
-│  2. Send Telegram notification  │
-└─────────────────────────────────┘
+
+### Update DbContext:
+
+Add to `NastartDbContext.cs`:
+
+```csharp
+public DbSet<Alert> Alerts => Set<Alert>();
 ```
 
 ### Your Task (Day 6):
 
-1. Create the `FinanceEvents.cs` file
-2. Build to verify: `dotnet build`
+1. Create `Features/Alerts/` folder structure
+2. Create `Alert.cs`, `CreateAlert.cs`, `GetUnreadAlerts.cs`
+3. Create `NotificationHandlers/CreatePriceSpikeAlertHandler.cs`
+4. Update `NastartDbContext` with Alert DbSet
+5. Verify build: `dotnet build`
 
 ---
 
-# Day 7: Unit Testing Finance Domain
+# Day 7: Testing Purchase Features
 
 ## 🧒 Explain Like I'm 5
 
-Before you give a toy to your friend, you TEST it first:
-- Does the car's wheels spin? ✅
-- Does the doll's arms move? ✅
+Before selling a toy, the factory tests it:
+- Does the button work? ✓
+- Does it break easily? ✗
+- Does it do what it's supposed to? ✓
 
-**Unit Tests** are like testing toys before giving them away. We make sure our code works correctly!
+We test our code the same way! Each feature gets its own tests.
 
 ## 🔧 Engineer Language
 
-Unit tests verify that individual units of code (classes, methods) work as expected in isolation.
+Unit tests verify that each feature slice works correctly in isolation. We test:
+- **Handlers** — Does the logic work?
+- **Validators** — Are invalid inputs rejected?
+- **Notifications** — Do side effects trigger?
 
-> 📖 **Microsoft Docs**: *"Your domain model should not take direct dependencies on any infrastructure framework like Entity Framework. [...] This makes it easier to test the domain model."*
+> 📖 **Microsoft Docs**: *"Unit tests isolate a unit of work from its dependencies, making tests fast and reliable."*
 >
-> — [DDD-oriented microservice](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/ddd-oriented-microservice#layers-in-ddd-microservices)
+> — [Unit testing in .NET](https://learn.microsoft.com/en-us/dotnet/core/testing/)
 
-### Test Project Setup:
+### Test Project Structure:
 
-```powershell
-cd C:\Users\AU1833\Documents\personal\nastart\backend
-
-# Add reference to Domain project
-dotnet add tests/Nastart.Domain.Tests reference src/Nastart.Domain
-
-# Add FluentAssertions for readable assertions
-dotnet add tests/Nastart.Domain.Tests package FluentAssertions
+```
+tests/
+└── Nastart.Api.Tests/
+    ├── Features/
+    │   ├── Ingredients/
+    │   │   └── CreateIngredientTests.cs
+    │   ├── Purchases/
+    │   │   ├── RecordPurchaseTests.cs
+    │   │   ├── RecordPurchaseValidatorTests.cs
+    │   │   └── GetPurchaseHistoryTests.cs
+    │   └── Alerts/
+    │       └── CreatePriceSpikeAlertTests.cs
+    └── Nastart.Api.Tests.csproj
 ```
 
-### Test: Strongly-Typed IDs
+### RecordPurchase Handler Test:
 
-Create `tests/Nastart.Domain.Tests/Finance/StronglyTypedIdTests.cs`:
+Create `tests/Nastart.Api.Tests/Features/Purchases/RecordPurchaseTests.cs`:
 
 ```csharp
 using FluentAssertions;
-using Nastart.Domain.Finance.ValueObjects;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Moq;
+using Nastart.Api.Features.Ingredients;
+using Nastart.Api.Features.Purchases;
+using Nastart.Api.Shared.Data;
 
-namespace Nastart.Domain.Tests.Finance;
+namespace Nastart.Api.Tests.Features.Purchases;
 
-/// <summary>
-/// Tests for strongly-typed ID value objects.
-/// </summary>
-public class StronglyTypedIdTests
+public class RecordPurchaseTests
 {
-    [Fact]
-    public void PurchaseId_New_ShouldCreateUniqueId()
-    {
-        // Arrange & Act
-        var id1 = PurchaseId.New();
-        var id2 = PurchaseId.New();
+    private readonly NastartDbContext _db;
+    private readonly Mock<IMediator> _mediator;
+    private readonly RecordPurchaseHandler _handler;
 
-        // Assert
-        id1.Should().NotBe(id2);
-        id1.Value.Should().NotBeEmpty();
-        id2.Value.Should().NotBeEmpty();
+    public RecordPurchaseTests()
+    {
+        // In-memory database for testing
+        var options = new DbContextOptionsBuilder<NastartDbContext>()
+            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+            .Options;
+        
+        _db = new NastartDbContext(options);
+        _mediator = new Mock<IMediator>();
+        var logger = new Mock<ILogger<RecordPurchaseHandler>>();
+        
+        _handler = new RecordPurchaseHandler(_db, _mediator.Object, logger.Object);
     }
 
     [Fact]
-    public void PurchaseId_Empty_ShouldHaveEmptyGuid()
-    {
-        // Arrange & Act
-        var emptyId = PurchaseId.Empty;
-
-        // Assert
-        emptyId.Value.Should().Be(Guid.Empty);
-        emptyId.IsEmpty.Should().BeTrue();
-    }
-
-    [Fact]
-    public void PurchaseId_Equality_ShouldCompareByValue()
+    public async Task Handle_ValidPurchase_CreatesPurchaseWithItems()
     {
         // Arrange
-        var guid = Guid.NewGuid();
-        var id1 = new PurchaseId(guid);
-        var id2 = new PurchaseId(guid);
-
-        // Assert
-        id1.Should().Be(id2);
-        (id1 == id2).Should().BeTrue();
-    }
-
-    [Fact]
-    public void PurchaseId_ImplicitConversion_ShouldReturnGuid()
-    {
-        // Arrange
-        var expectedGuid = Guid.NewGuid();
-        var purchaseId = new PurchaseId(expectedGuid);
-
+        var userId = Guid.NewGuid();
+        var ingredient = new Ingredient
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Name = "Flour",
+            Unit = "kg",
+            CurrentPrice = 25000,
+            CurrentStock = 0,
+            MinimumStock = 5
+        };
+        _db.Ingredients.Add(ingredient);
+        await _db.SaveChangesAsync();
+        
+        var command = new RecordPurchaseCommand(
+            UserId: userId,
+            PurchaseDate: DateOnly.FromDateTime(DateTime.UtcNow),
+            ShopId: null,
+            ReceiptImageUrl: null,
+            Items: [
+                new PurchaseItemInput(
+                    IngredientId: ingredient.Id,
+                    Quantity: 5,
+                    UnitPrice: 26000  // Price increased!
+                )
+            ]
+        );
+        
         // Act
-        Guid actualGuid = purchaseId;  // Implicit conversion
-
+        var result = await _handler.Handle(command, CancellationToken.None);
+        
         // Assert
-        actualGuid.Should().Be(expectedGuid);
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().NotBeNull();
+        result.Value!.Items.Should().HaveCount(1);
+        result.Value.Total.Should().Be(130000); // 5 × 26000
+        
+        // Verify purchase was saved
+        var savedPurchase = await _db.Purchases
+            .Include(p => p.Items)
+            .FirstOrDefaultAsync();
+        savedPurchase.Should().NotBeNull();
+        savedPurchase!.Items.Should().HaveCount(1);
+        
+        // Verify ingredient price was updated
+        var updatedIngredient = await _db.Ingredients.FindAsync(ingredient.Id);
+        updatedIngredient!.CurrentPrice.Should().Be(26000);
+        
+        // Verify stock was increased
+        updatedIngredient.CurrentStock.Should().Be(5);
+    }
+
+    [Fact]
+    public async Task Handle_PriceChange_PublishesPriceChangedNotification()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var ingredient = new Ingredient
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Name = "Sugar",
+            Unit = "kg",
+            CurrentPrice = 15000,
+            CurrentStock = 0,
+            MinimumStock = 5
+        };
+        _db.Ingredients.Add(ingredient);
+        await _db.SaveChangesAsync();
+        
+        var command = new RecordPurchaseCommand(
+            UserId: userId,
+            PurchaseDate: DateOnly.FromDateTime(DateTime.UtcNow),
+            ShopId: null,
+            ReceiptImageUrl: null,
+            Items: [
+                new PurchaseItemInput(
+                    IngredientId: ingredient.Id,
+                    Quantity: 2,
+                    UnitPrice: 18000  // 20% increase!
+                )
+            ]
+        );
+        
+        // Act
+        await _handler.Handle(command, CancellationToken.None);
+        
+        // Assert — Verify PriceChangedNotification was published
+        _mediator.Verify(m => m.Publish(
+            It.Is<PriceChangedNotification>(n => 
+                n.IngredientId == ingredient.Id &&
+                n.OldPrice == 15000 &&
+                n.NewPrice == 18000 &&
+                n.PercentageChange == 20),
+            It.IsAny<CancellationToken>()
+        ), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_IngredientNotFound_ReturnsFailure()
+    {
+        // Arrange
+        var command = new RecordPurchaseCommand(
+            UserId: Guid.NewGuid(),
+            PurchaseDate: DateOnly.FromDateTime(DateTime.UtcNow),
+            ShopId: null,
+            ReceiptImageUrl: null,
+            Items: [
+                new PurchaseItemInput(
+                    IngredientId: Guid.NewGuid(),  // Non-existent
+                    Quantity: 1,
+                    UnitPrice: 10000
+                )
+            ]
+        );
+        
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+        
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be("INGREDIENTS_NOT_FOUND");
     }
 }
 ```
 
-### Test: Purchase Aggregate
+### Validator Tests:
 
-Create `tests/Nastart.Domain.Tests/Finance/PurchaseAggregateTests.cs`:
-
-```csharp
-using FluentAssertions;
-using Nastart.Domain.Finance.Aggregates;
-using Nastart.Domain.Inventory.ValueObjects;
-
-namespace Nastart.Domain.Tests.Finance;
-
-/// <summary>
-/// Tests for Purchase aggregate root.
-/// </summary>
-public class PurchaseAggregateTests
-{
-    private readonly Guid _userId = Guid.NewGuid();
-    private readonly Guid _shopId = Guid.NewGuid();
-    private readonly DateOnly _purchaseDate = DateOnly.FromDateTime(DateTime.Today);
-
-    [Fact]
-    public void Constructor_WithValidData_ShouldCreatePurchase()
-    {
-        // Act
-        var purchase = new Purchase(_userId, _shopId, _purchaseDate);
-
-        // Assert
-        purchase.PurchaseId.IsEmpty.Should().BeFalse();
-        purchase.UserId.Should().Be(_userId);
-        purchase.ShopId.Should().Be(_shopId);
-        purchase.PurchaseDate.Should().Be(_purchaseDate);
-        purchase.Status.Should().Be(PurchaseStatus.Draft);
-        purchase.Total.IsZero.Should().BeTrue();
-        purchase.PurchaseItems.Should().BeEmpty();
-    }
-
-    [Fact]
-    public void Constructor_WithEmptyUserId_ShouldThrow()
-    {
-        // Act
-        var act = () => new Purchase(Guid.Empty, _shopId, _purchaseDate);
-
-        // Assert
-        act.Should().Throw<ArgumentException>()
-           .WithMessage("*User ID*");
-    }
-
-    [Fact]
-    public void AddItem_ShouldAddItemAndRecalculateTotal()
-    {
-        // Arrange
-        var purchase = new Purchase(_userId, _shopId, _purchaseDate);
-        var ingredientId = IngredientId.New();
-        var quantity = Quantity.Kilograms(2);
-        var unitPrice = Money.FromIDR(15000);
-
-        // Act
-        var item = purchase.AddItem(ingredientId, "Flour", quantity, unitPrice);
-
-        // Assert
-        purchase.PurchaseItems.Should().HaveCount(1);
-        purchase.PurchaseItems.Should().Contain(item);
-        purchase.Total.Amount.Should().Be(30000m); // 2 × 15000
-        item.LineTotal.Amount.Should().Be(30000m);
-    }
-
-    [Fact]
-    public void AddItem_WithDuplicateIngredient_ShouldUpdateExistingItem()
-    {
-        // Arrange
-        var purchase = new Purchase(_userId, _shopId, _purchaseDate);
-        var ingredientId = IngredientId.New();
-        var quantity1 = Quantity.Kilograms(1);
-        var quantity2 = Quantity.Kilograms(2);
-        var unitPrice = Money.FromIDR(15000);
-
-        // Act
-        purchase.AddItem(ingredientId, "Flour", quantity1, unitPrice);
-        purchase.AddItem(ingredientId, "Flour", quantity2, unitPrice);
-
-        // Assert
-        purchase.PurchaseItems.Should().HaveCount(1);
-        purchase.PurchaseItems.First().Quantity.Value.Should().Be(3m); // 1 + 2
-        purchase.Total.Amount.Should().Be(45000m); // 3 × 15000
-    }
-
-    [Fact]
-    public void AddItem_MultipleItems_ShouldCalculateTotalCorrectly()
-    {
-        // Arrange
-        var purchase = new Purchase(_userId, _shopId, _purchaseDate);
-
-        // Act
-        purchase.AddItem(IngredientId.New(), "Flour", Quantity.Kilograms(2), Money.FromIDR(15000));
-        purchase.AddItem(IngredientId.New(), "Sugar", Quantity.Kilograms(1), Money.FromIDR(12000));
-        purchase.AddItem(IngredientId.New(), "Eggs", Quantity.Pieces(10), Money.FromIDR(2500));
-
-        // Assert
-        purchase.PurchaseItems.Should().HaveCount(3);
-        // Total = (2×15000) + (1×12000) + (10×2500) = 30000 + 12000 + 25000 = 67000
-        purchase.Total.Amount.Should().Be(67000m);
-    }
-
-    [Fact]
-    public void RemoveItem_ShouldRemoveAndRecalculateTotal()
-    {
-        // Arrange
-        var purchase = new Purchase(_userId, _shopId, _purchaseDate);
-        var item = purchase.AddItem(IngredientId.New(), "Flour", Quantity.Kilograms(2), Money.FromIDR(15000));
-        purchase.AddItem(IngredientId.New(), "Sugar", Quantity.Kilograms(1), Money.FromIDR(12000));
-
-        // Act
-        purchase.RemoveItem(item.ItemId);
-
-        // Assert
-        purchase.PurchaseItems.Should().HaveCount(1);
-        purchase.Total.Amount.Should().Be(12000m); // Only sugar remains
-    }
-
-    [Fact]
-    public void Confirm_ShouldChangStatusAndRaiseDomainEvent()
-    {
-        // Arrange
-        var purchase = new Purchase(_userId, _shopId, _purchaseDate);
-        purchase.AddItem(IngredientId.New(), "Flour", Quantity.Kilograms(2), Money.FromIDR(15000));
-
-        // Act
-        purchase.Confirm();
-
-        // Assert
-        purchase.Status.Should().Be(PurchaseStatus.Confirmed);
-        purchase.DomainEvents.Should().HaveCount(1);
-        purchase.DomainEvents.Should().ContainItemsAssignableTo<INotification>();
-    }
-
-    [Fact]
-    public void Confirm_WithEmptyPurchase_ShouldThrow()
-    {
-        // Arrange
-        var purchase = new Purchase(_userId, _shopId, _purchaseDate);
-
-        // Act
-        var act = () => purchase.Confirm();
-
-        // Assert
-        act.Should().Throw<InvalidOperationException>()
-           .WithMessage("*empty purchase*");
-    }
-
-    [Fact]
-    public void AddItem_AfterConfirm_ShouldThrow()
-    {
-        // Arrange
-        var purchase = new Purchase(_userId, _shopId, _purchaseDate);
-        purchase.AddItem(IngredientId.New(), "Flour", Quantity.Kilograms(2), Money.FromIDR(15000));
-        purchase.Confirm();
-
-        // Act
-        var act = () => purchase.AddItem(IngredientId.New(), "Sugar", Quantity.Kilograms(1), Money.FromIDR(12000));
-
-        // Assert
-        act.Should().Throw<InvalidOperationException>()
-           .WithMessage("*confirmed purchase*");
-    }
-}
-```
-
-### Test: PriceAnalysisService
-
-Create `tests/Nastart.Domain.Tests/Finance/PriceAnalysisServiceTests.cs`:
+Create `tests/Nastart.Api.Tests/Features/Purchases/RecordPurchaseValidatorTests.cs`:
 
 ```csharp
 using FluentAssertions;
-using Nastart.Domain.Finance.Aggregates;
-using Nastart.Domain.Finance.Services;
-using Nastart.Domain.Finance.ValueObjects;
-using Nastart.Domain.Inventory.ValueObjects;
+using Nastart.Api.Features.Purchases;
 
-namespace Nastart.Domain.Tests.Finance;
+namespace Nastart.Api.Tests.Features.Purchases;
 
-/// <summary>
-/// Tests for PriceAnalysisService domain service.
-/// </summary>
-public class PriceAnalysisServiceTests
+public class RecordPurchaseValidatorTests
 {
-    private readonly PriceAnalysisService _service = new();
+    private readonly RecordPurchaseValidator _validator = new();
 
     [Fact]
-    public void AnalyzePriceChange_FirstRecord_ShouldReturnFirstRecordType()
+    public void Validate_ValidCommand_PassesValidation()
     {
         // Arrange
-        var currentPrice = Money.FromIDR(15000);
-
+        var command = new RecordPurchaseCommand(
+            UserId: Guid.NewGuid(),
+            PurchaseDate: DateOnly.FromDateTime(DateTime.UtcNow),
+            ShopId: null,
+            ReceiptImageUrl: null,
+            Items: [
+                new PurchaseItemInput(Guid.NewGuid(), 1, 10000)
+            ]
+        );
+        
         // Act
-        var result = _service.AnalyzePriceChange(currentPrice, previousPrice: null);
-
+        var result = _validator.Validate(command);
+        
         // Assert
-        result.AnalysisType.Should().Be(PriceAnalysisType.FirstRecord);
-        result.IsSpike.Should().BeFalse();
-        result.ChangePercentage.Should().BeNull();
+        result.IsValid.Should().BeTrue();
     }
 
     [Fact]
-    public void AnalyzePriceChange_PriceIncreaseBelow15Percent_ShouldNotBeSpike()
+    public void Validate_EmptyItems_FailsValidation()
     {
         // Arrange
-        var previousPrice = Money.FromIDR(10000);
-        var currentPrice = Money.FromIDR(11000); // 10% increase
-
+        var command = new RecordPurchaseCommand(
+            UserId: Guid.NewGuid(),
+            PurchaseDate: DateOnly.FromDateTime(DateTime.UtcNow),
+            ShopId: null,
+            ReceiptImageUrl: null,
+            Items: []  // Empty!
+        );
+        
         // Act
-        var result = _service.AnalyzePriceChange(currentPrice, previousPrice);
-
+        var result = _validator.Validate(command);
+        
         // Assert
-        result.IsSpike.Should().BeFalse();
-        result.AnalysisType.Should().Be(PriceAnalysisType.Normal);
-        result.ChangePercentage!.Value.Should().Be(10m);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "Items");
     }
 
     [Fact]
-    public void AnalyzePriceChange_PriceIncreaseAt15Percent_ShouldBeSpike()
+    public void Validate_FutureDate_FailsValidation()
     {
         // Arrange
-        var previousPrice = Money.FromIDR(10000);
-        var currentPrice = Money.FromIDR(11500); // 15% increase
-
+        var command = new RecordPurchaseCommand(
+            UserId: Guid.NewGuid(),
+            PurchaseDate: DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)),  // Future!
+            ShopId: null,
+            ReceiptImageUrl: null,
+            Items: [new PurchaseItemInput(Guid.NewGuid(), 1, 10000)]
+        );
+        
         // Act
-        var result = _service.AnalyzePriceChange(currentPrice, previousPrice);
-
+        var result = _validator.Validate(command);
+        
         // Assert
-        result.IsSpike.Should().BeTrue();
-        result.AnalysisType.Should().Be(PriceAnalysisType.Spike);
-        result.ChangePercentage!.Value.Should().Be(15m);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "PurchaseDate");
     }
 
     [Fact]
-    public void AnalyzePriceChange_PriceIncreaseAbove15Percent_ShouldBeSpike()
+    public void Validate_NegativePrice_FailsValidation()
     {
         // Arrange
-        var previousPrice = Money.FromIDR(10000);
-        var currentPrice = Money.FromIDR(12000); // 20% increase
-
+        var command = new RecordPurchaseCommand(
+            UserId: Guid.NewGuid(),
+            PurchaseDate: DateOnly.FromDateTime(DateTime.UtcNow),
+            ShopId: null,
+            ReceiptImageUrl: null,
+            Items: [
+                new PurchaseItemInput(Guid.NewGuid(), 1, -100)  // Negative!
+            ]
+        );
+        
         // Act
-        var result = _service.AnalyzePriceChange(currentPrice, previousPrice);
-
+        var result = _validator.Validate(command);
+        
         // Assert
-        result.IsSpike.Should().BeTrue();
-        result.AnalysisType.Should().Be(PriceAnalysisType.Spike);
-        result.ChangePercentage!.Value.Should().Be(20m);
-        result.ChangeAmount!.Amount.Should().Be(2000m);
-    }
-
-    [Fact]
-    public void AnalyzePriceChange_PriceDecrease_ShouldBeDrop()
-    {
-        // Arrange
-        var previousPrice = Money.FromIDR(10000);
-        var currentPrice = Money.FromIDR(8000); // 20% decrease
-
-        // Act
-        var result = _service.AnalyzePriceChange(currentPrice, previousPrice);
-
-        // Assert
-        result.IsDrop.Should().BeTrue();
-        result.AnalysisType.Should().Be(PriceAnalysisType.Drop);
-        result.ChangePercentage!.Value.Should().Be(-20m);
-    }
-
-    [Fact]
-    public void AnalyzePriceChange_WithCustomThreshold_ShouldUseThreshold()
-    {
-        // Arrange
-        var previousPrice = Money.FromIDR(10000);
-        var currentPrice = Money.FromIDR(10500); // 5% increase
-
-        // Act
-        var result = _service.AnalyzePriceChange(currentPrice, previousPrice, spikeThreshold: 5m);
-
-        // Assert
-        result.IsSpike.Should().BeTrue();
-    }
-
-    [Fact]
-    public void AnalyzeTrend_WithRisingPrices_ShouldDetectRisingTrend()
-    {
-        // Arrange
-        var ingredientId = IngredientId.New();
-        var shopId = Guid.NewGuid();
-        var purchaseId = PurchaseId.New();
-
-        var history = new List<PriceHistory>
-        {
-            CreatePriceHistory(ingredientId, shopId, DateOnly.Parse("2026-01-01"), 10000m, null, purchaseId),
-            CreatePriceHistory(ingredientId, shopId, DateOnly.Parse("2026-01-15"), 10500m, 10000m, purchaseId),
-            CreatePriceHistory(ingredientId, shopId, DateOnly.Parse("2026-01-30"), 11200m, 10500m, purchaseId)
-        };
-
-        // Act
-        var result = _service.AnalyzeTrend(history);
-
-        // Assert
-        result.TrendDirection.Should().Be(TrendDirection.Rising);
-        result.TotalChangePercentage!.Value.Should().Be(12m); // (11200-10000)/10000 = 12%
-        result.IsInflationAlert.Should().BeTrue(); // 12% > 10% threshold
-        result.DataPoints.Should().Be(3);
-    }
-
-    [Fact]
-    public void AnalyzeTrend_WithStablePrices_ShouldDetectStableTrend()
-    {
-        // Arrange
-        var ingredientId = IngredientId.New();
-        var shopId = Guid.NewGuid();
-        var purchaseId = PurchaseId.New();
-
-        var history = new List<PriceHistory>
-        {
-            CreatePriceHistory(ingredientId, shopId, DateOnly.Parse("2026-01-01"), 10000m, null, purchaseId),
-            CreatePriceHistory(ingredientId, shopId, DateOnly.Parse("2026-01-15"), 10200m, 10000m, purchaseId),
-            CreatePriceHistory(ingredientId, shopId, DateOnly.Parse("2026-01-30"), 10100m, 10200m, purchaseId)
-        };
-
-        // Act
-        var result = _service.AnalyzeTrend(history);
-
-        // Assert
-        result.TrendDirection.Should().Be(TrendDirection.Stable);
-        result.IsInflationAlert.Should().BeFalse();
-    }
-
-    [Fact]
-    public void DetectSpikes_ShouldReturnOnlySpikes()
-    {
-        // Arrange
-        var ingredientId1 = IngredientId.New();
-        var ingredientId2 = IngredientId.New();
-        var shopId = Guid.NewGuid();
-        var purchaseId = PurchaseId.New();
-
-        var history = new List<PriceHistory>
-        {
-            // This is a spike (20% increase)
-            CreatePriceHistory(ingredientId1, shopId, DateOnly.Parse("2026-01-30"), 12000m, 10000m, purchaseId),
-            // This is NOT a spike (5% increase)
-            CreatePriceHistory(ingredientId2, shopId, DateOnly.Parse("2026-01-30"), 10500m, 10000m, purchaseId)
-        };
-
-        // Act
-        var spikes = _service.DetectSpikes(history);
-
-        // Assert
-        spikes.Should().HaveCount(1);
-        spikes[0].IngredientId.Should().Be(ingredientId1);
-        spikes[0].ChangePercentage.Value.Should().Be(20m);
-    }
-
-    private static PriceHistory CreatePriceHistory(
-        IngredientId ingredientId,
-        Guid shopId,
-        DateOnly date,
-        decimal price,
-        decimal? previousPrice,
-        PurchaseId purchaseId)
-    {
-        return new PriceHistory(
-            ingredientId,
-            shopId,
-            date,
-            Money.FromIDR(price),
-            previousPrice.HasValue ? Money.FromIDR(previousPrice.Value) : null,
-            purchaseId);
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName.Contains("UnitPrice"));
     }
 }
 ```
@@ -1624,86 +1794,69 @@ public class PriceAnalysisServiceTests
 
 ```powershell
 cd C:\Users\AU1833\Documents\personal\nastart\backend
-dotnet test tests/Nastart.Domain.Tests --verbosity normal
+
+# Run all tests
+dotnet test
+
+# Run with verbose output
+dotnet test --logger "console;verbosity=detailed"
+
+# Run specific test class
+dotnet test --filter "FullyQualifiedName~RecordPurchaseTests"
 ```
 
 ### Your Task (Day 7):
 
-1. Create all test files
-2. Run tests and ensure they pass
-3. Review test coverage for edge cases
+1. Create test files for `RecordPurchase` and `RecordPurchaseValidator`
+2. Add test for `GetPurchaseHistory` query
+3. Run tests with `dotnet test`
+4. Aim for >80% coverage on handlers
 
 ---
 
 # Resources
 
-## Microsoft Official Documentation (Verified ✓)
+## Microsoft Official Documentation
 
 | Topic | Link |
 |-------|------|
-| **Strongly-Typed IDs in EF Core** | [What's New in EF Core 7.0 - Value Generation for DDD](https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-7.0/whatsnew#value-generation-for-ddd-guarded-types) |
-| **Aggregate Pattern** | [Design a microservice domain model](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model) |
-| **Entity Encapsulation** | [Implement a microservice domain model with .NET](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model) |
-| **Domain Events** | [Domain events: Design and implementation](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation) |
-| **DDD Layers** | [Design a DDD-oriented microservice](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/ddd-oriented-microservice) |
-| **SeedWork Pattern** | [Seedwork base classes and interfaces](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/seedwork-domain-model-base-classes-interfaces) |
+| **EF Core Relationships** | [learn.microsoft.com/ef/core/modeling/relationships](https://learn.microsoft.com/en-us/ef/core/modeling/relationships) |
+| **Parameter Binding** | [learn.microsoft.com/aspnet/core/fundamentals/minimal-apis/parameter-binding](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/parameter-binding) |
+| **Pagination in ASP.NET** | [learn.microsoft.com/aspnet/core/data/ef-mvc/sort-filter-page](https://learn.microsoft.com/en-us/aspnet/core/data/ef-mvc/sort-filter-page) |
+| **MediatR Patterns** | [learn.microsoft.com/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-application-layer-implementation-web-api) |
+| **Domain Events** | [learn.microsoft.com/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation) |
+| **Unit Testing in .NET** | [learn.microsoft.com/dotnet/core/testing](https://learn.microsoft.com/en-us/dotnet/core/testing/) |
+| **FluentValidation Docs** | [docs.fluentvalidation.net](https://docs.fluentvalidation.net/) |
 
-## Additional Reading
+## NuGet Packages Used This Week
 
-| Resource | Description |
-|----------|-------------|
-| [eShopOnContainers](https://github.com/dotnet-architecture/eShopOnContainers) | Reference implementation from Microsoft |
-| [Vaughn Vernon - Effective Aggregate Design](https://dddcommunity.org/wp-content/uploads/files/pdf_articles/Vernon_2011_1.pdf) | Deep dive into aggregate design |
-| [.NET Microservices eBook](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/) | Free Microsoft eBook |
+```xml
+<PackageReference Include="MediatR" Version="12.*" />
+<PackageReference Include="FluentValidation" Version="11.*" />
+<PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.*" />
+<PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.*" />
+<PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.*" />
+```
+
+## Week 3 Checklist
+
+- [ ] Created `Purchase` and `PurchaseItem` entity models
+- [ ] Created `RecordPurchase` feature slice with validation
+- [ ] Created `GetPurchaseHistory` query with pagination
+- [ ] Implemented price change detection in handler
+- [ ] Created `PriceChangedNotification` flow
+- [ ] Created `PriceSpikeNotification` and alert creation
+- [ ] Created `Alert` entity and features
+- [ ] Unit tests for all purchase handlers
+- [ ] All builds pass: `dotnet build`
+- [ ] All tests pass: `dotnet test`
 
 ---
 
-## Week 3 Summary
+## What's Next?
 
-### What You Built:
-
-| Component | Type | Purpose |
-|-----------|------|---------|
-| `PurchaseId`, `SaleId`, `PriceHistoryId` | Strongly-Typed IDs | Type-safe entity identification |
-| `Purchase` | Aggregate Root | Shopping transaction with items |
-| `PurchaseItem` | Child Entity | Line items within purchase |
-| `PriceHistory` | Aggregate Root | Price tracking over time |
-| `PriceAnalysisService` | Domain Service | Price spike & trend detection |
-| `PriceSpikeDetectedEvent` | Domain Event | Notification trigger |
-
-### Folder Structure After Week 3:
-
-```
-src/Nastart.Domain/
-├── Common/                        # Week 2
-│   ├── Entity.cs
-│   ├── AggregateRoot.cs
-│   └── ValueObject.cs
-├── Finance/                       # Week 3 ✨
-│   ├── Aggregates/
-│   │   ├── Purchase.cs
-│   │   └── PriceHistory.cs
-│   ├── Entities/
-│   │   └── PurchaseItem.cs
-│   ├── ValueObjects/
-│   │   └── FinanceIds.cs
-│   ├── Events/
-│   │   └── FinanceEvents.cs
-│   └── Services/
-│       └── PriceAnalysisService.cs
-└── Inventory/                     # Week 2
-    ├── Aggregates/
-    ├── ValueObjects/
-    └── Events/
-```
-
-### Next Week Preview (Week 4 — Recipe Context):
-
-- [ ] Build `Recipe` aggregate with `RecipeItem` collection
-- [ ] Create `Margin` value object
-- [ ] Implement `CostCalculationService`
-- [ ] Write `MarginBelowThresholdEvent`
+**Week 4: Recipe Features** — Build recipe creation, ingredient management, and cost calculation features with live margin tracking.
 
 ---
 
-*Document verified with Microsoft Learn docs — January 30, 2026*
+*Nastart — Start smart, bake profitable*

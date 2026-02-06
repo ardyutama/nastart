@@ -4,7 +4,7 @@
 
 *Named after nastar cookies — helping bakers **start** their business journey right.*
 
-A smart inventory & finance tracking app for small F&B businesses, built with Domain-Driven Design.
+A smart inventory & finance tracking app for small F&B businesses, built with **Vertical Slice Architecture** and **Minimal APIs**.
 
 ---
 
@@ -14,7 +14,7 @@ A smart inventory & finance tracking app for small F&B businesses, built with Do
 2. [Purpose & Impact](#purpose--impact)
 3. [Target Users](#target-users)
 4. [System Architecture](#system-architecture)
-5. [Domain-Driven Design](#domain-driven-design)
+5. [Vertical Slice Architecture](#vertical-slice-architecture)
 6. [Database Schema](#database-schema)
 7. [Features](#features)
 8. [Workflows & BPMN](#workflows--bpmn)
@@ -41,7 +41,7 @@ Small bakery/F&B owners:
 
 | Input | Processing | Output |
 |-------|------------|--------|
-| Receipt photo via WhatsApp | OCR + smart filtering | Inventory updates |
+| Receipt photo via Telegram | OCR + smart filtering | Inventory updates |
 | Recipe photo/text | Ingredient parsing | Cost calculation |
 | Daily purchases | Price tracking | Trend alerts |
 
@@ -102,179 +102,225 @@ Small bakery/F&B owners:
 
 # System Architecture
 
+## High-Level Overview
+
 ```mermaid
 flowchart TB
     subgraph INPUT["📥 Input Channels"]
-        I1[WhatsApp Bot]
+        I1[Telegram Bot]
         I2[Web App]
     end
 
-    subgraph CORE["⚙️ Core Engine"]
-        C1[Receipt Scanner]
-        C2[Recipe Parser]
-        C3[Price Tracker]
-        C4[Cost Calculator]
-        C5[Alert Engine]
+    subgraph API["🎯 Nastart API - Vertical Slices"]
+        direction TB
+        F1[Ingredients Features]
+        F2[Recipes Features]
+        F3[Purchases Features]
+        F4[Alerts Features]
+    end
+
+    subgraph SERVICES["⚙️ External Services"]
+        S1[PaddleOCR Service]
     end
 
     subgraph DATA["🗄️ Database"]
-        D1[(Ingredients)]
-        D2[(Purchases)]
-        D3[(Recipes)]
-        D4[(Sales)]
+        D1[(PostgreSQL)]
     end
 
     subgraph OUTPUT["📤 Output"]
         O1[Dashboard]
-        O2[WhatsApp Alerts]
-        O3[Email Reports]
+        O2[Telegram Alerts]
     end
 
-    INPUT --> CORE
-    CORE <--> DATA
-    CORE --> OUTPUT
+    INPUT --> API
+    API <--> DATA
+    API --> S1
+    API --> OUTPUT
 ```
+
+## Vertical Slice Architecture
+
+Instead of organizing by technical layers (Controllers → Services → Repositories), we organize by **features**:
+
+```mermaid
+flowchart LR
+    subgraph SLICE["📌 One Feature Slice"]
+        direction TB
+        E[Endpoint] --> C[Command/Query]
+        C --> H[Handler]
+        H --> D[(Database)]
+        H --> N[Notifications]
+    end
+    
+    R[HTTP Request] --> E
+    N --> A[Side Effects]
+```
+
+Each feature contains **everything it needs** in one place — no jumping between folders!
 
 ---
 
-# Domain-Driven Design
+# Vertical Slice Architecture
 
-## Bounded Contexts
+## Why Vertical Slices?
 
-```mermaid
-flowchart TB
-    subgraph INVENTORY["📦 INVENTORY CONTEXT"]
-        I1[Ingredient]
-        I2[Category]
-        I3[Stock]
-        I4[Shop]
-    end
+| Traditional Layers | Vertical Slices |
+|-------------------|-----------------|
+| Changes span multiple folders | Changes in one folder |
+| Hard to delete features | Delete folder = delete feature |
+| Abstractions for abstraction's sake | Concrete implementations |
+| Repository → Service → Controller | Everything in one file/folder |
+| Cognitive load across layers | Full context in one place |
 
-    subgraph RECIPE["📖 RECIPE CONTEXT"]
-        R1[Recipe]
-        R2[RecipeItem]
-        R3[CostCalculation]
-        R4[Margin]
-    end
+> 📖 **Reference**: *"Minimal APIs are designed to create HTTP APIs with minimal dependencies. They're ideal for microservices and apps that want to include only the minimum files, features, and dependencies."*
+>
+> — [Microsoft: Minimal APIs overview](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/overview)
 
-    subgraph FINANCE["💰 FINANCE CONTEXT"]
-        F1[Purchase]
-        F2[Sale]
-        F3[PriceHistory]
-        F4[Profit]
-    end
+## Feature Organization
 
-    subgraph ALERT["🔔 ALERT CONTEXT"]
-        A1[Alert]
-        A2[Trigger]
-        A3[Channel]
-    end
-
-    subgraph INTEGRATION["🤖 INTEGRATION CONTEXT"]
-        G1[ReceiptScanning]
-        G2[BotMessaging]
-        G3[UserIdentity]
-    end
-
-    FINANCE -->|PriceChanged| INVENTORY
-    FINANCE -->|PriceSpikeDetected| ALERT
-    RECIPE -->|MarginBelowThreshold| ALERT
-    INVENTORY -->|LowStock| ALERT
+```
+Features/
+├── Ingredients/
+│   ├── CreateIngredient.cs      # Command + Handler + Endpoint
+│   ├── GetIngredient.cs         # Query + Handler + Endpoint
+│   ├── UpdateIngredientPrice.cs # Command + Handler + Endpoint
+│   ├── GetLowStockIngredients.cs
+│   ├── Ingredient.cs            # Entity model
+│   └── IngredientsEndpoints.cs  # Route group
+│
+├── Recipes/
+│   ├── CreateRecipe.cs
+│   ├── GetRecipeCost.cs
+│   ├── Recipe.cs
+│   └── RecipesEndpoints.cs
+│
+├── Purchases/
+│   ├── RecordPurchase.cs
+│   ├── ScanReceipt.cs
+│   ├── Purchase.cs
+│   └── PurchasesEndpoints.cs
+│
+└── Alerts/
+    ├── CreateAlert.cs
+    ├── GetUnreadAlerts.cs
+    └── AlertsEndpoints.cs
 ```
 
-## Ubiquitous Language
+## Anatomy of a Feature Slice
+
+Each feature file contains:
+
+```csharp
+// CreateIngredient.cs — Complete feature in one file
+
+// ── Request (Command) ──
+public sealed record CreateIngredientCommand(
+    string Name,
+    string Unit,
+    decimal InitialPrice,
+    decimal MinimumStock
+) : IRequest<Result<IngredientResponse>>;
+
+// ── Response ──
+public sealed record IngredientResponse(
+    Guid Id,
+    string Name,
+    string Unit,
+    decimal CurrentPrice,
+    bool IsLowStock
+);
+
+// ── Validator ──
+public sealed class CreateIngredientValidator : AbstractValidator<CreateIngredientCommand>
+{
+    public CreateIngredientValidator()
+    {
+        RuleFor(x => x.Name).NotEmpty().MaximumLength(100);
+        RuleFor(x => x.InitialPrice).GreaterThanOrEqualTo(0);
+    }
+}
+
+// ── Handler ──
+public sealed class CreateIngredientHandler 
+    : IRequestHandler<CreateIngredientCommand, Result<IngredientResponse>>
+{
+    private readonly NastartDbContext _db;
+
+    public async Task<Result<IngredientResponse>> Handle(
+        CreateIngredientCommand request, 
+        CancellationToken cancellationToken)
+    {
+        // Direct database access — no repository abstraction
+        var ingredient = new Ingredient { /* ... */ };
+        _db.Ingredients.Add(ingredient);
+        await _db.SaveChangesAsync(cancellationToken);
+        
+        return new IngredientResponse(/* ... */);
+    }
+}
+```
+
+## Glossary (Feature-Based)
 
 | Term | Definition |
 |------|------------|
-| **Ingredient** | A trackable item used in recipes (flour, sugar, butter) |
-| **Purchase** | A single shopping transaction with receipt |
-| **Recipe** | A product formula with ingredients and quantities |
-| **Cost** | Total ingredient expense to produce one unit |
-| **Margin** | Percentage profit after deducting cost from sell price |
-| **Price Spike** | When ingredient price increases >15% from last purchase |
-| **Low Stock** | When ingredient quantity falls below minimum threshold |
+| **Feature Slice** | A self-contained unit with Command/Query, Handler, Validator, and Endpoint |
+| **Command** | A request to change state (e.g., `CreateIngredientCommand`) |
+| **Query** | A request to read data (e.g., `GetRecipeCostQuery`) |
+| **Handler** | Processes a command/query and returns a result |
+| **Notification** | MediatR event for side effects (e.g., `PriceChangedNotification`) |
+| **Result** | Success/Failure wrapper instead of exceptions |
 
-## Aggregates & Entities
-
-### Inventory Context
-```
-Ingredient (Aggregate Root)
-├── IngredientId (Value Object)
-├── Name
-├── Unit (Value Object: kg, liter, pcs)
-├── CurrentPrice (Money Value Object)
-├── Stock (Quantity Value Object)
-├── MinimumStock
-└── Category
-
-Shop (Aggregate Root)
-├── ShopId
-└── Name
-```
-
-### Recipe Context
-```
-Recipe (Aggregate Root)
-├── RecipeId
-├── Name
-├── SellPrice (Money)
-├── RecipeItems (Entity Collection)
-│   ├── IngredientId
-│   ├── Quantity
-│   └── Cost (Money)
-├── TotalCost (Money) — calculated
-└── Margin (Percentage) — calculated
-```
-
-### Finance Context
-```
-Purchase (Aggregate Root)
-├── PurchaseId
-├── ShopId
-├── PurchaseDate
-├── ReceiptImage (Value Object)
-├── PurchaseItems (Entity Collection)
-│   ├── IngredientId
-│   ├── Quantity
-│   ├── UnitPrice (Money)
-│   └── LineTotal (Money)
-└── Total (Money)
-```
-
-## Value Objects
+## Data Records (Value-Like Objects)
 
 ```csharp
-public record Money(decimal Amount, string Currency = "IDR");
-public record Quantity(decimal Value, Unit Unit);
-public record Unit(string Name);  // kg, gram, liter, ml, pcs
-public record Percentage(decimal Value)
+// Shared/Models/Money.cs
+public sealed record Money(decimal Amount, string Currency = "IDR")
 {
-    public bool IsBelow(decimal threshold) => Value < threshold;
+    public static Money Zero => new(0);
+    public Money Add(Money other) => this with { Amount = Amount + other.Amount };
 }
-public record IngredientId(Guid Value);
-public record RecipeId(Guid Value);
-public record PurchaseId(Guid Value);
+
+// Shared/Models/Quantity.cs
+public sealed record Quantity(decimal Value, string Unit)
+{
+    public static Quantity Kilograms(decimal value) => new(value, "kg");
+}
+
+// Shared/Models/Result.cs
+public class Result<T>
+{
+    public bool IsSuccess { get; }
+    public T? Value { get; }
+    public Error? Error { get; }
+}
 ```
 
-## Domain Events
+## MediatR Notifications for Side Effects
 
-| Context | Event | Triggers |
-|---------|-------|----------|
-| Finance | `PurchaseRecordedEvent` | Updates ingredient prices |
-| Finance | `PriceSpikeDetectedEvent` | Creates alert |
-| Inventory | `PriceChangedEvent` | Recalculates recipe costs |
-| Recipe | `MarginBelowThresholdEvent` | Creates alert |
-| Inventory | `LowStockEvent` | Creates alert |
+```mermaid
+flowchart LR
+    H[UpdatePriceHandler] -->|Publish| N[PriceChangedNotification]
+    N --> H1[RecalculateRecipeCosts]
+    N --> H2[CreatePriceSpikeAlert]
+    N --> H3[SendTelegramNotification]
+```
 
-## CQRS Pattern
+| Notification | Triggers |
+|--------------|----------|
+| `PriceChangedNotification` | Recalculates recipe costs |
+| `PriceSpikeNotification` | Creates alert, sends Telegram message |
+| `LowStockNotification` | Creates alert |
+| `MarginBelowThresholdNotification` | Creates alert |
+
+## CQRS Pattern (Simplified)
 
 | Commands (Write) | Queries (Read) |
 |------------------|----------------|
-| CreateIngredient | GetIngredientById |
-| RecordPurchase | GetLowStockIngredients |
-| CreateRecipe | GetRecipeCost |
-| RecordSale | GetProfitSummary |
-| UpdateStock | GetPriceHistory |
+| `CreateIngredientCommand` | `GetIngredientQuery` |
+| `RecordPurchaseCommand` | `GetLowStockIngredientsQuery` |
+| `CreateRecipeCommand` | `GetRecipeCostQuery` |
+| `ScanReceiptCommand` | `GetProfitSummaryQuery` |
 
 ---
 
@@ -750,7 +796,7 @@ sequenceDiagram
 
 # Project Structure
 
-## Repository Layout
+## Repository Layout (Vertical Slice Architecture)
 
 ```
 nastart/
@@ -761,78 +807,84 @@ nastart/
 ├── backend/
 │   ├── Nastart.slnx
 │   ├── src/
-│   │   ├── Nastart.Api/
-│   │   │   ├── Controllers/
-│   │   │   ├── Middleware/
-│   │   │   └── Program.cs
-│   │   │
-│   │   ├── Nastart.Domain/
-│   │   │   ├── Common/
-│   │   │   │   ├── Entity.cs
-│   │   │   │   ├── AggregateRoot.cs
-│   │   │   │   ├── ValueObject.cs
-│   │   │   │   └── IDomainEvent.cs
-│   │   │   ├── Inventory/
-│   │   │   │   ├── Aggregates/
-│   │   │   │   ├── ValueObjects/
-│   │   │   │   └── Events/
-│   │   │   ├── Recipe/
-│   │   │   ├── Finance/
-│   │   │   └── Alert/
-│   │   │
-│   │   ├── Nastart.Application/
-│   │   │   ├── Inventory/
-│   │   │   │   ├── Commands/
-│   │   │   │   ├── Queries/
-│   │   │   │   └── EventHandlers/
-│   │   │   ├── Recipe/
-│   │   │   └── Finance/
-│   │   │
-│   │   ├── Nastart.Infrastructure/
-│   │   │   ├── Persistence/
-│   │   │   │   ├── NastartDbContext.cs
-│   │   │   │   ├── Configurations/
-│   │   │   │   └── Repositories/
-│   │   │   └── ExternalServices/
-│   │           ├── PaddleOcrService.cs
-│   │   │       └── TelegramBotService.cs
-│   │   │
-│   │   └── Nastart.Bot/
-│   │       ├── Configuration/
-│   │       │   └── TelegramOptions.cs
-│   │       ├── Controllers/
-│   │       │   └── TelegramWebhookController.cs
-│   │       ├── Commands/
-│   │       │   ├── ICommandHandler.cs
-│   │       │   ├── StartCommand.cs
-│   │       │   ├── HelpCommand.cs
-│   │       │   └── CostCommand.cs
-│   │       ├── Handlers/
-│   │       │   ├── ITextHandler.cs
-│   │       │   ├── IPhotoHandler.cs
-│   │       │   ├── ICallbackHandler.cs
-│   │       │   ├── TextHandler.cs
-│   │       │   ├── PhotoHandler.cs
-│   │       │   └── CallbackHandler.cs
-│   │       ├── Keyboards/
-│   │       │   ├── IKeyboardBuilder.cs
-│   │       │   └── KeyboardBuilder.cs
-│   │       ├── Middleware/
-│   │       │   └── TelegramErrorHandlingMiddleware.cs
-│   │       ├── Routing/
-│   │       │   ├── IUpdateRouter.cs
-│   │       │   └── UpdateRouter.cs
-│   │       ├── Services/
-│   │       │   ├── IUpdateQueue.cs
-│   │       │   ├── UpdateQueue.cs
-│   │       │   ├── WebhookRegistrationService.cs
-│   │       │   └── UpdateProcessingService.cs
-│   │       └── Extensions/
-│   │           └── TelegramBotExtensions.cs
+│   │   └── Nastart.Api/
+│   │       ├── Features/                        # 🎯 Feature Slices
+│   │       │   ├── Ingredients/
+│   │       │   │   ├── Ingredient.cs            # Entity model
+│   │       │   │   ├── CreateIngredient.cs      # Command + Handler + Validator
+│   │       │   │   ├── GetIngredient.cs         # Query + Handler
+│   │       │   │   ├── GetIngredients.cs
+│   │       │   │   ├── UpdateIngredientPrice.cs
+│   │       │   │   ├── GetLowStockIngredients.cs
+│   │       │   │   ├── IngredientNotifications.cs
+│   │       │   │   └── IngredientsEndpoints.cs  # Route group
+│   │       │   │
+│   │       │   ├── Recipes/
+│   │       │   │   ├── Recipe.cs
+│   │       │   │   ├── RecipeItem.cs
+│   │       │   │   ├── CreateRecipe.cs
+│   │       │   │   ├── GetRecipeCost.cs
+│   │       │   │   ├── AddIngredientToRecipe.cs
+│   │       │   │   └── RecipesEndpoints.cs
+│   │       │   │
+│   │       │   ├── Purchases/
+│   │       │   │   ├── Purchase.cs
+│   │       │   │   ├── PurchaseItem.cs
+│   │       │   │   ├── RecordPurchase.cs
+│   │       │   │   ├── ScanReceipt.cs
+│   │       │   │   ├── GetPurchaseHistory.cs
+│   │       │   │   └── PurchasesEndpoints.cs
+│   │       │   │
+│   │       │   ├── Alerts/
+│   │       │   │   ├── Alert.cs
+│   │       │   │   ├── CreateAlert.cs
+│   │       │   │   ├── GetUnreadAlerts.cs
+│   │       │   │   └── AlertsEndpoints.cs
+│   │       │   │
+│   │       │   └── Bot/                         # Telegram Bot Features
+│   │       │       ├── Commands/
+│   │       │       │   ├── StartCommand.cs
+│   │       │       │   ├── HelpCommand.cs
+│   │       │       │   ├── CostCommand.cs
+│   │       │       │   └── PriceCommand.cs
+│   │       │       ├── Handlers/
+│   │       │       │   ├── PhotoHandler.cs
+│   │       │       │   └── CallbackHandler.cs
+│   │       │       ├── TelegramWebhookEndpoint.cs
+│   │       │       └── BotEndpoints.cs
+│   │       │
+│   │       ├── Shared/                          # Cross-cutting concerns
+│   │       │   ├── Data/
+│   │       │   │   └── NastartDbContext.cs
+│   │       │   ├── Models/
+│   │       │   │   ├── Result.cs
+│   │       │   │   ├── Money.cs
+│   │       │   │   ├── Quantity.cs
+│   │       │   │   └── PagedResult.cs
+│   │       │   ├── Behaviors/
+│   │       │   │   ├── ValidationBehavior.cs
+│   │       │   │   └── LoggingBehavior.cs
+│   │       │   └── Services/
+│   │       │       ├── PaddleOcrService.cs
+│   │       │       └── TelegramService.cs
+│   │       │
+│   │       ├── Program.cs
+│   │       └── Nastart.Api.csproj
 │   │
 │   └── tests/
-│       ├── Nastart.Domain.Tests/
-│       └── Nastart.Application.Tests/
+│       └── Nastart.Api.Tests/
+│           ├── Features/
+│           │   ├── Ingredients/
+│           │   │   ├── CreateIngredientTests.cs
+│           │   │   └── CreateIngredientValidatorTests.cs
+│           │   └── Recipes/
+│           │       └── GetRecipeCostTests.cs
+│           └── Nastart.Api.Tests.csproj
+│
+├── ocr-service/                                 # Python PaddleOCR
+│   ├── main.py
+│   ├── requirements.txt
+│   └── Dockerfile
 │
 ├── frontend/
 │   ├── nuxt.config.ts
@@ -842,16 +894,19 @@ nastart/
 │   └── stores/
 │
 └── docs/
+    ├── nastart-complete-docs.md
     ├── glossary.md
-    ├── architecture.md
-    └── learning-log.md
+    └── lessons/
+        ├── week-01-strategic-design.md
+        ├── week-02-domain-foundation.md
+        └── ...
 ```
 
 ---
 
 # Learning Roadmap
 
-> **Approach**: Deep learning with understanding — Telegram bot first, WhatsApp later.
+> **Approach**: Feature-by-feature learning with Vertical Slice Architecture — Telegram bot first, WhatsApp later.
 
 ## Phase 0: Strategic Design (Week 1)
 
@@ -864,78 +919,86 @@ nastart/
 | 6 | Initialize solution — `dotnet new sln -n Nastart` |
 | 7 | Setup Docker — PostgreSQL in docker-compose.yml |
 
-## Phase 1: Domain Layer Foundation (Weeks 2-4)
+## Phase 1: Feature Building Blocks (Weeks 2-4)
 
-### Week 2 — Common Building Blocks + Inventory Context
-- [ ] Create `Entity.cs`, `AggregateRoot.cs`, `ValueObject.cs`, `IDomainEvent.cs`
-- [ ] Build Value Objects — `Money`, `Quantity`, `Unit`
-- [ ] Create `Ingredient` aggregate root with business rules
-- [ ] Create `Category` entity, `Shop` aggregate
-- [ ] Write domain event `PriceChangedEvent`
-- [ ] Unit test Value Objects and Ingredient aggregate
-
-### Week 3 — Finance Context Domain
-- [ ] Create `PurchaseId`, `SaleId` strongly-typed IDs
-- [ ] Build `Purchase` aggregate with `PurchaseItem` entities
-- [ ] Implement `AddItem()`, `CalculateTotal()` business methods
-- [ ] Build `PriceHistory` aggregate
-- [ ] Create `PriceAnalysisService` — detect spikes (>15%)
-- [ ] Write `PriceSpikeDetectedEvent`
-
-### Week 4 — Recipe Context Domain
-- [ ] Create `RecipeId` and `Margin` value objects
-- [ ] Build `Recipe` aggregate with `RecipeItem` collection
-- [ ] Implement `AddIngredient()`, `RecalculateCost()`
-- [ ] Create `CostCalculationService` (Domain Service)
-- [ ] Write `MarginBelowThresholdEvent`
-- [ ] Build `Alert` aggregate
-
-## Phase 2: Application & Infrastructure (Weeks 5-7)
-
-### Week 5 — Application Layer with CQRS
-- [ ] Install MediatR, configure in Program.cs
-- [ ] Create Commands — `CreateIngredientCommand`, `RecordPurchaseCommand`
-- [ ] Create Command Handlers with validation
-- [ ] Create Queries — `GetIngredientByIdQuery`, `GetLowStockQuery`
-- [ ] Create Event Handlers — `PriceChangedHandler`, `PriceSpikeHandler`
-
-### Week 6 — Infrastructure Layer (Persistence)
+### Week 2 — Project Foundation + First Feature Slice
+- [ ] Create feature-based folder structure (`Features/Ingredients/`, etc.)
+- [ ] Install MediatR, FluentValidation, EF Core
 - [ ] Create `NastartDbContext` with DbSets
-- [ ] Configure EF Core mappings — map Value Objects
-- [ ] Implement repositories — `IngredientRepository`, `PurchaseRepository`
-- [ ] Create initial migration, seed Category data
-- [ ] Implement Unit of Work pattern
+- [ ] Build `Ingredient` entity model
+- [ ] Create `CreateIngredient` feature slice (Command + Handler + Validator + Endpoint)
+- [ ] Create `GetIngredients` query feature
+- [ ] Unit test feature handlers
 
-### Week 7 — API Layer + PaddleOCR Integration
-- [ ] Create controllers using MediatR
-- [ ] Configure dependency injection
+### Week 3 — Purchase Features
+- [ ] Build `Purchase` and `PurchaseItem` entity models
+- [ ] Create `RecordPurchase` feature slice
+- [ ] Create `GetPurchaseHistory` query
+- [ ] Implement price change detection in handler
+- [ ] Create `PriceChangedNotification` and handlers
+- [ ] Create `PriceSpikeNotification` for >15% changes
+- [ ] Unit test purchase features
+
+### Week 4 — Recipe Features + Alerts
+- [ ] Build `Recipe` and `RecipeItem` entity models
+- [ ] Create `CreateRecipe` feature slice
+- [ ] Create `GetRecipeCost` query with live calculation
+- [ ] Create `AddIngredientToRecipe` feature
+- [ ] Implement margin calculation in handler
+- [ ] Build `Alert` entity and `CreateAlert` feature
+- [ ] Create `MarginBelowThresholdNotification`
+
+## Phase 2: Infrastructure & Integration (Weeks 5-7)
+
+### Week 5 — Database & Shared Services
+- [ ] Configure EF Core entity mappings
+- [ ] Create database migrations
+- [ ] Seed initial Category data
+- [ ] Create `Result<T>` pattern for error handling
+- [ ] Add `ValidationBehavior` pipeline
+- [ ] Add `LoggingBehavior` for debugging
+
+### Week 6 — PaddleOCR Integration
 - [ ] Set up PaddleOCR Python microservice with FastAPI
-- [ ] Implement `PaddleOcrService` client in .NET
-- [ ] Create `ScanReceiptCommand`
+- [ ] Create `PaddleOcrService` HTTP client in .NET
+- [ ] Create `ScanReceipt` feature slice
+- [ ] Implement `FuzzyMatchingService` for ingredient detection
+- [ ] Handle OCR errors gracefully
+- [ ] Test with real receipt photos
+
+### Week 7 — API Polish & OpenAPI
+- [ ] Configure OpenAPI/Swagger documentation
+- [ ] Add request/response examples
+- [ ] Configure CORS for frontend
+- [ ] Add health check endpoints
+- [ ] Rate limiting for bot endpoints
+- [ ] Error handling middleware
 
 ## Phase 3: Telegram Bot (Weeks 8-10)
 
 ### Week 8 — Bot Fundamentals
 - [ ] Create Telegram bot via BotFather
 - [ ] Study Telegram Bot API — webhooks, message types
-- [ ] Create `Nastart.Bot` project
-- [ ] Implement `TelegramUpdateController`
-- [ ] Create `CommandRouter` for `/start`, `/help`
+- [ ] Create `TelegramWebhookEndpoint` feature
+- [ ] Create `StartCommand` feature slice
+- [ ] Create `HelpCommand` feature slice
+- [ ] Implement command routing
 
 ### Week 9 — Receipt Photo Handling
-- [ ] Implement photo message detection
-- [ ] Create `ReceiptPhotoHandler` — download image
-- [ ] Connect to `PaddleOcrService` for OCR
-- [ ] Create `IngredientMatchingService` (fuzzy match)
-- [ ] Send confirmation with extracted items
+- [ ] Implement `PhotoHandler` feature
+- [ ] Download image from Telegram servers
+- [ ] Connect to `ScanReceipt` feature
+- [ ] Build confirmation keyboard UI
+- [ ] Handle user confirmation/edit callbacks
+- [ ] Send progress updates during OCR
 
 ### Week 10 — Bot Commands + Alerts
-- [ ] Implement `/cost [recipe]`
-- [ ] Implement `/price [ingredient]`
-- [ ] Implement `/low` — list low stock
-- [ ] Implement `/profit` — quick summary
-- [ ] Create `AlertNotificationService`
-- [ ] Connect domain events to Telegram notifications
+- [ ] Create `CostCommand` — `/cost [recipe]`
+- [ ] Create `PriceCommand` — `/price [ingredient]`
+- [ ] Create `LowStockCommand` — `/low`
+- [ ] Create `ProfitCommand` — `/profit`
+- [ ] Connect notifications to Telegram messages
+- [ ] Test full bot workflow
 
 ## Phase 4: Vue.js Dashboard (Weeks 11-14)
 
@@ -968,7 +1031,7 @@ nastart/
 
 ### Week 15 — WhatsApp Integration
 - [ ] Apply for WhatsApp Cloud API
-- [ ] Adapt bot logic for WhatsApp webhooks
+- [ ] Adapt bot features for WhatsApp webhooks
 - [ ] Implement phone linking with OTP
 
 ### Week 16 — AWS Deployment
@@ -982,9 +1045,10 @@ nastart/
 
 | What You Build | What You Learn | Career Value |
 |----------------|----------------|---------------|
-| .NET 10 API with DDD | Domain modeling, clean architecture | Enterprise patterns |
+| .NET 10 API with VSA | Feature-based architecture, Minimal APIs | Modern patterns |
+| MediatR + FluentValidation | CQRS-lite, pipeline behaviors | Clean code |
 | PaddleOCR Python microservice | ML service integration, microservices | In-demand skill |
-| Telegram bot | Event-driven architecture | Modern integrations |
+| Telegram bot | Event-driven architecture, webhooks | Modern integrations |
 | Nuxt 4 / Vue.js 3 dashboard | Frontend data visualization | Full-stack capability |
 | Complete product | Shipping end-to-end | Portfolio differentiator |
 
@@ -997,7 +1061,7 @@ nastart/
 | Layer | Technology |
 |-------|------------|
 | Frontend | Vue.js 3 (Nuxt 4) |
-| Backend | .NET 10 (C#) |
+| Backend | .NET 10 (C#) with Minimal APIs |
 | Database | PostgreSQL 18 (local) |
 | OCR | PaddleOCR (Python microservice) |
 | Bot | Telegram Bot API |
@@ -1084,7 +1148,7 @@ public class PaddleOcrService : IOcrService
 flowchart TB
     subgraph Users
         U1[Web Browser]
-        U2[WhatsApp]
+        U2[Telegram]
     end
 
     subgraph AWS
@@ -1097,17 +1161,15 @@ flowchart TB
     end
 
     subgraph External
-        WA[WhatsApp Cloud API]
         TG[Telegram API]
     end
 
     U1 --> CF --> S3
     U1 --> ECS
-    U2 --> WA --> ECS
+    U2 --> TG --> ECS
     ECS --> RDS
     ECS --> S3R
     ECS --> OCR
-    ECS --> TG
 ```
 
 ### Deployment Flow
@@ -1119,4 +1181,4 @@ Local Dev → GitHub → AWS CodePipeline → ECS/S3
 
 *Nastart — Start smart, bake profitable*
 
-*Document updated: January 30, 2026*
+*Document updated: February 6, 2026*
