@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Nastart.Api/Nastart.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Nastart.Api.Tests/Nastart.Api.Tests.csproj" />
+  </Folder>
+</Solution>

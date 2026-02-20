@@ -1,0 +1,32 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Node
+node_modules/
+.nuxt/
+.output/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+
+# IDE
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+appsettings.*.json
+!appsettings.json
+!appsettings.Development.json
+/secrets
