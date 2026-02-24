@@ -15,7 +15,7 @@ public class Ingredient
     public Guid? CategoryId { get; set; }
     public Guid? BrandId { get; set; }
     public DateTime? LastPurchaseDate { get; set; }
-    public DateTime CreatedAt { get; set; }
+    public DateTimeOffset CreatedAt {get; set;} = DateTimeOffset.UtcNow;
     public DateTime? UpdatedAt { get; set; }
 
     public bool HasPrice => CurrentPrice.HasValue;
