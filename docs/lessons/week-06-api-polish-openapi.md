@@ -1,4 +1,4 @@
-# Week 7: API Polish & OpenAPI 🎨
+# Week 6: API Polish & OpenAPI 🎨
 
 > **Goal**: Polish your API with OpenAPI documentation, health checks, CORS configuration, rate limiting, and robust error handling middleware — making your API production-ready.
 
@@ -351,7 +351,7 @@ public static class IngredientsEndpoints
         GetIngredients(
             [FromQuery] Guid userId,
             [FromQuery] string? searchTerm,
-            [FromQuery] int? categoryId,
+            [FromQuery] Guid? categoryId,
             [FromQuery] bool? lowStockOnly,
             [FromServices] IMediator mediator)
     {
@@ -415,29 +415,29 @@ Update feature commands with rich XML documentation:
 /// <param name="UserId">The ID of the user creating the ingredient</param>
 /// <param name="Name">Name of the ingredient (e.g., "Tepung Terigu")</param>
 /// <param name="Unit">Unit of measurement (e.g., "kg", "pcs", "liter")</param>
-/// <param name="CurrentPrice">Current price per unit in IDR</param>
+/// <param name="CurrentPrice">Current price per unit in IDR (null if not yet priced)</param>
 /// <param name="CurrentStock">Current stock quantity</param>
-/// <param name="MinimumStock">Minimum stock threshold for alerts</param>
+/// <param name="MinStock">Minimum stock threshold for alerts</param>
 /// <param name="CategoryId">Optional category ID for grouping</param>
 /// <example>
 /// {
 ///   "userId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
 ///   "name": "Tepung Terigu",
 ///   "unit": "kg",
-///   "currentPrice": 18000,
+///   "currentPrice": 18000,  // optional — omit for unpriced ingredients
 ///   "currentStock": 10,
-///   "minimumStock": 2,
-///   "categoryId": 1
+///   "minStock": 2,
+///   "categoryId": "a0000001-0000-0000-0000-000000000001"
 /// }
 /// </example>
 public sealed record CreateIngredientCommand(
     Guid UserId,
     string Name,
     string Unit,
-    decimal CurrentPrice,
+    decimal? CurrentPrice,
     decimal CurrentStock,
-    decimal MinimumStock,
-    int? CategoryId = null
+    decimal MinStock,
+    Guid? CategoryId = null
 ) : IRequest<Result<IngredientResponse>>;
 ```
 
@@ -461,9 +461,10 @@ public class IngredientResponseExample : IExamplesProvider<IngredientResponse>
         Unit: "kg",
         CurrentPrice: 18000m,
         CurrentStock: 10.5m,
-        MinimumStock: 2m,
+        MinStock: 2m,
         IsLowStock: false,
-        CategoryId: 1,
+        HasPrice: true,
+        CategoryId: Guid.Parse("a0000001-0000-0000-0000-000000000001"),
         CategoryName: "Bahan Dasar"
     );
 }
@@ -479,7 +480,7 @@ public class PurchaseResponseExample : IExamplesProvider<PurchaseResponse>
         PurchaseDate: new DateTime(2026, 2, 5),
         TotalAmount: 105000m,
         ItemCount: 5,
-        Status: "Confirmed",
+        Status: PurchaseStatus.Confirmed,
         Items: new List<PurchaseItemResponse>
         {
             new(
@@ -488,7 +489,7 @@ public class PurchaseResponseExample : IExamplesProvider<PurchaseResponse>
                 IngredientName: "Tepung Terigu",
                 Quantity: 2m,
                 UnitPrice: 18000m,
-                LineTotal: 36000m
+                TotalPrice: 36000m
             )
         },
         CreatedAt: DateTime.UtcNow
@@ -1709,7 +1710,7 @@ public class ApiEndpointTests : IClassFixture<WebApplicationFactory<Program>>
             Unit: "kg",
             CurrentPrice: 10000m,
             CurrentStock: 5m,
-            MinimumStock: 1m);
+            MinStock: 1m);
         
         // Act
         var response = await _client.PostAsJsonAsync(
@@ -1736,7 +1737,7 @@ public class ApiEndpointTests : IClassFixture<WebApplicationFactory<Program>>
             Unit: "kg",
             CurrentPrice: -100m, // Invalid: negative price
             CurrentStock: 5m,
-            MinimumStock: 1m);
+            MinStock: 1m);
         
         // Act
         var response = await _client.PostAsJsonAsync(
@@ -1831,10 +1832,10 @@ Content-Type: application/json
   "userId": "{{userId}}",
   "name": "Tepung Terigu",
   "unit": "kg",
-  "currentPrice": 18000,
+  "currentPrice": 18000,  // optional — omit for unpriced ingredients
   "currentStock": 10,
-  "minimumStock": 2,
-  "categoryId": 1
+  "minStock": 2,
+  "categoryId": "a0000001-0000-0000-0000-000000000001"
 }
 
 ### Get All Ingredients

@@ -1,4 +1,4 @@
-# Week 6: PaddleOCR Integration 📷
+# Week 7: PaddleOCR Integration 📷
 
 > **Goal**: Integrate PaddleOCR for receipt scanning — set up the Python microservice with FastAPI, create the HTTP client in .NET, build the `ScanReceipt` feature slice, and implement fuzzy matching for ingredient detection.
 
@@ -387,8 +387,13 @@ def clean_text(text: str) -> str:
     """Clean OCR text for parsing."""
     # Remove extra whitespace
     text = ' '.join(text.split())
-    # Remove common OCR artifacts
-    text = text.replace('|', 'I').replace('0', 'O').replace('1', 'I')
+    # Fix common OCR pipe-to-I misread
+    text = text.replace('|', 'I')
+    # Fix 0→O and 1→I only in alphabetic words (preserve digits in prices)
+    def _fix_alpha(m: re.Match) -> str:
+        w = m.group()
+        return w.replace('0', 'O').replace('1', 'I')
+    text = re.sub(r'[A-Za-z][A-Za-z01]+', _fix_alpha, text)
     return text.strip()
 
 
@@ -397,8 +402,8 @@ def extract_price(text: str) -> Optional[float]:
     Extract price from text line.
     Handles formats: 25000, 25.000, 25,000, Rp 25.000
     """
-    # Remove currency symbols and whitespace
-    cleaned = re.sub(r'[Rp\s]', '', text)
+    # Remove Indonesian currency prefix and whitespace
+    cleaned = re.sub(r'Rp\.?\s*', '', text)
     
     # Find number at end of line (usually the price)
     match = PRICE_PATTERN.search(cleaned)
@@ -1613,6 +1618,8 @@ public sealed class ScanReceiptHandler
     
     /// <summary>
     /// Find best matching ingredient using fuzzy matching.
+    /// Note: List&lt;dynamic&gt; is used here for simplicity in Day 4.
+    /// Day 5 refactors this to use a typed IngredientInfo record.
     /// </summary>
     private IngredientMatchResponse? FindBestMatch(
         string? itemName,
@@ -2354,8 +2361,7 @@ public class ScanReceiptTests
                 Unit = "kg",
                 CurrentPrice = 18000,
                 CurrentStock = 10,
-                MinimumStock = 2,
-                CreatedAt = DateTime.UtcNow
+                MinStock = 2
             },
             new Ingredient
             {
@@ -2365,8 +2371,7 @@ public class ScanReceiptTests
                 Unit = "kg",
                 CurrentPrice = 16000,
                 CurrentStock = 5,
-                MinimumStock = 1,
-                CreatedAt = DateTime.UtcNow
+                MinStock = 1
             }
         );
         await _db.SaveChangesAsync();

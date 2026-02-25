@@ -78,8 +78,10 @@ public class Recipe
     
     /// <summary>
     /// The selling price per unit.
+    /// Nullable — not required in Draft status.
+    /// Required when transitioning to Costing status.
     /// </summary>
-    public decimal SellPrice { get; set; }
+    public decimal? SellPrice { get; set; }
     
     /// <summary>
     /// Calculated total cost of all ingredients.
@@ -93,9 +95,10 @@ public class Recipe
     public decimal MarginPercent { get; set; }
     
     /// <summary>
-    /// Recipe status: Draft, Active, NeedsReview, Inactive, Archived.
+    /// Recipe status: tracks the recipe lifecycle.
+    /// See state diagram in nastart-complete-docs.md.
     /// </summary>
-    public required string Status { get; set; } = "Draft";
+    public RecipeStatus Status { get; set; } = RecipeStatus.Draft;
     
     /// <summary>
     /// Number of units this recipe produces (e.g., "makes 24 cookies").
@@ -111,8 +114,37 @@ public class Recipe
     
     public DateTime? UpdatedAt { get; set; }
     
+    // Computed properties
+    /// <summary>
+    /// Cost per unit = TotalCost / YieldQuantity.
+    /// Essential for bakeries: "each nastar cookie costs Rp 1,200 to make".
+    /// </summary>
+    public decimal CostPerUnit => YieldQuantity > 0 ? TotalCost / YieldQuantity : TotalCost;
+    
+    /// <summary>
+    /// Whether all ingredients in this recipe have known prices.
+    /// Recipe costing is blocked when this is false.
+    /// </summary>
+    public bool HasCompleteCost => Items.All(i => i.Ingredient?.HasPrice == true);
+    
     // Navigation properties
     public ICollection<RecipeItem> Items { get; set; } = [];
+}
+
+/// <summary>
+/// Recipe lifecycle status.
+/// Matches the state diagram in nastart-complete-docs.md.
+/// </summary>
+public enum RecipeStatus
+{
+    Draft,
+    Costing,
+    NeedsPriceAdjustment,
+    Ready,
+    Active,
+    NeedsReview,
+    Inactive,
+    Archived
 }
 
 /// <summary>
@@ -283,11 +315,12 @@ namespace Nastart.Api.Features.Recipes;
 // ── Request ──
 /// <summary>
 /// Command to create a new recipe.
+/// SellPrice is optional in Draft — bakers can plan recipes first, set prices later.
 /// </summary>
 public sealed record CreateRecipeCommand(
     Guid UserId,
     string Name,
-    decimal SellPrice,
+    decimal? SellPrice = null,
     string? Description = null,
     string? Category = null,
     int YieldQuantity = 1,
@@ -303,13 +336,14 @@ public sealed record RecipeResponse(
     string Name,
     string? Description,
     string? Category,
-    decimal SellPrice,
+    decimal? SellPrice,
     decimal TotalCost,
     decimal MarginPercent,
-    string Status,
+    RecipeStatus Status,
     int YieldQuantity,
     string YieldUnit,
     decimal CostPerUnit,
+    bool HasCompleteCost,
     IReadOnlyList<RecipeItemResponse> Items,
     DateTime CreatedAt
 );
@@ -344,9 +378,11 @@ public sealed class CreateRecipeValidator : AbstractValidator<CreateRecipeComman
             .MaximumLength(200)
             .WithMessage("Recipe name is required and must be under 200 characters");
         
+        // SellPrice is optional in Draft — required when moving to Costing
         RuleFor(x => x.SellPrice)
             .GreaterThan(0)
-            .WithMessage("Selling price must be greater than 0");
+            .WithMessage("Selling price must be greater than 0")
+            .When(x => x.SellPrice.HasValue);
         
         RuleFor(x => x.YieldQuantity)
             .GreaterThan(0)
@@ -389,10 +425,10 @@ public sealed class CreateRecipeHandler
             Name = request.Name,
             Description = request.Description,
             Category = request.Category,
-            SellPrice = request.SellPrice,
+            SellPrice = request.SellPrice,  // nullable — null in Draft is OK
             TotalCost = 0,  // No ingredients yet
-            MarginPercent = 100,  // 100% margin when no costs
-            Status = "Draft",
+            MarginPercent = request.SellPrice.HasValue ? 100 : 0,  // 100% margin when no costs, 0 if no price
+            Status = RecipeStatus.Draft,
             YieldQuantity = request.YieldQuantity,
             YieldUnit = request.YieldUnit,
             CreatedAt = DateTime.UtcNow
@@ -403,7 +439,7 @@ public sealed class CreateRecipeHandler
         
         _logger.LogInformation(
             "Created recipe '{Name}' (ID: {RecipeId}) with sell price {SellPrice}",
-            recipe.Name, recipe.Id, recipe.SellPrice);
+            recipe.Name, recipe.Id, recipe.SellPrice?.ToString() ?? "(not set)");
         
         return Result<RecipeResponse>.Success(new RecipeResponse(
             Id: recipe.Id,
@@ -417,6 +453,7 @@ public sealed class CreateRecipeHandler
             YieldQuantity: recipe.YieldQuantity,
             YieldUnit: recipe.YieldUnit,
             CostPerUnit: 0,
+            HasCompleteCost: true,  // No ingredients yet = vacuously complete
             Items: [],
             CreatedAt: recipe.CreatedAt
         ));
@@ -490,6 +527,7 @@ public sealed class GetRecipeHandler
             YieldQuantity: recipe.YieldQuantity,
             YieldUnit: recipe.YieldUnit,
             CostPerUnit: costPerUnit,
+            HasCompleteCost: recipe.HasCompleteCost,
             Items: recipe.Items.Select(i => new RecipeItemResponse(
                 Id: i.Id,
                 IngredientId: i.IngredientId,
@@ -645,7 +683,7 @@ public sealed class AddIngredientToRecipeHandler
         {
             // Update existing item
             existingItem.Quantity += request.Quantity;
-            existingItem.Cost = existingItem.Quantity * ingredient.CurrentPrice;
+            existingItem.Cost = existingItem.Quantity * (ingredient.CurrentPrice ?? 0);
             
             _logger.LogInformation(
                 "Updated {Ingredient} in recipe '{Recipe}': quantity now {Quantity}",
@@ -660,14 +698,15 @@ public sealed class AddIngredientToRecipeHandler
                 RecipeId = recipe.Id,
                 IngredientId = ingredient.Id,
                 Quantity = request.Quantity,
-                Cost = request.Quantity * ingredient.CurrentPrice
+                Cost = request.Quantity * (ingredient.CurrentPrice ?? 0)
             };
             
             recipe.Items.Add(recipeItem);
             
             _logger.LogInformation(
-                "Added {Ingredient} to recipe '{Recipe}': {Quantity} {Unit}",
-                ingredient.Name, recipe.Name, request.Quantity, ingredient.Unit);
+                "Added {Ingredient} to recipe '{Recipe}': {Quantity} {Unit}{PriceNote}",
+                ingredient.Name, recipe.Name, request.Quantity, ingredient.Unit,
+                ingredient.HasPrice ? "" : " (unpriced)");
         }
         
         // Recalculate recipe totals
@@ -707,6 +746,7 @@ public sealed class AddIngredientToRecipeHandler
             YieldQuantity: recipe.YieldQuantity,
             YieldUnit: recipe.YieldUnit,
             CostPerUnit: costPerUnit,
+            HasCompleteCost: recipe.HasCompleteCost,
             Items: recipe.Items.Select(i => new RecipeItemResponse(
                 Id: i.Id,
                 IngredientId: i.IngredientId,
@@ -722,14 +762,15 @@ public sealed class AddIngredientToRecipeHandler
     
     /// <summary>
     /// Recalculates TotalCost and MarginPercent for a recipe.
+    /// Only uses ingredients that have known prices.
     /// </summary>
     private static void RecalculateRecipeTotals(Recipe recipe)
     {
         recipe.TotalCost = recipe.Items.Sum(i => i.Cost);
         
-        if (recipe.SellPrice > 0)
+        if (recipe.SellPrice.HasValue && recipe.SellPrice.Value > 0)
         {
-            recipe.MarginPercent = ((recipe.SellPrice - recipe.TotalCost) / recipe.SellPrice) * 100;
+            recipe.MarginPercent = ((recipe.SellPrice.Value - recipe.TotalCost) / recipe.SellPrice.Value) * 100;
         }
         else
         {
@@ -738,16 +779,8 @@ public sealed class AddIngredientToRecipeHandler
     }
 }
 
-/// <summary>
-/// Published when a recipe's margin falls below threshold.
-/// </summary>
-public sealed record MarginBelowThresholdNotification(
-    Guid RecipeId,
-    string RecipeName,
-    decimal NewMargin,
-    decimal Threshold,
-    DateTime OccurredAt
-) : INotification;
+// Note: MarginBelowThresholdNotification is defined in RecipeNotifications.cs
+// (see Section 4.4 below) with IsCritical and IsLoss computed properties.
 ```
 
 ### RemoveIngredientFromRecipe Feature:
@@ -820,9 +853,13 @@ public sealed class RemoveIngredientFromRecipeHandler
         
         // Recalculate totals
         recipe.TotalCost = recipe.Items.Sum(i => i.Cost);
-        if (recipe.SellPrice > 0)
+        if (recipe.SellPrice.HasValue && recipe.SellPrice.Value > 0)
         {
-            recipe.MarginPercent = ((recipe.SellPrice - recipe.TotalCost) / recipe.SellPrice) * 100;
+            recipe.MarginPercent = ((recipe.SellPrice.Value - recipe.TotalCost) / recipe.SellPrice.Value) * 100;
+        }
+        else
+        {
+            recipe.MarginPercent = 0;
         }
         
         recipe.UpdatedAt = DateTime.UtcNow;
@@ -849,6 +886,7 @@ public sealed class RemoveIngredientFromRecipeHandler
             YieldQuantity: recipe.YieldQuantity,
             YieldUnit: recipe.YieldUnit,
             CostPerUnit: costPerUnit,
+            HasCompleteCost: recipe.HasCompleteCost,
             Items: recipe.Items.Select(i => new RecipeItemResponse(
                 Id: i.Id,
                 IngredientId: i.IngredientId,
@@ -978,6 +1016,19 @@ public sealed class GetRecipeCostHandler
                     $"Recipe {request.RecipeId} not found"));
         }
         
+        // Check if all ingredients have prices — block costing if not
+        var unpricedIngredients = recipe.Items
+            .Where(i => i.Ingredient?.HasPrice != true)
+            .Select(i => i.Ingredient?.Name ?? "Unknown")
+            .ToList();
+        
+        if (unpricedIngredients.Count > 0)
+        {
+            return Result<RecipeCostResponse>.Failure(
+                Error.Validation("INCOMPLETE_PRICING", 
+                    $"{unpricedIngredients.Count} ingredient(s) need prices before cost can be calculated: {string.Join(", ", unpricedIngredients)}"));
+        }
+        
         // Calculate live cost using current ingredient prices
         var itemCosts = recipe.Items.Select(item =>
         {
@@ -1087,11 +1138,12 @@ public sealed record RecipeSummaryResponse(
     Guid Id,
     string Name,
     string? Category,
-    decimal SellPrice,
+    decimal? SellPrice,
     decimal TotalCost,
     decimal MarginPercent,
-    string Status,
+    RecipeStatus Status,
     string MarginStatus,
+    bool HasCompleteCost,
     int ItemCount
 );
 
@@ -1150,6 +1202,7 @@ public sealed class GetRecipesHandler
                 r.MarginPercent < 0 ? "Loss" :
                 r.MarginPercent < 10 ? "Critical" :
                 r.MarginPercent < 20 ? "Warning" : "Healthy",
+                r.Items.All(i => i.Ingredient != null && i.Ingredient.CurrentPrice.HasValue),
                 r.Items.Count
             ))
             .ToListAsync(cancellationToken);
@@ -1320,6 +1373,10 @@ public sealed class UpdateRecipeSellPriceHandler
             recipe.MarginPercent = 
                 ((recipe.SellPrice - recipe.TotalCost) / recipe.SellPrice) * 100;
         }
+        else
+        {
+            recipe.MarginPercent = 0;
+        }
         
         recipe.UpdatedAt = DateTime.UtcNow;
         
@@ -1357,6 +1414,7 @@ public sealed class UpdateRecipeSellPriceHandler
             YieldQuantity: recipe.YieldQuantity,
             YieldUnit: recipe.YieldUnit,
             CostPerUnit: costPerUnit,
+            HasCompleteCost: recipe.HasCompleteCost,
             Items: recipe.Items.Select(i => new RecipeItemResponse(
                 Id: i.Id,
                 IngredientId: i.IngredientId,
@@ -1731,6 +1789,27 @@ public class CreateRecipeTests
         result.Value!.YieldQuantity.Should().Be(2);
         result.Value.YieldUnit.Should().Be("loaves");
     }
+
+    [Fact]
+    public async Task Handle_WithNullSellPrice_CreatesDraftRecipe()
+    {
+        // Arrange - no sell price yet (draft phase)
+        var command = new CreateRecipeCommand(
+            UserId: Guid.NewGuid(),
+            Name: "New Experiment"
+            // SellPrice defaults to null
+        );
+        
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+        
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.SellPrice.Should().BeNull();
+        result.Value.MarginPercent.Should().Be(0);  // No margin without sell price
+        result.Value.Status.Should().Be("Draft");
+        result.Value.HasCompleteCost.Should().BeTrue();  // No items = vacuously complete
+    }
 }
 ```
 
@@ -1776,7 +1855,7 @@ public class GetRecipeCostTests
             Unit = "kg",
             CurrentPrice = 20000,  // Current price
             CurrentStock = 10,
-            MinimumStock = 2
+            MinStock = 2
         };
         
         var recipe = new Recipe
@@ -1787,7 +1866,7 @@ public class GetRecipeCostTests
             SellPrice = 50000,
             TotalCost = 10000,  // Old stored cost
             MarginPercent = 80,
-            Status = "Active",
+            Status = RecipeStatus.Active,
             YieldQuantity = 2,
             YieldUnit = "loaves"
         };
@@ -1837,7 +1916,7 @@ public class GetRecipeCostTests
             Unit = "kg",
             CurrentPrice = 45000,  // Expensive!
             CurrentStock = 5,
-            MinimumStock = 1
+            MinStock = 1
         };
         
         var recipe = new Recipe
@@ -1848,7 +1927,7 @@ public class GetRecipeCostTests
             SellPrice = 50000,
             TotalCost = 0,
             MarginPercent = 0,
-            Status = "Active",
+            Status = RecipeStatus.Active,
             YieldQuantity = 1,
             YieldUnit = "batch"
         };
@@ -1891,6 +1970,63 @@ public class GetRecipeCostTests
         // Assert
         result.IsSuccess.Should().BeFalse();
         result.Error!.Code.Should().Be("RECIPE_NOT_FOUND");
+    }
+
+    [Fact]
+    public async Task Handle_RecipeWithUnpricedIngredient_ReturnsIncompletePricing()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        
+        var flour = new Ingredient
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Name = "Flour",
+            Unit = "kg",
+            CurrentPrice = null,  // Unpriced!
+            CurrentStock = 10,
+            MinStock = 2
+        };
+        
+        var recipe = new Recipe
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Name = "Bread",
+            SellPrice = 50000,
+            TotalCost = 0,
+            MarginPercent = 0,
+            Status = RecipeStatus.Active,
+            YieldQuantity = 2,
+            YieldUnit = "loaves"
+        };
+        
+        var item = new RecipeItem
+        {
+            Id = Guid.NewGuid(),
+            RecipeId = recipe.Id,
+            IngredientId = flour.Id,
+            Quantity = 1,
+            Cost = 0,
+            Ingredient = flour
+        };
+        
+        recipe.Items.Add(item);
+        
+        _db.Ingredients.Add(flour);
+        _db.Recipes.Add(recipe);
+        await _db.SaveChangesAsync();
+        
+        // Act
+        var result = await _handler.Handle(
+            new GetRecipeCostQuery(recipe.Id, userId), 
+            CancellationToken.None);
+        
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be("INCOMPLETE_PRICING");
+        result.Error.Message.Should().Contain("Flour");
     }
 }
 ```
@@ -1957,9 +2093,26 @@ public class CreateRecipeValidatorTests
         // Act
         var result = _validator.Validate(command);
         
-        // Assert
+        // Assert - zero is invalid when a price IS provided
         result.IsValid.Should().BeFalse();
         result.Errors.Should().Contain(e => e.PropertyName == "SellPrice");
+    }
+
+    [Fact]
+    public void Validate_NullSellPrice_PassesValidation()
+    {
+        // Arrange - null means "not yet priced" and is valid for drafts
+        var command = new CreateRecipeCommand(
+            UserId: Guid.NewGuid(),
+            Name: "Draft Recipe"
+            // SellPrice defaults to null
+        );
+        
+        // Act
+        var result = _validator.Validate(command);
+        
+        // Assert
+        result.IsValid.Should().BeTrue();
     }
 }
 ```

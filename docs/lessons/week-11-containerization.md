@@ -8,10 +8,10 @@
 1. [Day 1: Docker Fundamentals for Nastart](#day-1-docker-fundamentals-for-nastart)
 2. [Day 2: .NET API Dockerfile (Multi-Stage)](#day-2-net-api-dockerfile-multi-stage)
 3. [Day 3: PaddleOCR Service Dockerfile](#day-3-paddleocr-service-dockerfile)
-4. [Day 4: Telegram Bot Worker Dockerfile](#day-4-telegram-bot-worker-dockerfile)
-5. [Day 5: Nuxt 4 Frontend Dockerfile](#day-5-nuxt-4-frontend-dockerfile)
-6. [Day 6: Docker Compose Orchestration](#day-6-docker-compose-orchestration)
-7. [Day 7: Production Hardening & Security](#day-7-production-hardening--security)
+4. [Day 4: Nuxt 4 Frontend Dockerfile](#day-4-nuxt-4-frontend-dockerfile)
+5. [Day 5: Docker Compose Orchestration](#day-5-docker-compose-orchestration)
+6. [Day 6: Production Hardening & Security](#day-6-production-hardening--security)
+7. [Day 7: Review & Practice](#day-7-review--practice)
 8. [Resources](#resources) *(Microsoft & Docker Official Docs)*
 
 ---
@@ -36,8 +36,11 @@ Imagine you have a toy box 📦 that contains EVERYTHING a toy needs to work —
 | PostgreSQL | Database | Consistent version, easy reset |
 | .NET API | ASP.NET Core 10 | Isolated runtime, scalable |
 | OCR Service | Python/PaddleOCR | Heavy ML dependencies isolated |
-| Bot Worker | .NET Worker | Separate scaling from API |
 | Frontend | Nuxt 4/Node.js | Static build, CDN-ready |
+
+> **Note**: The Telegram bot runs *inside* the API service (webhook-based).
+> It is NOT a separate worker service. If you need to extract it later for
+> independent scaling, that's a Phase 5+ optimization.
 
 > 📖 **Microsoft Docs**: *"Docker enables developers to package applications into containers—standardized executable components combining application source code with the OS libraries and dependencies required to run that code in any environment."*
 >
@@ -66,12 +69,10 @@ Imagine you have a toy box 📦 that contains EVERYTHING a toy needs to work —
 │  │  │  PostgreSQL  │◄────────┼────────►│  OCR Service │       │ │
 │  │  │  :5432       │         │         │  (PaddleOCR) │       │ │
 │  │  └──────────────┘         │         │  :8001       │       │ │
-│  │                           │         └──────────────┘       │ │
-│  │                           │                                 │ │
-│  │                    ┌──────┴───────┐                        │ │
-│  │                    │  Bot Worker  │                        │ │
-│  │                    │  (.NET 10)   │                        │ │
-│  │                    └──────────────┘                        │ │
+│  │                                     └──────────────┘       │ │
+│  │                                                             │ │
+│  │  Note: Bot webhook runs inside the API container.          │ │
+│  │  No separate Bot Worker service needed.                    │ │
 │  │                                                             │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 │                                                                  │
@@ -91,10 +92,8 @@ nastart/
 ├── backend/
 │   ├── Nastart.slnx
 │   └── src/
-│       ├── Nastart.Api/
-│       │   └── Dockerfile          # API Dockerfile
-│       └── Nastart.Bot/
-│           └── Dockerfile          # Bot Dockerfile
+│       └── Nastart.Api/
+│           └── Dockerfile          # API Dockerfile (includes bot webhook handler)
 │
 ├── ocr-service/
 │   ├── app/
@@ -409,120 +408,7 @@ docker stop test-ocr && docker rm test-ocr
 
 ---
 
-# Day 4: Telegram Bot Worker Dockerfile
-
-## 🧒 Explain Like I'm 5
-
-The Bot Worker is like a helpful assistant 🤖 who:
-- Waits for messages from Telegram (via polling or webhooks)
-- Processes them in the background
-- Never sleeps (runs 24/7!)
-
-It doesn't need a web server — it's a "worker" that just runs and does its job!
-
-## 🔧 Engineer Language
-
-**.NET Worker Service** is a console application that runs background tasks. Unlike the API, it doesn't expose HTTP endpoints but connects to external services (Telegram, database). The Dockerfile is similar to the API but simpler.
-
-> 📖 **Microsoft Docs**: *"Worker Services are well suited for long-running services and background processing."*
->
-> — [Worker Services in .NET](https://learn.microsoft.com/en-us/dotnet/core/extensions/workers)
-
-### Dockerfile: backend/src/Nastart.Bot/Dockerfile
-
-```dockerfile
-# ==========================================
-# Nastart Bot Worker Dockerfile
-# .NET 10 Worker Service for Telegram Bot
-# ==========================================
-
-# ==========================================
-# STAGE 1: Build
-# ==========================================
-FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
-
-WORKDIR /src
-
-# Copy project files for dependency caching
-COPY src/Nastart.Bot/Nastart.Bot.csproj Nastart.Bot/
-
-# Restore dependencies
-RUN dotnet restore Nastart.Bot/Nastart.Bot.csproj
-
-# Copy source code
-COPY src/Nastart.Bot/ Nastart.Bot/
-
-# Build
-WORKDIR /src/Nastart.Bot
-RUN dotnet build -c Release -o /app/build
-
-# ==========================================
-# STAGE 2: Publish
-# ==========================================
-FROM build AS publish
-
-RUN dotnet publish -c Release -o /app/publish \
-    --no-restore \
-    /p:UseAppHost=false
-
-# ==========================================
-# STAGE 3: Runtime
-# Using base runtime (not aspnet) since no web server needed
-# ==========================================
-FROM mcr.microsoft.com/dotnet/runtime:10.0-alpine AS runtime
-
-# Security: Create non-root user
-RUN addgroup -g 1001 -S appgroup && \
-    adduser -S appuser -u 1001 -G appgroup
-
-WORKDIR /app
-
-# Copy published artifacts
-COPY --from=publish --chown=appuser:appgroup /app/publish .
-
-# Switch to non-root user
-USER 1001
-
-# No EXPOSE needed - worker doesn't serve HTTP
-# No HEALTHCHECK via HTTP - use process monitoring instead
-
-# Start the worker
-ENTRYPOINT ["dotnet", "Nastart.Bot.dll"]
-```
-
-### Key Differences from API Dockerfile
-
-| Aspect | API Dockerfile | Bot Dockerfile |
-|--------|---------------|----------------|
-| Base runtime | `aspnet:10.0-alpine` | `runtime:10.0-alpine` |
-| EXPOSE | Yes (8080) | No |
-| HEALTHCHECK | HTTP /health | Process-based |
-| Purpose | Serve HTTP requests | Background processing |
-
-### Build and Test
-
-```powershell
-cd C:\Users\AU1833\Documents\personal\nastart
-
-# Build the bot image
-docker build -t nastart-bot:dev -f backend/src/Nastart.Bot/Dockerfile ./backend
-
-# Run (will fail without Telegram token, but tests build)
-docker run --rm nastart-bot:dev
-
-# Check image size (should be smaller than API)
-docker images nastart-bot:dev
-```
-
-### Your Task (Day 4):
-
-1. Create the Bot project if not exists: `dotnet new worker -n Nastart.Bot`
-2. Create `backend/src/Nastart.Bot/Dockerfile`
-3. Build and verify the image
-
----
-
-# Day 5: Nuxt 4 Frontend Dockerfile
+# Day 4: Nuxt 4 Frontend Dockerfile
 
 ## 🧒 Explain Like I'm 5
 
@@ -676,7 +562,7 @@ curl http://localhost:3000
 docker stop test-frontend && docker rm test-frontend
 ```
 
-### Your Task (Day 5):
+### Your Task (Day 4):
 
 1. Initialize Nuxt if not exists: `npx nuxi@latest init frontend`
 2. Create `frontend/Dockerfile` with SSR or Static version
@@ -684,7 +570,7 @@ docker stop test-frontend && docker rm test-frontend
 
 ---
 
-# Day 6: Docker Compose Orchestration
+# Day 5: Docker Compose Orchestration
 
 ## 🧒 Explain Like I'm 5
 
@@ -862,7 +748,7 @@ docker compose exec api sh          # Shell access
 docker compose exec postgres psql -U nastart   # PostgreSQL CLI
 ```
 
-### Your Task (Day 6):
+### Your Task (Day 5):
 
 1. Copy `.env.example` to `.env` and configure values
 2. Run `docker compose up -d`
@@ -871,7 +757,7 @@ docker compose exec postgres psql -U nastart   # PostgreSQL CLI
 
 ---
 
-# Day 7: Production Hardening & Security
+# Day 6: Production Hardening & Security
 
 ## 🧒 Explain Like I'm 5
 
@@ -1011,7 +897,7 @@ docker scout cves nastart-api:dev
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image nastart-api:dev
 ```
 
-### Your Task (Day 7):
+### Your Task (Day 6):
 
 1. Review all Dockerfiles for security best practices
 2. Verify non-root users are configured
@@ -1072,6 +958,22 @@ docker compose build --no-cache         # Force rebuild
 
 ---
 
+# Day 7: Review & Practice
+
+Review all Dockerfiles created this week and practice the following:
+
+1. **Build all images** from scratch and verify sizes
+2. **Run `docker compose up`** and test the full stack end-to-end
+3. **Inspect running containers** — check logs, resource usage, health status
+4. **Practice debugging** — use `docker exec -it <container> sh` to investigate issues
+5. **Review security** — ensure all containers run as non-root, no secrets in images
+
+> **Architecture reminder**: The Telegram bot runs inside `Nastart.Api` via webhook endpoints.
+> There is no separate `Nastart.Bot` worker service. If scaling demands it in the future,
+> the bot handlers can be extracted into a dedicated Worker Service (Phase 5+).
+
+---
+
 ## Summary
 
 | Day | Topic | Key Takeaway |
@@ -1079,10 +981,10 @@ docker compose build --no-cache         # Force rebuild
 | 1 | Docker Fundamentals | Containers = portable, reproducible environments |
 | 2 | .NET API Dockerfile | Multi-stage builds reduce image size 7x |
 | 3 | OCR Service Dockerfile | Python ML containers need system libs |
-| 4 | Bot Worker Dockerfile | Workers use runtime image, not aspnet |
-| 5 | Frontend Dockerfile | SSR = Node.js, Static = Nginx |
-| 6 | Docker Compose | Orchestrate dependencies with health checks |
-| 7 | Production Security | Non-root, secrets, scanning, limits |
+| 4 | Frontend Dockerfile | SSR = Node.js, Static = Nginx |
+| 5 | Docker Compose | Orchestrate dependencies with health checks |
+| 6 | Production Security | Non-root, secrets, scanning, limits |
+| 7 | Review & Practice | Consolidation and practice day |
 
 ---
 

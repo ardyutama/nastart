@@ -1,6 +1,14 @@
-# Week 2: Feature Building Blocks 🏗️
+# Week 2: Domain Foundation & Feature Building Blocks 🏗️
 
-> **Goal**: Build reusable building blocks for your features — Models, DTOs, Result pattern, MediatR notifications, and your first real feature slice: `CreateIngredient`.
+> **Goal**: Build the golden entity models (canonical source of truth), reusable building blocks, MediatR notifications, and your first real feature slice: `CreateIngredient`.
+
+---
+
+> 📌 **PREREQUISITE — Read before Day 5**
+>
+> Before writing your first handler in Day 5 (Feature Slice Pattern), build the MediatR pipeline behaviors so every handler is automatically validated and logged.
+>
+> Jump to [week-05-database-shared-services.md → Day 5 (ValidationBehavior)](week-05-database-shared-services.md#day-5-validationbehavior-pipeline) and [Day 6 (LoggingBehavior)](week-05-database-shared-services.md#day-6-loggingbehavior--exception-handling), then come back here for Days 5–7.
 
 ---
 
@@ -122,7 +130,9 @@ We create **models** — blueprints that describe what each thing looks like.
 >
 > — [Creating and Configuring a Model](https://learn.microsoft.com/en-us/ef/core/modeling/)
 
-### The Ingredient Entity:
+### The Entity Models (Golden Source of Truth):
+
+> **Important**: These entity models are the **canonical definitions** used throughout all subsequent weeks. If you see a property name in a later lesson, it should match what's defined here.
 
 Create `src/Nastart.Api/Features/Ingredients/Ingredient.cs`:
 
@@ -141,29 +151,76 @@ namespace Nastart.Api.Features.Ingredients;
 public class Ingredient
 {
     public Guid Id { get; set; }
+    public Guid UserId { get; set; }
     public required string Name { get; set; }
     public required string Unit { get; set; }
-    public decimal CurrentPrice { get; set; }
+    
+    /// <summary>
+    /// Current price per unit. Nullable — null means "not yet priced".
+    /// A value of 0 means the ingredient is genuinely free (gifted, homegrown).
+    /// Bakers can add ingredients without knowing the price (pantry tracking,
+    /// recipe planning, gradual data entry) and fill in prices later.
+    /// </summary>
+    public decimal? CurrentPrice { get; set; }
     public string Currency { get; set; } = "IDR";
-    public decimal StockQuantity { get; set; }
-    public decimal MinimumStock { get; set; }
-    public int? CategoryId { get; set; }
+    public decimal CurrentStock { get; set; }
+    public decimal MinStock { get; set; }
+    public Guid? CategoryId { get; set; }
+    public DateTime? LastPurchaseDate { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
     
-    // Navigation property
+    // Computed properties
+    
+    /// <summary>
+    /// Whether this ingredient has a known price.
+    /// Used to determine recipe costing completeness.
+    /// </summary>
+    public bool HasPrice => CurrentPrice.HasValue;
+    
+    public bool IsLowStock => CurrentStock <= MinStock;
+    
+    // Navigation properties
+    public User User { get; set; } = null!;
     public Category? Category { get; set; }
 }
 
 /// <summary>
-/// Category for grouping ingredients.
+/// Category for grouping ingredients (e.g., Bahan Kering, Dairy, Bumbu).
 /// </summary>
 public class Category
 {
-    public int Id { get; set; }
+    public Guid Id { get; set; }
     public required string Name { get; set; }
+    public string? Description { get; set; }
     public ICollection<Ingredient> Ingredients { get; set; } = [];
 }
+```
+
+Create `src/Nastart.Api/Features/Users/User.cs`:
+
+```csharp
+namespace Nastart.Api.Features.Users;
+
+/// <summary>
+/// Represents a registered business owner.
+/// Linked to Telegram for bot interactions.
+/// </summary>
+public class User
+{
+    public Guid Id { get; set; }
+    public required string Name { get; set; }
+    public string? Email { get; set; }
+    public string? PasswordHash { get; set; }
+    public string? BusinessName { get; set; }
+    public string BusinessType { get; set; } = "Bakery"; // Bakery, Café, Catering, Home
+    public decimal MinMarginPercent { get; set; } = 20m;
+    public long? TelegramId { get; set; }
+    public string? TelegramUsername { get; set; }
+    public bool IsOnboarded { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+```
 ```
 
 ### .NET 10 Features Used:
@@ -173,7 +230,9 @@ public class Category
 | **File-scoped namespace** | `namespace Nastart.Api.Features.Ingredients;` |
 | **Required members** | `required string Name` ensures initialization |
 | **Collection expressions** | `Ingredients { get; set; } = [];` |
-| **Nullable reference types** | `Category? Category` |
+| **Nullable reference types** | `Category? Category`, `User? Email` |
+| **Nullable value types** | `decimal? CurrentPrice` — null means "not yet priced" |
+| **Expression-bodied members** | `bool IsLowStock => CurrentStock <= MinStock`, `bool HasPrice => CurrentPrice.HasValue` |
 
 ### Install EF Core Packages:
 
@@ -233,12 +292,18 @@ namespace Nastart.Api.Features.Ingredients;
 /// Command to create a new ingredient.
 /// Implements IRequest for MediatR handling.
 /// </summary>
+/// <summary>
+/// Command to create a new ingredient.
+/// Price is optional — bakers can add ingredients without knowing the price
+/// (pantry tracking, recipe planning) and fill in prices later.
+/// </summary>
 public sealed record CreateIngredientCommand(
+    Guid UserId,
     string Name,
     string Unit,
-    decimal InitialPrice,
-    decimal MinimumStock,
-    int? CategoryId = null
+    decimal? InitialPrice,
+    decimal MinStock,
+    Guid? CategoryId = null
 ) : IRequest<Result<IngredientResponse>>;
 
 /// <summary>
@@ -246,6 +311,7 @@ public sealed record CreateIngredientCommand(
 /// </summary>
 public sealed record UpdateIngredientPriceCommand(
     Guid IngredientId,
+    Guid UserId,
     decimal NewPrice
 ) : IRequest<Result<IngredientResponse>>;
 
@@ -278,12 +344,13 @@ public sealed record IngredientResponse(
     Guid Id,
     string Name,
     string Unit,
-    decimal CurrentPrice,
+    decimal? CurrentPrice,
     string Currency,
-    decimal StockQuantity,
-    decimal MinimumStock,
+    decimal CurrentStock,
+    decimal MinStock,
     bool IsLowStock,
-    int? CategoryId,
+    bool HasPrice,
+    Guid? CategoryId,
     string? CategoryName
 );
 ```
@@ -659,11 +726,12 @@ namespace Nastart.Api.Features.Ingredients;
 
 // ── Request ──
 public sealed record CreateIngredientCommand(
+    Guid UserId,
     string Name,
     string Unit,
-    decimal InitialPrice,
-    decimal MinimumStock,
-    int? CategoryId = null
+    decimal? InitialPrice,
+    decimal MinStock,
+    Guid? CategoryId = null
 ) : IRequest<Result<IngredientResponse>>;
 
 // ── Validator ──
@@ -679,10 +747,13 @@ public sealed class CreateIngredientValidator : AbstractValidator<CreateIngredie
             .NotEmpty().WithMessage("Unit is required")
             .MaximumLength(20).WithMessage("Unit must be 20 characters or less");
         
+        // Price is optional — null means "not yet priced"
+        // When provided, price must be >= 0 (0 = genuinely free)
         RuleFor(x => x.InitialPrice)
-            .GreaterThanOrEqualTo(0).WithMessage("Price cannot be negative");
+            .GreaterThanOrEqualTo(0).WithMessage("Price cannot be negative")
+            .When(x => x.InitialPrice.HasValue);
         
-        RuleFor(x => x.MinimumStock)
+        RuleFor(x => x.MinStock)
             .GreaterThanOrEqualTo(0).WithMessage("Minimum stock cannot be negative");
     }
 }
@@ -716,10 +787,11 @@ public sealed class CreateIngredientHandler
         var ingredient = new Ingredient
         {
             Id = Guid.NewGuid(),
+            UserId = request.UserId,
             Name = request.Name,
             Unit = request.Unit,
             CurrentPrice = request.InitialPrice,
-            MinimumStock = request.MinimumStock,
+            MinStock = request.MinStock,
             CategoryId = request.CategoryId,
             CreatedAt = DateTime.UtcNow
         };
@@ -734,9 +806,10 @@ public sealed class CreateIngredientHandler
             Unit: ingredient.Unit,
             CurrentPrice: ingredient.CurrentPrice,
             Currency: ingredient.Currency,
-            StockQuantity: ingredient.StockQuantity,
-            MinimumStock: ingredient.MinimumStock,
-            IsLowStock: ingredient.StockQuantity < ingredient.MinimumStock,
+            CurrentStock: ingredient.CurrentStock,
+            MinStock: ingredient.MinStock,
+            IsLowStock: ingredient.IsLowStock,
+            HasPrice: ingredient.HasPrice,
             CategoryId: ingredient.CategoryId,
             CategoryName: null
         );
@@ -813,13 +886,15 @@ namespace Nastart.Api.Features.Ingredients;
 // ── Request ──
 /// <summary>
 /// Command to create a new ingredient.
+/// Price is optional — bakers can add ingredients without knowing the price.
 /// </summary>
 public sealed record CreateIngredientCommand(
+    Guid UserId,
     string Name,
     string Unit,
-    decimal InitialPrice,
-    decimal MinimumStock,
-    int? CategoryId = null
+    decimal? InitialPrice,
+    decimal MinStock,
+    Guid? CategoryId = null
 ) : IRequest<Result<IngredientResponse>>;
 
 // ── Response ──
@@ -830,12 +905,13 @@ public sealed record IngredientResponse(
     Guid Id,
     string Name,
     string Unit,
-    decimal CurrentPrice,
+    decimal? CurrentPrice,
     string Currency,
-    decimal StockQuantity,
-    decimal MinimumStock,
+    decimal CurrentStock,
+    decimal MinStock,
     bool IsLowStock,
-    int? CategoryId,
+    bool HasPrice,
+    Guid? CategoryId,
     string? CategoryName
 );
 
@@ -855,10 +931,13 @@ public sealed class CreateIngredientValidator : AbstractValidator<CreateIngredie
             .NotEmpty().WithMessage("Unit is required")
             .MaximumLength(20).WithMessage("Unit must be 20 characters or less");
         
+        // Price is optional — null means "not yet priced"
+        // When provided, must be >= 0 (0 means genuinely free)
         RuleFor(x => x.InitialPrice)
-            .GreaterThanOrEqualTo(0).WithMessage("Price cannot be negative");
+            .GreaterThanOrEqualTo(0).WithMessage("Price cannot be negative")
+            .When(x => x.InitialPrice.HasValue);
         
-        RuleFor(x => x.MinimumStock)
+        RuleFor(x => x.MinStock)
             .GreaterThanOrEqualTo(0).WithMessage("Minimum stock cannot be negative");
     }
 }
@@ -913,12 +992,13 @@ public sealed class CreateIngredientHandler
         var ingredient = new Ingredient
         {
             Id = Guid.NewGuid(),
+            UserId = request.UserId,
             Name = request.Name.Trim(),
             Unit = request.Unit.Trim(),
             CurrentPrice = request.InitialPrice,
             Currency = "IDR",
-            StockQuantity = 0,
-            MinimumStock = request.MinimumStock,
+            CurrentStock = 0,
+            MinStock = request.MinStock,
             CategoryId = request.CategoryId,
             CreatedAt = DateTime.UtcNow
         };
@@ -935,9 +1015,10 @@ public sealed class CreateIngredientHandler
             Unit: ingredient.Unit,
             CurrentPrice: ingredient.CurrentPrice,
             Currency: ingredient.Currency,
-            StockQuantity: ingredient.StockQuantity,
-            MinimumStock: ingredient.MinimumStock,
-            IsLowStock: true, // New ingredient has 0 stock
+            CurrentStock: ingredient.CurrentStock,
+            MinStock: ingredient.MinStock,
+            IsLowStock: ingredient.IsLowStock,
+            HasPrice: ingredient.HasPrice,
             CategoryId: ingredient.CategoryId,
             CategoryName: null
         );
@@ -1121,10 +1202,11 @@ public class CreateIngredientTests
     {
         // Arrange
         var command = new CreateIngredientCommand(
+            UserId: Guid.NewGuid(),
             Name: "Flour",
             Unit: "kg",
             InitialPrice: 15000,
-            MinimumStock: 5
+            MinStock: 5
         );
 
         // Act
@@ -1135,11 +1217,55 @@ public class CreateIngredientTests
         result.Value!.Name.Should().Be("Flour");
         result.Value.Unit.Should().Be("kg");
         result.Value.CurrentPrice.Should().Be(15000);
+        result.Value.HasPrice.Should().BeTrue();
         
         // Verify persisted
         var saved = await _db.Ingredients.FirstOrDefaultAsync();
         saved.Should().NotBeNull();
         saved!.Name.Should().Be("Flour");
+    }
+
+    [Fact]
+    public async Task Handle_WithNullPrice_CreatesUnpricedIngredient()
+    {
+        // Arrange — baker adds ingredient without knowing the price
+        var command = new CreateIngredientCommand(
+            UserId: Guid.NewGuid(),
+            Name: "Vanilla Extract",
+            Unit: "ml",
+            InitialPrice: null,
+            MinStock: 1
+        );
+
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Name.Should().Be("Vanilla Extract");
+        result.Value.CurrentPrice.Should().BeNull();
+        result.Value.HasPrice.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Handle_WithZeroPrice_CreatesFreetIngredient()
+    {
+        // Arrange — ingredient is genuinely free (gifted/homegrown)
+        var command = new CreateIngredientCommand(
+            UserId: Guid.NewGuid(),
+            Name: "Homegrown Basil",
+            Unit: "bunch",
+            InitialPrice: 0,
+            MinStock: 0
+        );
+
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.CurrentPrice.Should().Be(0);
+        result.Value.HasPrice.Should().BeTrue(); // 0 is a known price
     }
 
     [Fact]
@@ -1149,19 +1275,21 @@ public class CreateIngredientTests
         _db.Ingredients.Add(new Ingredient
         {
             Id = Guid.NewGuid(),
+            UserId = Guid.NewGuid(),
             Name = "Flour",
             Unit = "kg",
             CurrentPrice = 15000,
-            MinimumStock = 5,
+            MinStock = 5,
             CreatedAt = DateTime.UtcNow
         });
         await _db.SaveChangesAsync();
 
         var command = new CreateIngredientCommand(
+            UserId: Guid.NewGuid(),
             Name: "Flour",  // Duplicate!
             Unit: "kg",
             InitialPrice: 16000,
-            MinimumStock: 3
+            MinStock: 3
         );
 
         // Act
@@ -1177,11 +1305,12 @@ public class CreateIngredientTests
     {
         // Arrange
         var command = new CreateIngredientCommand(
+            UserId: Guid.NewGuid(),
             Name: "Sugar",
             Unit: "kg",
             InitialPrice: 12000,
-            MinimumStock: 2,
-            CategoryId: 999  // Non-existent category
+            MinStock: 2,
+            CategoryId: Guid.NewGuid()  // Non-existent category
         );
 
         // Act
@@ -1197,10 +1326,11 @@ public class CreateIngredientTests
     {
         // Arrange
         var command = new CreateIngredientCommand(
+            UserId: Guid.NewGuid(),
             Name: "  Flour  ",  // Has spaces
             Unit: " kg ",
             InitialPrice: 15000,
-            MinimumStock: 5
+            MinStock: 5
         );
 
         // Act
@@ -1234,10 +1364,11 @@ public class CreateIngredientValidatorTests
     {
         // Arrange
         var command = new CreateIngredientCommand(
+            UserId: Guid.NewGuid(),
             Name: "Flour",
             Unit: "kg",
             InitialPrice: 15000,
-            MinimumStock: 5
+            MinStock: 5
         );
 
         // Act
@@ -1255,10 +1386,11 @@ public class CreateIngredientValidatorTests
     {
         // Arrange
         var command = new CreateIngredientCommand(
+            UserId: Guid.NewGuid(),
             Name: name!,
             Unit: "kg",
             InitialPrice: 15000,
-            MinimumStock: 5
+            MinStock: 5
         );
 
         // Act
@@ -1273,10 +1405,11 @@ public class CreateIngredientValidatorTests
     {
         // Arrange
         var command = new CreateIngredientCommand(
+            UserId: Guid.NewGuid(),
             Name: "Flour",
             Unit: "kg",
             InitialPrice: -100,  // Negative!
-            MinimumStock: 5
+            MinStock: 5
         );
 
         // Act
@@ -1287,14 +1420,53 @@ public class CreateIngredientValidatorTests
     }
 
     [Fact]
+    public void Validate_WithNullPrice_Passes()
+    {
+        // Arrange — price is optional for gradual data entry
+        var command = new CreateIngredientCommand(
+            UserId: Guid.NewGuid(),
+            Name: "Flour",
+            Unit: "kg",
+            InitialPrice: null,
+            MinStock: 5
+        );
+
+        // Act
+        var result = _validator.TestValidate(command);
+
+        // Assert
+        result.ShouldNotHaveValidationErrorFor(x => x.InitialPrice);
+    }
+
+    [Fact]
+    public void Validate_WithZeroPrice_Passes()
+    {
+        // Arrange — zero means genuinely free (gifted/homegrown)
+        var command = new CreateIngredientCommand(
+            UserId: Guid.NewGuid(),
+            Name: "Basil",
+            Unit: "bunch",
+            InitialPrice: 0,
+            MinStock: 0
+        );
+
+        // Act
+        var result = _validator.TestValidate(command);
+
+        // Assert
+        result.ShouldNotHaveValidationErrorFor(x => x.InitialPrice);
+    }
+
+    [Fact]
     public void Validate_WithNameTooLong_Fails()
     {
         // Arrange
         var command = new CreateIngredientCommand(
+            UserId: Guid.NewGuid(),
             Name: new string('A', 101),  // 101 characters
             Unit: "kg",
             InitialPrice: 15000,
-            MinimumStock: 5
+            MinStock: 5
         );
 
         // Act
@@ -1395,7 +1567,8 @@ dotnet test --filter "FullyQualifiedName~CreateIngredientTests"
 
 - [ ] **Day 2**: Models & Database Entities
   - [ ] Install EF Core packages
-  - [ ] Create `Ingredient.cs` entity in Features folder
+  - [ ] Create `Ingredient.cs` entity in `Features/Ingredients/`
+  - [ ] Create `User.cs` entity in `Features/Users/`
   - [ ] Verify build passes
 
 - [ ] **Day 3**: C# Records for Feature Data
@@ -1437,12 +1610,14 @@ After completing Week 2, your API project should have:
 src/Nastart.Api/
 ├── Features/
 │   ├── Ingredients/
-│   │   ├── Ingredient.cs                  # Entity model
+│   │   ├── Ingredient.cs                  # Entity model (golden source)
 │   │   ├── CreateIngredient.cs            # Complete feature slice
 │   │   ├── IngredientNotifications.cs     # Notifications
 │   │   ├── NotificationHandlers/
 │   │   │   └── PriceChangedHandler.cs
 │   │   └── IngredientsEndpoints.cs        # Route registration
+│   ├── Users/
+│   │   └── User.cs                        # User entity (golden source)
 │   ├── Recipes/
 │   └── Purchases/
 │

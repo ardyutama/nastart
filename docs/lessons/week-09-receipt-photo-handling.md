@@ -296,7 +296,8 @@ public sealed class PhotoHandler
                 session.Status = ScanSessionStatus.Cancelled;
                 await _db.SaveChangesAsync(cancellationToken);
                 
-                return Result<PhotoHandlerResponse>.Failure("Failed to download image");
+                return Result<PhotoHandlerResponse>.Failure(
+                    Error.Validation("PhotoHandler.DownloadFailed", "Failed to download image"));
             }
             
             // 4. Send to OCR service
@@ -319,7 +320,8 @@ public sealed class PhotoHandler
                 session.Status = ScanSessionStatus.Cancelled;
                 await _db.SaveChangesAsync(cancellationToken);
                 
-                return Result<PhotoHandlerResponse>.Failure("OCR failed");
+                return Result<PhotoHandlerResponse>.Failure(
+                    Error.Validation("PhotoHandler.OcrFailed", "OCR failed"));
             }
             
             // 5. Store OCR results in session
@@ -362,7 +364,8 @@ public sealed class PhotoHandler
                 "❌ Terjadi kesalahan. Silakan coba lagi.",
                 cancellationToken: cancellationToken);
             
-            return Result<PhotoHandlerResponse>.Failure(ex.Message);
+            return Result<PhotoHandlerResponse>.Failure(
+                Error.Unexpected("PhotoHandler.Exception", ex.Message));
         }
     }
 
@@ -752,7 +755,7 @@ public sealed record DetectedReceiptItem(
     decimal? Quantity,
     string? Unit,
     decimal? UnitPrice,
-    decimal? LineTotal,
+    decimal? TotalPrice,
     float Confidence
 );
 
@@ -820,7 +823,7 @@ public sealed class ScanReceiptHandler
             if (!ocrResult.IsSuccess)
             {
                 return Result<ScanReceiptResponse>.Failure(
-                    ocrResult.ErrorMessage ?? "OCR failed");
+                    Error.Internal("OCR.Failed", ocrResult.ErrorMessage ?? "OCR failed"));
             }
             
             // 2. Parse receipt lines
@@ -840,7 +843,7 @@ public sealed class ScanReceiptHandler
                     Quantity: line.Quantity,
                     Unit: line.Unit ?? matchResult?.DefaultUnit,
                     UnitPrice: line.UnitPrice,
-                    LineTotal: line.Total,
+                    TotalPrice: line.Total,
                     Confidence: matchResult?.Confidence ?? line.Confidence
                 );
                 
@@ -863,7 +866,8 @@ public sealed class ScanReceiptHandler
         catch (Exception ex)
         {
             _logger.LogError(ex, "Receipt scan failed");
-            return Result<ScanReceiptResponse>.Failure(ex.Message);
+            return Result<ScanReceiptResponse>.Failure(
+                Error.Unexpected("ScanReceipt.Exception", ex.Message));
         }
     }
 }
@@ -1073,12 +1077,14 @@ public sealed class SendScanConfirmationHandler
         
         if (session is null)
         {
-            return Result<ScanConfirmationResponse>.Failure("Session not found");
+            return Result<ScanConfirmationResponse>.Failure(
+                Error.NotFound("ScanSession.NotFound", "Session not found"));
         }
         
         if (string.IsNullOrEmpty(session.DetectedItemsJson))
         {
-            return Result<ScanConfirmationResponse>.Failure("No items detected");
+            return Result<ScanConfirmationResponse>.Failure(
+                Error.Validation("ScanSession.NoItems", "No items detected"));
         }
         
         // Deserialize items
@@ -1164,10 +1170,10 @@ public sealed class SendScanConfirmationHandler
                 itemLine.Append($" @ Rp {item.UnitPrice:N0}");
             }
             
-            if (item.LineTotal.HasValue)
+            if (item.TotalPrice.HasValue)
             {
-                itemLine.Append($" = <b>Rp {item.LineTotal:N0}</b>");
-                total += item.LineTotal.Value;
+                itemLine.Append($" = <b>Rp {item.TotalPrice:N0}</b>");
+                total += item.TotalPrice.Value;
             }
             
             // Confidence indicator
@@ -1361,7 +1367,8 @@ public sealed class ConfirmScanHandler
                 "❌ Sesi tidak ditemukan atau sudah kadaluarsa.",
                 cancellationToken: cancellationToken);
             
-            return Result<PurchaseResponse>.Failure("Session not found or expired");
+            return Result<PurchaseResponse>.Failure(
+                Error.NotFound("ScanSession.Expired", "Session not found or expired"));
         }
         
         // Get user from Telegram ID
@@ -1376,7 +1383,8 @@ public sealed class ConfirmScanHandler
                 "❌ Pengguna tidak ditemukan. Silakan /start dulu.",
                 cancellationToken: cancellationToken);
             
-            return Result<PurchaseResponse>.Failure("User not found");
+            return Result<PurchaseResponse>.Failure(
+                Error.NotFound("User.NotFound", "User not found"));
         }
         
         // Deserialize items
@@ -1400,13 +1408,14 @@ public sealed class ConfirmScanHandler
                 "❌ Tidak ada bahan yang terdeteksi. Silakan coba foto lain.",
                 cancellationToken: cancellationToken);
             
-            return Result<PurchaseResponse>.Failure("No items to save");
+            return Result<PurchaseResponse>.Failure(
+                Error.Validation("Purchase.NoItems", "No items to save"));
         }
         
         // Create purchase
         var purchaseResult = await _mediator.Send(new RecordPurchaseCommand(
             UserId: user.Id,
-            ShopName: session.DetectedShopName,
+            Notes: session.DetectedShopName,  // Shop name stored in Notes field
             PurchaseDate: session.DetectedPurchaseDate ?? DateTime.UtcNow,
             Items: purchaseItems
         ), cancellationToken);
@@ -1416,7 +1425,7 @@ public sealed class ConfirmScanHandler
             await _botService.EditMessageTextAsync(
                 request.ChatId,
                 request.MessageId,
-                $"❌ Gagal menyimpan: {purchaseResult.ErrorMessage}",
+                $"❌ Gagal menyimpan: {purchaseResult.Error?.Description}",
                 cancellationToken: cancellationToken);
             
             return purchaseResult;
@@ -2139,7 +2148,7 @@ public class ScanConfirmationTests
             Quantity: 2,
             Unit: "kg",
             UnitPrice: 25000,
-            LineTotal: 50000,
+            TotalPrice: 50000,
             Confidence: 0.95f);
         
         // Act

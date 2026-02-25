@@ -4,13 +4,26 @@
 
 ---
 
+> ⚠️ **READING ORDER NOTE**
+>
+> **Days 5 & 6 of this week (ValidationBehavior + LoggingBehavior) should be built during Week 2**, alongside the rest of the MediatR infrastructure.
+>
+> Why? Every handler you write in Weeks 2–4 flows through these pipeline behaviors. If you build them in Week 5, all your earlier handlers will be missing validation and structured logging until you backfill.
+>
+> **Recommended approach:**
+> 1. When you reach Week 2 Day 4 (MediatR Notifications), jump to **Day 5 and Day 6 of this file** first.
+> 2. Build `ValidationBehavior` and `LoggingBehavior` then.
+> 3. Return here in Week 5 for Days 1–4 (EF configs, migrations, seeding) after all entity models are defined.
+
+---
+
 ## Table of Contents
 1. [Day 1: EF Core Entity Configurations](#day-1-ef-core-entity-configurations)
 2. [Day 2: Relationship Mappings](#day-2-relationship-mappings)
 3. [Day 3: Database Migrations](#day-3-database-migrations)
 4. [Day 4: Data Seeding](#day-4-data-seeding)
-5. [Day 5: ValidationBehavior Pipeline](#day-5-validationbehavior-pipeline)
-6. [Day 6: LoggingBehavior & Exception Handling](#day-6-loggingbehavior--exception-handling)
+5. [Day 5: ValidationBehavior Pipeline](#day-5-validationbehavior-pipeline) — *⚠️ Read this during Week 2*
+6. [Day 6: LoggingBehavior & Exception Handling](#day-6-loggingbehavior--exception-handling) — *⚠️ Read this during Week 2*
 7. [Day 7: Testing Database & Behaviors](#day-7-testing-database--behaviors)
 8. [Resources](#resources) *(Microsoft Official Docs Verified)*
 
@@ -64,8 +77,7 @@ src/Nastart.Api/
 │           ├── PurchaseItemConfiguration.cs
 │           ├── RecipeConfiguration.cs
 │           ├── RecipeItemConfiguration.cs
-│           ├── AlertConfiguration.cs
-│           └── ShopConfiguration.cs
+│           └── UserConfiguration.cs
 ```
 
 ### IngredientConfiguration:
@@ -108,21 +120,18 @@ public class IngredientConfiguration : IEntityTypeConfiguration<Ingredient>
         
         builder.Property(i => i.CurrentPrice)
             .HasPrecision(18, 2)
-            .HasDefaultValue(0);
+            .IsRequired(false);  // null = not yet priced
         
         builder.Property(i => i.CurrentStock)
             .HasPrecision(18, 4)
             .HasDefaultValue(0);
         
-        builder.Property(i => i.MinimumStock)
+        builder.Property(i => i.MinStock)
             .HasPrecision(18, 4)
             .HasDefaultValue(0);
         
         builder.Property(i => i.LastPurchaseDate)
             .IsRequired(false);
-        
-        builder.Property(i => i.CreatedAt)
-            .HasDefaultValueSql("CURRENT_TIMESTAMP");
         
         // Indexes for common queries
         builder.HasIndex(i => i.UserId);
@@ -131,7 +140,7 @@ public class IngredientConfiguration : IEntityTypeConfiguration<Ingredient>
         
         // Relationship: Ingredient -> Category
         builder.HasOne(i => i.Category)
-            .WithMany(c => c.Ingredients)
+            .WithMany()
             .HasForeignKey(i => i.CategoryId)
             .OnDelete(DeleteBehavior.SetNull);
     }
@@ -201,6 +210,9 @@ public class NastartDbContext : DbContext
     public NastartDbContext(DbContextOptions<NastartDbContext> options) 
         : base(options) { }
     
+    // ── Users ──
+    public DbSet<User> Users => Set<User>();
+    
     // ── Ingredients ──
     public DbSet<Ingredient> Ingredients => Set<Ingredient>();
     public DbSet<Category> Categories => Set<Category>();
@@ -208,15 +220,10 @@ public class NastartDbContext : DbContext
     // ── Purchases ──
     public DbSet<Purchase> Purchases => Set<Purchase>();
     public DbSet<PurchaseItem> PurchaseItems => Set<PurchaseItem>();
-    public DbSet<Shop> Shops => Set<Shop>();
-    public DbSet<PriceHistory> PriceHistories => Set<PriceHistory>();
     
     // ── Recipes ──
     public DbSet<Recipe> Recipes => Set<Recipe>();
     public DbSet<RecipeItem> RecipeItems => Set<RecipeItem>();
-    
-    // ── Alerts ──
-    public DbSet<Alert> Alerts => Set<Alert>();
     
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -294,9 +301,6 @@ public class PurchaseConfiguration : IEntityTypeConfiguration<Purchase>
         builder.Property(p => p.PurchaseDate)
             .IsRequired();
         
-        builder.Property(p => p.ShopName)
-            .HasMaxLength(200);
-        
         builder.Property(p => p.ReceiptNumber)
             .HasMaxLength(100);
         
@@ -308,22 +312,14 @@ public class PurchaseConfiguration : IEntityTypeConfiguration<Purchase>
         
         builder.Property(p => p.Status)
             .IsRequired()
+            .HasConversion<string>()
             .HasMaxLength(50)
-            .HasDefaultValue("Draft");
-        
-        builder.Property(p => p.CreatedAt)
-            .HasDefaultValueSql("CURRENT_TIMESTAMP");
+            .HasDefaultValue(PurchaseStatus.Received);
         
         // Indexes
         builder.HasIndex(p => p.UserId);
         builder.HasIndex(p => p.PurchaseDate);
         builder.HasIndex(p => new { p.UserId, p.PurchaseDate });
-        
-        // Relationship: Purchase -> Shop (optional)
-        builder.HasOne(p => p.Shop)
-            .WithMany(s => s.Purchases)
-            .HasForeignKey(p => p.ShopId)
-            .OnDelete(DeleteBehavior.SetNull);
         
         // Relationship: Purchase -> PurchaseItems
         builder.HasMany(p => p.Items)
@@ -356,30 +352,42 @@ public class PurchaseItemConfiguration : IEntityTypeConfiguration<PurchaseItem>
         
         builder.HasKey(pi => pi.Id);
         
+        builder.Property(pi => pi.IngredientName)
+            .IsRequired()
+            .HasMaxLength(200);
+        
         builder.Property(pi => pi.Quantity)
             .HasPrecision(18, 4)
             .IsRequired();
+        
+        builder.Property(pi => pi.Unit)
+            .IsRequired()
+            .HasMaxLength(50);
         
         builder.Property(pi => pi.UnitPrice)
             .HasPrecision(18, 2)
             .IsRequired();
         
+        builder.Property(pi => pi.TotalPrice)
+            .HasPrecision(18, 2);
+        
         builder.Property(pi => pi.RawText)
             .HasMaxLength(500);
         
         builder.Property(pi => pi.Status)
+            .HasConversion<string>()
             .HasMaxLength(50)
-            .HasDefaultValue("Matched");
+            .HasDefaultValue(PurchaseItemStatus.Matched);
         
         // Indexes
         builder.HasIndex(pi => pi.PurchaseId);
         builder.HasIndex(pi => pi.IngredientId);
         
-        // Relationship: PurchaseItem -> Ingredient
+        // Relationship: PurchaseItem -> Ingredient (optional — unmatched items have null)
         builder.HasOne(pi => pi.Ingredient)
             .WithMany()
             .HasForeignKey(pi => pi.IngredientId)
-            .OnDelete(DeleteBehavior.Restrict);
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 ```
@@ -410,14 +418,9 @@ public class RecipeConfiguration : IEntityTypeConfiguration<Recipe>
             .IsRequired()
             .HasMaxLength(200);
         
-        builder.Property(r => r.Description)
-            .HasMaxLength(1000);
-        
-        builder.Property(r => r.Category)
-            .HasMaxLength(100);
-        
         builder.Property(r => r.SellPrice)
-            .HasPrecision(18, 2);
+            .HasPrecision(18, 2)
+            .IsRequired(false);  // null = not yet priced (Draft)
         
         builder.Property(r => r.TotalCost)
             .HasPrecision(18, 2);
@@ -427,8 +430,12 @@ public class RecipeConfiguration : IEntityTypeConfiguration<Recipe>
         
         builder.Property(r => r.Status)
             .IsRequired()
+            .HasConversion<string>()
             .HasMaxLength(50)
-            .HasDefaultValue("Draft");
+            .HasDefaultValue(RecipeStatus.Draft);
+        
+        builder.Property(r => r.YieldQuantity)
+            .HasPrecision(18, 4);
         
         builder.Property(r => r.YieldUnit)
             .HasMaxLength(50)
@@ -476,6 +483,10 @@ public class RecipeItemConfiguration : IEntityTypeConfiguration<RecipeItem>
         builder.Property(ri => ri.Quantity)
             .HasPrecision(18, 4)
             .IsRequired();
+        
+        builder.Property(ri => ri.Unit)
+            .IsRequired()
+            .HasMaxLength(50);
         
         builder.Property(ri => ri.Cost)
             .HasPrecision(18, 2);
@@ -575,9 +586,7 @@ public partial class InitialCreate : Migration
             name: "categories",
             columns: table => new
             {
-                Id = table.Column<int>(type: "integer", nullable: false)
-                    .Annotation("Npgsql:ValueGenerationStrategy", 
-                        NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
                 Name = table.Column<string>(type: "character varying(100)", 
                     maxLength: 100, nullable: false),
                 Description = table.Column<string>(type: "character varying(500)", 
@@ -599,16 +608,14 @@ public partial class InitialCreate : Migration
                 Unit = table.Column<string>(type: "character varying(50)", 
                     maxLength: 50, nullable: false),
                 CurrentPrice = table.Column<decimal>(type: "numeric(18,2)", 
-                    precision: 18, scale: 2, nullable: false, defaultValue: 0m),
+                    precision: 18, scale: 2, nullable: true),
                 CurrentStock = table.Column<decimal>(type: "numeric(18,4)", 
                     precision: 18, scale: 4, nullable: false, defaultValue: 0m),
-                MinimumStock = table.Column<decimal>(type: "numeric(18,4)", 
+                MinStock = table.Column<decimal>(type: "numeric(18,4)", 
                     precision: 18, scale: 4, nullable: false, defaultValue: 0m),
-                CategoryId = table.Column<int>(type: "integer", nullable: true),
+                CategoryId = table.Column<Guid>(type: "uuid", nullable: true),
                 LastPurchaseDate = table.Column<DateTime>(type: "timestamp with time zone", 
-                    nullable: true),
-                CreatedAt = table.Column<DateTime>(type: "timestamp with time zone", 
-                    nullable: false, defaultValueSql: "CURRENT_TIMESTAMP")
+                    nullable: true)
             },
             constraints: table =>
             {
@@ -804,52 +811,65 @@ public class CategoryConfiguration : IEntityTypeConfiguration<Category>
         
         // Seed initial categories
         builder.HasData(
-            new Category { Id = 1, Name = "Baking Essentials", Description = "Flour, sugar, baking powder, etc." },
-            new Category { Id = 2, Name = "Dairy", Description = "Milk, butter, cream, cheese" },
-            new Category { Id = 3, Name = "Eggs & Proteins", Description = "Eggs, egg whites, egg substitutes" },
-            new Category { Id = 4, Name = "Sweeteners", Description = "Sugar, honey, maple syrup, condensed milk" },
-            new Category { Id = 5, Name = "Fats & Oils", Description = "Butter, margarine, cooking oil, shortening" },
-            new Category { Id = 6, Name = "Flavorings", Description = "Vanilla, chocolate, coffee, extracts" },
-            new Category { Id = 7, Name = "Nuts & Dried Fruits", Description = "Almonds, walnuts, raisins, cranberries" },
-            new Category { Id = 8, Name = "Spices", Description = "Cinnamon, nutmeg, ginger, cardamom" },
-            new Category { Id = 9, Name = "Decorations", Description = "Sprinkles, food coloring, fondant" },
-            new Category { Id = 10, Name = "Packaging", Description = "Boxes, ribbons, labels, bags" }
+            new Category { Id = Guid.Parse("a0000001-0000-0000-0000-000000000001"), Name = "Baking Essentials", Description = "Flour, sugar, baking powder, etc." },
+            new Category { Id = Guid.Parse("a0000001-0000-0000-0000-000000000002"), Name = "Dairy", Description = "Milk, butter, cream, cheese" },
+            new Category { Id = Guid.Parse("a0000001-0000-0000-0000-000000000003"), Name = "Eggs & Proteins", Description = "Eggs, egg whites, egg substitutes" },
+            new Category { Id = Guid.Parse("a0000001-0000-0000-0000-000000000004"), Name = "Sweeteners", Description = "Sugar, honey, maple syrup, condensed milk" },
+            new Category { Id = Guid.Parse("a0000001-0000-0000-0000-000000000005"), Name = "Fats & Oils", Description = "Butter, margarine, cooking oil, shortening" },
+            new Category { Id = Guid.Parse("a0000001-0000-0000-0000-000000000006"), Name = "Flavorings", Description = "Vanilla, chocolate, coffee, extracts" },
+            new Category { Id = Guid.Parse("a0000001-0000-0000-0000-000000000007"), Name = "Nuts & Dried Fruits", Description = "Almonds, walnuts, raisins, cranberries" },
+            new Category { Id = Guid.Parse("a0000001-0000-0000-0000-000000000008"), Name = "Spices", Description = "Cinnamon, nutmeg, ginger, cardamom" },
+            new Category { Id = Guid.Parse("a0000001-0000-0000-0000-000000000009"), Name = "Decorations", Description = "Sprinkles, food coloring, fondant" },
+            new Category { Id = Guid.Parse("a0000001-0000-0000-0000-00000000000a"), Name = "Packaging", Description = "Boxes, ribbons, labels, bags" }
         );
     }
 }
 ```
 
-### Seed Shops:
+### User Configuration:
 
-Create `src/Nastart.Api/Shared/Data/Configurations/ShopConfiguration.cs`:
+Create `src/Nastart.Api/Shared/Data/Configurations/UserConfiguration.cs`:
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using Nastart.Api.Features.Purchases;
+using Nastart.Api.Features.Users;
 
 namespace Nastart.Api.Shared.Data.Configurations;
 
-public class ShopConfiguration : IEntityTypeConfiguration<Shop>
+public class UserConfiguration : IEntityTypeConfiguration<User>
 {
-    public void Configure(EntityTypeBuilder<Shop> builder)
+    public void Configure(EntityTypeBuilder<User> builder)
     {
-        builder.ToTable("shops");
+        builder.ToTable("users");
         
-        builder.HasKey(s => s.Id);
+        builder.HasKey(u => u.Id);
         
-        builder.Property(s => s.Name)
-            .IsRequired()
+        builder.Property(u => u.TelegramId)
+            .IsRequired();
+        
+        builder.Property(u => u.TelegramUsername)
             .HasMaxLength(200);
         
-        builder.Property(s => s.Address)
-            .HasMaxLength(500);
+        builder.Property(u => u.DisplayName)
+            .HasMaxLength(200);
         
-        builder.Property(s => s.Notes)
-            .HasMaxLength(1000);
+        builder.Property(u => u.BusinessType)
+            .HasMaxLength(100);
         
-        builder.HasIndex(s => s.UserId);
-        builder.HasIndex(s => new { s.UserId, s.Name });
+        builder.Property(u => u.MinMarginPercent)
+            .HasPrecision(5, 2)
+            .HasDefaultValue(20m);
+        
+        builder.Property(u => u.IsOnboarded)
+            .HasDefaultValue(false);
+        
+        builder.Property(u => u.CreatedAt)
+            .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        
+        // Unique index on TelegramId (one user per Telegram account)
+        builder.HasIndex(u => u.TelegramId).IsUnique();
+        builder.HasIndex(u => u.TelegramUsername);
     }
 }
 ```
@@ -905,9 +925,8 @@ public static class DataSeeder
                 Unit = "kg",
                 CurrentPrice = 18000,
                 CurrentStock = 25,
-                MinimumStock = 5,
-                CategoryId = 1,
-                CreatedAt = DateTime.UtcNow
+                MinStock = 5,
+                CategoryId = Guid.Parse("a0000001-0000-0000-0000-000000000001")
             },
             new()
             {
@@ -917,9 +936,8 @@ public static class DataSeeder
                 Unit = "kg",
                 CurrentPrice = 16000,
                 CurrentStock = 10,
-                MinimumStock = 3,
-                CategoryId = 4,
-                CreatedAt = DateTime.UtcNow
+                MinStock = 3,
+                CategoryId = Guid.Parse("a0000001-0000-0000-0000-000000000004")
             },
             new()
             {
@@ -929,9 +947,8 @@ public static class DataSeeder
                 Unit = "butir",
                 CurrentPrice = 2500,
                 CurrentStock = 60,
-                MinimumStock = 30,
-                CategoryId = 3,
-                CreatedAt = DateTime.UtcNow
+                MinStock = 30,
+                CategoryId = Guid.Parse("a0000001-0000-0000-0000-000000000003")
             },
             new()
             {
@@ -941,9 +958,8 @@ public static class DataSeeder
                 Unit = "kg",
                 CurrentPrice = 35000,
                 CurrentStock = 3,
-                MinimumStock = 1,
-                CategoryId = 5,
-                CreatedAt = DateTime.UtcNow
+                MinStock = 1,
+                CategoryId = Guid.Parse("a0000001-0000-0000-0000-000000000005")
             },
             new()
             {
@@ -953,9 +969,8 @@ public static class DataSeeder
                 Unit = "kaleng",
                 CurrentPrice = 12000,
                 CurrentStock = 8,
-                MinimumStock = 4,
-                CategoryId = 2,
-                CreatedAt = DateTime.UtcNow
+                MinStock = 4,
+                CategoryId = Guid.Parse("a0000001-0000-0000-0000-000000000002")
             },
             new()
             {
@@ -965,9 +980,8 @@ public static class DataSeeder
                 Unit = "kg",
                 CurrentPrice = 85000,
                 CurrentStock = 2,
-                MinimumStock = 1,
-                CategoryId = 6,
-                CreatedAt = DateTime.UtcNow
+                MinStock = 1,
+                CategoryId = Guid.Parse("a0000001-0000-0000-0000-000000000006")
             },
             new()
             {
@@ -977,9 +991,8 @@ public static class DataSeeder
                 Unit = "kg",
                 CurrentPrice = 120000,
                 CurrentStock = 1.5m,
-                MinimumStock = 0.5m,
-                CategoryId = 2,
-                CreatedAt = DateTime.UtcNow
+                MinStock = 0.5m,
+                CategoryId = Guid.Parse("a0000001-0000-0000-0000-000000000002")
             },
             new()
             {
@@ -989,9 +1002,8 @@ public static class DataSeeder
                 Unit = "kg",
                 CurrentPrice = 45000,
                 CurrentStock = 2,
-                MinimumStock = 1,
-                CategoryId = 6,
-                CreatedAt = DateTime.UtcNow
+                MinStock = 1,
+                CategoryId = Guid.Parse("a0000001-0000-0000-0000-000000000006")
             }
         };
         
@@ -1832,8 +1844,7 @@ public class IngredientConfigurationTests
             Unit = "kg",
             CurrentPrice = 15000,
             CurrentStock = 10,
-            MinimumStock = 2,
-            CreatedAt = DateTime.UtcNow
+            MinStock = 2
         };
         
         // Act
@@ -1856,7 +1867,7 @@ public class IngredientConfigurationTests
         
         var category = new Category
         {
-            Id = 1,
+            Id = Guid.Parse("a0000001-0000-0000-0000-000000000001"),
             Name = "Baking"
         };
         
@@ -1868,9 +1879,8 @@ public class IngredientConfigurationTests
             Unit = "kg",
             CurrentPrice = 15000,
             CurrentStock = 10,
-            MinimumStock = 2,
-            CategoryId = 1,
-            CreatedAt = DateTime.UtcNow
+            MinStock = 2,
+            CategoryId = Guid.Parse("a0000001-0000-0000-0000-000000000001")
         };
         
         db.Categories.Add(category);
@@ -1905,8 +1915,7 @@ public class IngredientConfigurationTests
             Unit = "kg",
             CurrentPrice = 15000,
             CurrentStock = 10,
-            MinimumStock = 2,
-            CreatedAt = DateTime.UtcNow
+            MinStock = 2
         };
         
         var ingredient2 = new Ingredient
@@ -1917,8 +1926,7 @@ public class IngredientConfigurationTests
             Unit = "kg",
             CurrentPrice = 16000,
             CurrentStock = 5,
-            MinimumStock = 1,
-            CreatedAt = DateTime.UtcNow
+            MinStock = 1
         };
         
         db.Ingredients.Add(ingredient1);
@@ -1985,8 +1993,7 @@ public class DataSeederTests
             Unit = "kg",
             CurrentPrice = 1000,
             CurrentStock = 1,
-            MinimumStock = 0,
-            CreatedAt = DateTime.UtcNow
+            MinStock = 0
         });
         await db.SaveChangesAsync();
         

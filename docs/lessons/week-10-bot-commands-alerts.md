@@ -183,7 +183,7 @@ public sealed class CostCommandHandler : IRequestHandler<CostCommand, Unit>
         }
         
         var recipes = await _db.Recipes
-            .Where(r => r.UserId == user.Id && r.IsActive)
+            .Where(r => r.UserId == user.Id && r.Status == RecipeStatus.Active)
             .OrderBy(r => r.Name)
             .Select(r => new { r.Id, r.Name, r.YieldQuantity, r.YieldUnit })
             .Take(20)
@@ -254,15 +254,15 @@ public sealed class CostCommandHandler : IRequestHandler<CostCommand, Unit>
             ? totalCost / recipe.YieldQuantity 
             : totalCost;
         
-        var margin = recipe.SellingPrice > 0 
-            ? ((recipe.SellingPrice - costPerUnit) / recipe.SellingPrice) * 100 
+        var margin = recipe.SellPrice > 0 
+            ? ((recipe.SellPrice - costPerUnit) / recipe.SellPrice) * 100 
             : 0;
         
         return new CostBreakdown(
             Items: itemCosts,
             TotalCost: totalCost,
             CostPerUnit: costPerUnit,
-            SellingPrice: recipe.SellingPrice,
+            SellPrice: recipe.SellPrice,
             Margin: margin
         );
     }
@@ -287,9 +287,9 @@ public sealed class CostCommandHandler : IRequestHandler<CostCommand, Unit>
         sb.AppendLine($"💰 <b>Total Biaya:</b> Rp {breakdown.TotalCost:N0}");
         sb.AppendLine($"📦 <b>Biaya per {recipe.YieldUnit}:</b> Rp {breakdown.CostPerUnit:N0}");
         
-        if (breakdown.SellingPrice > 0)
+        if (breakdown.SellPrice > 0)
         {
-            sb.AppendLine($"💵 <b>Harga Jual:</b> Rp {breakdown.SellingPrice:N0}/{recipe.YieldUnit}");
+            sb.AppendLine($"💵 <b>Harga Jual:</b> Rp {breakdown.SellPrice:N0}/{recipe.YieldUnit}");
             
             // Margin with emoji indicator
             var marginEmoji = breakdown.Margin switch
@@ -338,7 +338,7 @@ internal sealed record CostBreakdown(
     IReadOnlyList<ItemCost> Items,
     decimal TotalCost,
     decimal CostPerUnit,
-    decimal SellingPrice,
+    decimal SellPrice,
     decimal Margin
 );
 ```
@@ -583,7 +583,7 @@ public sealed class PriceCommandHandler : IRequestHandler<PriceCommand, Unit>
             .Select(pi => new PriceHistoryItem(
                 pi.Purchase!.PurchaseDate,
                 pi.UnitPrice,
-                pi.Purchase.Shop != null ? pi.Purchase.Shop.Name : null
+                null  // Shop name not tracked in golden Purchase model
             ))
             .ToListAsync(cancellationToken);
         
@@ -602,7 +602,7 @@ public sealed class PriceCommandHandler : IRequestHandler<PriceCommand, Unit>
         
         // Current price
         sb.AppendLine($"💵 <b>Harga Saat Ini:</b> Rp {ingredient.CurrentPrice:N0}/{ingredient.Unit}");
-        sb.AppendLine($"📅 <b>Update Terakhir:</b> {ingredient.LastPriceUpdate:dd/MM/yyyy}");
+        sb.AppendLine($"📅 <b>Update Terakhir:</b> {ingredient.LastPurchaseDate:dd/MM/yyyy}");
         sb.AppendLine();
         
         // Price history
@@ -643,7 +643,7 @@ public sealed class PriceCommandHandler : IRequestHandler<PriceCommand, Unit>
         // Stock info
         if (ingredient.CurrentStock > 0)
         {
-            var stockEmoji = ingredient.CurrentStock < ingredient.MinimumStock ? "⚠️" : "✅";
+            var stockEmoji = ingredient.CurrentStock < ingredient.MinStock ? "⚠️" : "✅";
             sb.AppendLine();
             sb.AppendLine($"📦 <b>Stok:</b> {ingredient.CurrentStock} {ingredient.Unit} {stockEmoji}");
         }
@@ -796,14 +796,14 @@ public sealed class LowStockCommandHandler : IRequestHandler<LowStockCommand, Un
         // Get low stock items
         var lowStockItems = await _db.Ingredients
             .Where(i => i.UserId == user.Id)
-            .Where(i => i.MinimumStock > 0) // Only items with min stock set
-            .Where(i => i.CurrentStock < i.MinimumStock)
-            .OrderBy(i => i.CurrentStock / i.MinimumStock) // Most critical first
+            .Where(i => i.MinStock > 0) // Only items with min stock set
+            .Where(i => i.CurrentStock < i.MinStock)
+            .OrderBy(i => i.CurrentStock / i.MinStock) // Most critical first
             .Select(i => new LowStockItem(
                 i.Id,
                 i.Name,
                 i.CurrentStock,
-                i.MinimumStock,
+                i.MinStock,
                 i.Unit,
                 i.CurrentPrice
             ))
@@ -846,7 +846,7 @@ public sealed class LowStockCommandHandler : IRequestHandler<LowStockCommand, Un
             sb.AppendLine("🔴 <b>KRITIS (&lt; 25%)</b>");
             foreach (var item in critical)
             {
-                sb.AppendLine($"• {item.Name} — {item.CurrentStock}{item.Unit} (min: {item.MinimumStock}{item.Unit})");
+                sb.AppendLine($"• {item.Name} — {item.CurrentStock}{item.Unit} (min: {item.MinStock}{item.Unit})");
             }
             sb.AppendLine();
         }
@@ -858,7 +858,7 @@ public sealed class LowStockCommandHandler : IRequestHandler<LowStockCommand, Un
             sb.AppendLine("🟡 <b>RENDAH (25-50%)</b>");
             foreach (var item in low)
             {
-                sb.AppendLine($"• {item.Name} — {item.CurrentStock}{item.Unit} (min: {item.MinimumStock}{item.Unit})");
+                sb.AppendLine($"• {item.Name} — {item.CurrentStock}{item.Unit} (min: {item.MinStock}{item.Unit})");
             }
             sb.AppendLine();
         }
@@ -870,7 +870,7 @@ public sealed class LowStockCommandHandler : IRequestHandler<LowStockCommand, Un
             sb.AppendLine("🟢 <b>PERLU DIISI (50-100%)</b>");
             foreach (var item in warning)
             {
-                sb.AppendLine($"• {item.Name} — {item.CurrentStock}{item.Unit} (min: {item.MinimumStock}{item.Unit})");
+                sb.AppendLine($"• {item.Name} — {item.CurrentStock}{item.Unit} (min: {item.MinStock}{item.Unit})");
             }
             sb.AppendLine();
         }
@@ -879,7 +879,7 @@ public sealed class LowStockCommandHandler : IRequestHandler<LowStockCommand, Un
         sb.AppendLine($"📝 <b>Total:</b> {items.Count} bahan perlu dibeli");
         
         // Estimated cost to restock
-        var restockCost = items.Sum(i => (i.MinimumStock - i.CurrentStock) * i.CurrentPrice);
+        var restockCost = items.Sum(i => (i.MinStock - i.CurrentStock) * i.CurrentPrice);
         if (restockCost > 0)
         {
             sb.AppendLine($"💰 <b>Estimasi biaya restock:</b> Rp {restockCost:N0}");
@@ -890,8 +890,8 @@ public sealed class LowStockCommandHandler : IRequestHandler<LowStockCommand, Un
 
     private static decimal GetStockPercent(LowStockItem item)
     {
-        return item.MinimumStock > 0 
-            ? (item.CurrentStock / item.MinimumStock) * 100 
+        return item.MinStock > 0 
+            ? (item.CurrentStock / item.MinStock) * 100 
             : 0;
     }
 
@@ -928,7 +928,7 @@ internal sealed record LowStockItem(
     Guid Id,
     string Name,
     decimal CurrentStock,
-    decimal MinimumStock,
+    decimal MinStock,
     string Unit,
     decimal CurrentPrice
 );
@@ -1063,7 +1063,7 @@ public sealed class ProfitCommandHandler : IRequestHandler<ProfitCommand, Unit>
         var profitData = await CalculateProfitData(user.Id, startDate, endDate, cancellationToken);
         
         // Format message
-        var message = FormatProfitMessage(profitData, startDate, endDate, user.MinimumMargin);
+        var message = FormatProfitMessage(profitData, startDate, endDate, user.MinMarginPercent);
         var keyboard = BuildProfitKeyboard();
         
         await _botService.SendTextMessageAsync(
@@ -1108,15 +1108,15 @@ public sealed class ProfitCommandHandler : IRequestHandler<ProfitCommand, Unit>
         var recipes = await _db.Recipes
             .Include(r => r.Items)
                 .ThenInclude(i => i.Ingredient)
-            .Where(r => r.UserId == userId && r.IsActive)
+            .Where(r => r.UserId == userId && r.Status == RecipeStatus.Active)
             .ToListAsync(cancellationToken);
         
         var recipeAnalysis = recipes.Select(r =>
         {
             var cost = r.Items.Sum(i => i.Quantity * (i.Ingredient?.CurrentPrice ?? 0));
             var costPerUnit = r.YieldQuantity > 0 ? cost / r.YieldQuantity : cost;
-            var margin = r.SellingPrice > 0 
-                ? ((r.SellingPrice - costPerUnit) / r.SellingPrice) * 100 
+            var margin = r.SellPrice > 0 
+                ? ((r.SellPrice - costPerUnit) / r.SellPrice) * 100 
                 : 0;
             
             return new RecipeAnalysis(
@@ -1125,7 +1125,7 @@ public sealed class ProfitCommandHandler : IRequestHandler<ProfitCommand, Unit>
                 r.YieldUnit,
                 cost,
                 costPerUnit,
-                r.SellingPrice,
+                r.SellPrice,
                 margin
             );
         })
@@ -1134,7 +1134,7 @@ public sealed class ProfitCommandHandler : IRequestHandler<ProfitCommand, Unit>
         .ToList();
         
         // Calculate totals (simplified - in real app, track actual sales)
-        var estimatedSales = recipeAnalysis.Sum(r => r.SellingPrice * r.YieldQuantity);
+        var estimatedSales = recipeAnalysis.Sum(r => r.SellPrice * r.YieldQuantity);
         var estimatedProfit = estimatedSales - totalCosts;
         var overallMargin = estimatedSales > 0 
             ? (estimatedProfit / estimatedSales) * 100 
@@ -1242,7 +1242,7 @@ internal sealed record RecipeAnalysis(
     string YieldUnit,
     decimal TotalCost,
     decimal CostPerUnit,
-    decimal SellingPrice,
+    decimal SellPrice,
     decimal Margin
 );
 ```
@@ -1327,7 +1327,7 @@ public interface ITelegramAlertService
         Guid userId,
         string ingredientName,
         decimal currentStock,
-        decimal minimumStock,
+        decimal minStock,
         string unit,
         CancellationToken cancellationToken = default);
     
@@ -1437,21 +1437,21 @@ public class TelegramAlertService : ITelegramAlertService
         Guid userId,
         string ingredientName,
         decimal currentStock,
-        decimal minimumStock,
+        decimal minStock,
         string unit,
         CancellationToken cancellationToken = default)
     {
         var chatId = await GetChatIdForUser(userId, cancellationToken);
         if (chatId is null) return;
         
-        var percentLeft = minimumStock > 0 ? (currentStock / minimumStock) * 100 : 0;
+        var percentLeft = minStock > 0 ? (currentStock / minStock) * 100 : 0;
         var emoji = percentLeft < 25 ? "🔴" : "⚠️";
         
         var message = $"""
             {emoji} <b>Stok {ingredientName} menipis!</b>
             
             📦 Stok saat ini: {currentStock} {unit}
-            📋 Minimum: {minimumStock} {unit}
+            📋 Minimum: {minStock} {unit}
             📊 Tersisa: {percentLeft:F0}%
             
             <i>Ketik /low untuk lihat semua bahan yang perlu dibeli.</i>
@@ -1503,11 +1503,11 @@ public class TelegramAlertService : ITelegramAlertService
         CancellationToken cancellationToken)
     {
         var user = await _db.Users
-            .Where(u => u.Id == userId && u.TelegramId.HasValue)
+            .Where(u => u.Id == userId)
             .Select(u => u.TelegramId)
             .FirstOrDefaultAsync(cancellationToken);
         
-        return user;
+        return user != 0 ? user : null;
     }
 }
 ```
@@ -1845,7 +1845,7 @@ foreach (var item in purchaseItems)
     
     // Update current price
     ingredient.CurrentPrice = newPrice;
-    ingredient.LastPriceUpdate = DateTime.UtcNow;
+    ingredient.LastPurchaseDate = DateTime.UtcNow;
 }
 ```
 

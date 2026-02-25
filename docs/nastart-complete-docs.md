@@ -107,8 +107,8 @@ Small bakery/F&B owners:
 ```mermaid
 flowchart TB
     subgraph INPUT["📥 Input Channels"]
-        I1[Telegram Bot]
-        I2[Web App]
+        I1[Telegram Bot — Primary]
+        I2[Web App — Dashboard]
     end
 
     subgraph API["🎯 Nastart API - Vertical Slices"]
@@ -215,10 +215,11 @@ Each feature file contains:
 
 // ── Request (Command) ──
 public sealed record CreateIngredientCommand(
+    Guid UserId,
     string Name,
     string Unit,
-    decimal InitialPrice,
-    decimal MinimumStock
+    decimal? InitialPrice,  // null = not yet priced
+    decimal MinStock
 ) : IRequest<Result<IngredientResponse>>;
 
 // ── Response ──
@@ -226,8 +227,10 @@ public sealed record IngredientResponse(
     Guid Id,
     string Name,
     string Unit,
-    decimal CurrentPrice,
-    bool IsLowStock
+    decimal? CurrentPrice,
+    decimal CurrentStock,
+    bool IsLowStock,
+    bool HasPrice
 );
 
 // ── Validator ──
@@ -236,7 +239,11 @@ public sealed class CreateIngredientValidator : AbstractValidator<CreateIngredie
     public CreateIngredientValidator()
     {
         RuleFor(x => x.Name).NotEmpty().MaximumLength(100);
-        RuleFor(x => x.InitialPrice).GreaterThanOrEqualTo(0);
+        RuleFor(x => x.Unit).NotEmpty().MaximumLength(20);
+        RuleFor(x => x.InitialPrice)
+            .GreaterThanOrEqualTo(0)
+            .When(x => x.InitialPrice.HasValue);  // only validate if provided
+        RuleFor(x => x.MinStock).GreaterThanOrEqualTo(0);
     }
 }
 
@@ -352,7 +359,12 @@ erDiagram
         string email
         string password_hash
         string business_name
-        float min_margin
+        string business_type
+        float min_margin_percent
+        bigint telegram_id
+        string telegram_username
+        boolean is_onboarded
+        timestamp created_at
     }
 
     WHATSAPP_LINK {
@@ -371,6 +383,7 @@ erDiagram
         float current_price
         float current_stock
         float min_stock
+        timestamp last_purchase_date
     }
 
     SHOP {
@@ -383,17 +396,22 @@ erDiagram
         uuid id PK
         uuid user_id FK
         uuid shop_id FK
-        date date
-        float total
-        string receipt_url
+        date purchase_date
+        float total_amount
+        string receipt_image_url
+        string receipt_number
+        string notes
+        string status
     }
 
     PURCHASE_ITEM {
         uuid id PK
         uuid purchase_id FK
         uuid ingredient_id FK
+        string raw_text
         float quantity
         float price
+        string status
     }
 
     PRICE_HISTORY {
@@ -410,6 +428,10 @@ erDiagram
         float sell_price
         float total_cost
         float margin_percent
+        int yield_quantity
+        string yield_unit
+        string status
+        timestamp created_at
     }
 
     RECIPE_INGREDIENT {
@@ -440,6 +462,7 @@ erDiagram
     CATEGORY {
         uuid id PK
         string name
+        string description
     }
 ```
 
@@ -447,11 +470,11 @@ erDiagram
 
 | Entity | Purpose |
 |--------|---------|
-| User | Account with min_margin setting |
-| WhatsApp_Link | Phone verification |
+| User | Account with min_margin, Telegram link, business type |
+| WhatsApp_Link | Phone verification (future — Telegram-first for MVP) |
 | Ingredient | Stock items with prices |
 | Purchase | Receipt log |
-| Recipe | Product formulas |
+| Recipe | Product formulas with yield/batch sizing |
 | Sale | Revenue tracking |
 | Alert | Notifications |
 
@@ -717,6 +740,8 @@ stateDiagram-v2
 
 # WhatsApp Integration
 
+> **Note**: The MVP uses **Telegram** as the primary bot channel. WhatsApp Cloud API integration is planned for Phase 5 (Week 15+). The flows below document the future WhatsApp design.
+
 ## Flow: Phone Linking
 
 ```mermaid
@@ -841,7 +866,7 @@ nastart/
 │   │       │   │   ├── GetUnreadAlerts.cs
 │   │       │   │   └── AlertsEndpoints.cs
 │   │       │   │
-│   │       │   └── Bot/                         # Telegram Bot Features
+│   │       │   └── Bot/                         # Telegram Bot Features (in-API)
 │   │       │       ├── Commands/
 │   │       │       │   ├── StartCommand.cs
 │   │       │       │   ├── HelpCommand.cs
@@ -857,7 +882,7 @@ nastart/
 │   │       │   ├── Data/
 │   │       │   │   └── NastartDbContext.cs
 │   │       │   ├── Models/
-│   │       │   │   ├── Result.cs
+│   │       │   │   ├── Result.cs                # Canonical Result<T> pattern
 │   │       │   │   ├── Money.cs
 │   │       │   │   ├── Quantity.cs
 │   │       │   │   └── PagedResult.cs
@@ -921,32 +946,39 @@ nastart/
 
 ## Phase 1: Feature Building Blocks (Weeks 2-4)
 
-### Week 2 — Project Foundation + First Feature Slice
+### Week 2 — Domain Foundation + First Feature Slice
 - [ ] Create feature-based folder structure (`Features/Ingredients/`, etc.)
 - [ ] Install MediatR, FluentValidation, EF Core
-- [ ] Create `NastartDbContext` with DbSets
-- [ ] Build `Ingredient` entity model
+- [ ] Build `User` entity model (golden source — includes `TelegramId`)
+- [ ] Build `Ingredient` entity model (canonical: `CurrentStock`, `CurrentPrice`)
+- [ ] Build `Category` entity model (with `Description`)
+- [ ] Create `NastartDbContext` with all DbSets
 - [ ] Create `CreateIngredient` feature slice (Command + Handler + Validator + Endpoint)
 - [ ] Create `GetIngredients` query feature
+- [ ] Define `Result<T>`, `Money`, `Quantity` value objects
 - [ ] Unit test feature handlers
 
-### Week 3 — Purchase Features
-- [ ] Build `Purchase` and `PurchaseItem` entity models
-- [ ] Create `RecordPurchase` feature slice
-- [ ] Create `GetPurchaseHistory` query
+### Week 3 — Purchase & Finance Features
+- [ ] Build `Purchase` entity (canonical: `TotalAmount`, `PurchaseStatus` enum)
+- [ ] Build `PurchaseItem` entity (with `RawText` for OCR traceability)
+- [ ] Build `Shop` and `PriceHistory` entities
+- [ ] Create `RecordPurchase` feature slice with validation
+- [ ] Create `GetPurchaseHistory` query with `PagedResult<T>`
 - [ ] Implement price change detection in handler
-- [ ] Create `PriceChangedNotification` and handlers
+- [ ] Create `PriceChangedNotification` and handlers (single definition)
 - [ ] Create `PriceSpikeNotification` for >15% changes
 - [ ] Unit test purchase features
 
 ### Week 4 — Recipe Features + Alerts
-- [ ] Build `Recipe` and `RecipeItem` entity models
-- [ ] Create `CreateRecipe` feature slice
-- [ ] Create `GetRecipeCost` query with live calculation
-- [ ] Create `AddIngredientToRecipe` feature
-- [ ] Implement margin calculation in handler
+- [ ] Build `Recipe` entity (with `YieldQuantity`, `YieldUnit`, `RecipeStatus` enum)
+- [ ] Build `RecipeItem` entity model
+- [ ] Create `CreateRecipe` feature slice with draft state
+- [ ] Create `GetRecipeCost` query with live cost-per-unit calculation
+- [ ] Create `AddIngredientToRecipe` and `RemoveIngredientFromRecipe` features
+- [ ] Implement margin calculation: per-batch and per-unit
 - [ ] Build `Alert` entity and `CreateAlert` feature
-- [ ] Create `MarginBelowThresholdNotification`
+- [ ] Create `MarginBelowThresholdNotification` (single canonical definition)
+- [ ] Create `RecalculateRecipeCostsHandler` (single canonical definition)
 
 ## Phase 2: Infrastructure & Integration (Weeks 5-7)
 
@@ -1000,32 +1032,16 @@ nastart/
 - [ ] Connect notifications to Telegram messages
 - [ ] Test full bot workflow
 
-## Phase 4: Vue.js Dashboard (Weeks 11-14)
+## Phase 4: Containerization & DevOps (Week 11)
 
-### Week 11 — Frontend Foundation
-- [ ] Learn Vue.js 3 — composition API, reactivity
-- [ ] Initialize Nuxt.js project
-- [ ] Configure TypeScript, Tailwind CSS
-- [ ] Create layout — sidebar, header
-- [ ] Install Pinia, create stores
+### Week 11 — Docker & Containerization
+- [ ] Multi-stage Dockerfiles for API, OCR service
+- [ ] Docker Compose orchestration with health checks
+- [ ] Production hardening: non-root users, resource limits
+- [ ] `.dockerignore` and image optimization
+- [ ] Security scanning
 
-### Week 12 — Authentication Flow
-- [ ] Create login/register pages
-- [ ] Implement JWT in .NET API
-- [ ] OTP verification via Telegram
-- [ ] Add route guards
-
-### Week 13 — Dashboard Views
-- [ ] Build `ProfitChart.vue` — revenue/expense/profit
-- [ ] Build `RecentPurchases.vue`
-- [ ] Build `RecipeCard.vue` with margin colors
-- [ ] Build `LowStockAlert.vue`
-
-### Week 14 — Recipe Builder & Polish
-- [ ] Build recipe listing page
-- [ ] Create `RecipeBuilder.vue` with live cost
-- [ ] Add price trend charts
-- [ ] Responsive design
+> **Note**: Frontend (Vue.js/Nuxt), Authentication, CI/CD, and Dashboard lessons are planned but not yet written. The curriculum currently covers Weeks 1-11 (backend + bot + Docker).
 
 ## Phase 5: WhatsApp & Deployment (Weeks 15-16)
 

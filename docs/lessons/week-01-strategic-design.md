@@ -72,6 +72,11 @@ Instead of organizing our code by *how* it works (all the buttons together, all 
 
 ```
 Features/
+├── Users/
+│   ├── RegisterUser/          ← Command: Create account (Telegram onboarding)
+│   ├── GetUser/               ← Query: Get user profile
+│   └── UpdateUserSettings/    ← Command: Update min margin, business type
+│
 ├── Receipts/
 │   ├── ScanReceipt/           ← Command: Upload & OCR receipt
 │   ├── GetPurchaseHistory/    ← Query: List past purchases
@@ -85,11 +90,11 @@ Features/
 │   └── GetPriceHistory/       ← Query: Price trends over time
 │
 ├── Recipes/
-│   ├── CreateRecipe/          ← Command: Create new recipe
-│   ├── GetRecipe/             ← Query: Get recipe with cost
+│   ├── CreateRecipe/          ← Command: Create new recipe (with yield/batch)
+│   ├── GetRecipe/             ← Query: Get recipe with cost-per-unit
 │   ├── GetAllRecipes/         ← Query: List all recipes
 │   ├── AddIngredientToRecipe/ ← Command: Add ingredient with quantity
-│   └── CalculateCost/         ← Query: Get real-time cost
+│   └── CalculateCost/         ← Query: Get real-time cost (batch + per-unit)
 │
 ├── Alerts/
 │   ├── GetAlerts/             ← Query: Get pending alerts

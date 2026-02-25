@@ -1273,10 +1273,9 @@ public sealed class StartCommandHandler : IRequestHandler<StartCommand, Unit>
             Id = Guid.NewGuid(),
             TelegramId = user.Id,
             TelegramUsername = user.Username,
-            FirstName = user.FirstName,
-            LastName = user.LastName,
-            LanguageCode = user.LanguageCode ?? "id",
-            MinimumMargin = 30m, // Default 30% margin
+            DisplayName = $"{user.FirstName} {user.LastName}".Trim(),
+            MinMarginPercent = 30m, // Default 30% margin
+            IsOnboarded = false,
             CreatedAt = DateTime.UtcNow
         };
         
@@ -1295,70 +1294,54 @@ public sealed class StartCommandHandler : IRequestHandler<StartCommand, Unit>
 
 Create `src/Nastart.Api/Features/Users/User.cs`:
 
+> **Note:** This entity was introduced in Week 2. If you already have it, verify it matches
+> this golden definition. The Telegram bot registers users via their `TelegramId`.
+
 ```csharp
 namespace Nastart.Api.Features.Users;
 
 /// <summary>
 /// Represents a Nastart user account.
+/// Golden entity — canonical definition is in Week 2.
 /// </summary>
 public class User
 {
     public Guid Id { get; set; }
     
     /// <summary>
-    /// Telegram user ID (unique).
+    /// Telegram user ID (unique, non-nullable — Telegram is the primary channel).
     /// </summary>
-    public long? TelegramId { get; set; }
+    public long TelegramId { get; set; }
     
     /// <summary>
-    /// Telegram username (optional).
+    /// Telegram username (optional, users may not have one).
     /// </summary>
     public string? TelegramUsername { get; set; }
     
     /// <summary>
-    /// User's first name.
+    /// Display name shown in the app.
     /// </summary>
-    public required string FirstName { get; set; }
+    public string? DisplayName { get; set; }
     
     /// <summary>
-    /// User's last name.
+    /// Type of business (e.g., "Bakery", "Cafe", "Catering").
     /// </summary>
-    public string? LastName { get; set; }
-    
-    /// <summary>
-    /// User's email (for web login).
-    /// </summary>
-    public string? Email { get; set; }
-    
-    /// <summary>
-    /// User's phone number.
-    /// </summary>
-    public string? PhoneNumber { get; set; }
-    
-    /// <summary>
-    /// Preferred language code (default: "id").
-    /// </summary>
-    public string LanguageCode { get; set; } = "id";
+    public string? BusinessType { get; set; }
     
     /// <summary>
     /// Minimum acceptable margin percentage for alerts.
     /// </summary>
-    public decimal MinimumMargin { get; set; } = 30m;
+    public decimal MinMarginPercent { get; set; } = 30m;
+    
+    /// <summary>
+    /// Whether the user has completed onboarding.
+    /// </summary>
+    public bool IsOnboarded { get; set; }
     
     /// <summary>
     /// When the user was created.
     /// </summary>
     public DateTime CreatedAt { get; set; }
-    
-    /// <summary>
-    /// When the user was last active.
-    /// </summary>
-    public DateTime? LastActiveAt { get; set; }
-    
-    /// <summary>
-    /// Whether the account is active.
-    /// </summary>
-    public bool IsActive { get; set; } = true;
 }
 ```
 

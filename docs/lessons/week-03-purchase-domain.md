@@ -81,12 +81,22 @@ public class Purchase
     /// <summary>
     /// Total amount of the purchase.
     /// </summary>
-    public decimal Total { get; set; }
+    public decimal TotalAmount { get; set; }
     
     /// <summary>
-    /// Processing status: Received, Processing, Parsed, Confirmed, Saved.
+    /// Receipt number from the store (optional, for reference).
     /// </summary>
-    public required string Status { get; set; } = "Received";
+    public string? ReceiptNumber { get; set; }
+    
+    /// <summary>
+    /// Free-text notes about this purchase.
+    /// </summary>
+    public string? Notes { get; set; }
+    
+    /// <summary>
+    /// Processing status of this purchase.
+    /// </summary>
+    public PurchaseStatus Status { get; set; } = PurchaseStatus.Received;
     
     /// <summary>
     /// When this purchase was recorded.
@@ -111,9 +121,14 @@ public class PurchaseItem
     public required Guid PurchaseId { get; set; }
     
     /// <summary>
-    /// The ingredient purchased.
+    /// The matched ingredient (null if unmatched OCR item).
     /// </summary>
-    public required Guid IngredientId { get; set; }
+    public Guid? IngredientId { get; set; }
+    
+    /// <summary>
+    /// Original text from OCR for traceability.
+    /// </summary>
+    public string? RawText { get; set; }
     
     /// <summary>
     /// Quantity purchased (e.g., 2.5 for 2.5 kg).
@@ -130,9 +145,32 @@ public class PurchaseItem
     /// </summary>
     public decimal LineTotal => Quantity * UnitPrice;
     
+    /// <summary>
+    /// Whether this item was matched, unmatched, or skipped.
+    /// </summary>
+    public PurchaseItemStatus Status { get; set; } = PurchaseItemStatus.Matched;
+    
     // Navigation properties
     public Purchase? Purchase { get; set; }
     public Ingredient? Ingredient { get; set; }
+}
+
+/// <summary>
+/// Purchase processing status.
+/// See state diagram in nastart-complete-docs.md.
+/// </summary>
+public enum PurchaseStatus 
+{ 
+    Received, Processing, Parsed, Reviewing, Confirmed, 
+    PartialSave, Saved, Failed 
+}
+
+/// <summary>
+/// Whether a purchase item was matched to a known ingredient.
+/// </summary>
+public enum PurchaseItemStatus 
+{ 
+    Matched, Unmatched, Skipped 
 }
 
 /// <summary>
@@ -195,7 +233,7 @@ public class NastartDbContext : DbContext
         
         // Configure decimal precision for money
         modelBuilder.Entity<Purchase>()
-            .Property(p => p.Total)
+            .Property(p => p.TotalAmount)
             .HasPrecision(18, 2);
         
         modelBuilder.Entity<PurchaseItem>()
@@ -297,8 +335,8 @@ public sealed record PurchaseResponse(
     Guid Id,
     DateOnly PurchaseDate,
     string? ShopName,
-    decimal Total,
-    string Status,
+    decimal TotalAmount,
+    PurchaseStatus Status,
     IReadOnlyList<PurchaseItemResponse> Items,
     DateTime CreatedAt
 );
@@ -426,7 +464,7 @@ public sealed class RecordPurchaseHandler
         foreach (var itemInput in request.Items)
         {
             var ingredient = ingredients[itemInput.IngredientId];
-            var previousPrice = ingredient.CurrentPrice;
+            var previousPrice = ingredient.CurrentPrice; // decimal? — null if unpriced
             
             var purchaseItem = new PurchaseItem
             {
@@ -442,26 +480,40 @@ public sealed class RecordPurchaseHandler
             // Check for price change
             if (itemInput.UnitPrice != previousPrice)
             {
-                var percentageChange = previousPrice > 0 
-                    ? ((itemInput.UnitPrice - previousPrice) / previousPrice) * 100
+                // First-price entry: ingredient had no price (null), now gets one from receipt
+                var isFirstPrice = previousPrice is null;
+                
+                var percentageChange = (previousPrice.HasValue && previousPrice.Value > 0)
+                    ? ((itemInput.UnitPrice - previousPrice.Value) / previousPrice.Value) * 100
                     : 0;
                 
                 // Update ingredient's current price
                 ingredient.CurrentPrice = itemInput.UnitPrice;
                 ingredient.UpdatedAt = DateTime.UtcNow;
                 
-                priceNotifications.Add(new PriceChangedNotification(
-                    IngredientId: ingredient.Id,
-                    IngredientName: ingredient.Name,
-                    OldPrice: previousPrice,
-                    NewPrice: itemInput.UnitPrice,
-                    PercentageChange: percentageChange,
-                    OccurredAt: DateTime.UtcNow
-                ));
-                
-                _logger.LogInformation(
-                    "Price changed for {Ingredient}: {OldPrice} → {NewPrice} ({Change:+0.0;-0.0}%)",
-                    ingredient.Name, previousPrice, itemInput.UnitPrice, percentageChange);
+                // Only publish PriceChangedNotification for actual price changes,
+                // not first-price entries. First-price is not a "change" — it's initial data.
+                if (!isFirstPrice)
+                {
+                    priceNotifications.Add(new PriceChangedNotification(
+                        IngredientId: ingredient.Id,
+                        IngredientName: ingredient.Name,
+                        OldPrice: previousPrice!.Value,
+                        NewPrice: itemInput.UnitPrice,
+                        PercentageChange: percentageChange,
+                        OccurredAt: DateTime.UtcNow
+                    ));
+                    
+                    _logger.LogInformation(
+                        "Price changed for {Ingredient}: {OldPrice} → {NewPrice} ({Change:+0.0;-0.0}%)",
+                        ingredient.Name, previousPrice, itemInput.UnitPrice, percentageChange);
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "First price recorded for {Ingredient}: {Price} (no spike detection)",
+                        ingredient.Name, itemInput.UnitPrice);
+                }
             }
             
             // Update ingredient stock
@@ -479,15 +531,15 @@ public sealed class RecordPurchaseHandler
         }
         
         // Calculate total
-        purchase.Total = purchase.Items.Sum(i => i.LineTotal);
+        purchase.TotalAmount = purchase.Items.Sum(i => i.LineTotal);
         
         // Save to database
         _db.Purchases.Add(purchase);
         await _db.SaveChangesAsync(cancellationToken);
         
         _logger.LogInformation(
-            "Recorded purchase {PurchaseId} with {ItemCount} items, total: {Total}",
-            purchase.Id, purchase.Items.Count, purchase.Total);
+            "Recorded purchase {PurchaseId} with {ItemCount} items, total: {TotalAmount}",
+            purchase.Id, purchase.Items.Count, purchase.TotalAmount);
         
         // Publish price change notifications (side effects)
         foreach (var notification in priceNotifications)
@@ -499,7 +551,7 @@ public sealed class RecordPurchaseHandler
             Id: purchase.Id,
             PurchaseDate: purchase.PurchaseDate,
             ShopName: shopName,
-            Total: purchase.Total,
+            TotalAmount: purchase.TotalAmount,
             Status: purchase.Status,
             Items: itemResponses,
             CreatedAt: purchase.CreatedAt
@@ -584,9 +636,9 @@ public sealed record PurchaseSummaryResponse(
     Guid Id,
     DateOnly PurchaseDate,
     string? ShopName,
-    decimal Total,
+    decimal TotalAmount,
     int ItemCount,
-    string Status
+    PurchaseStatus Status
 );
 
 // ── Handler ──
@@ -649,7 +701,7 @@ public sealed class GetPurchaseHistoryHandler
                 p.Id,
                 p.PurchaseDate,
                 p.Shop != null ? p.Shop.Name : null,
-                p.Total,
+                p.TotalAmount,
                 p.Items.Count,
                 p.Status
             ))
@@ -761,7 +813,7 @@ public sealed class GetPurchaseHandler
             Id: purchase.Id,
             PurchaseDate: purchase.PurchaseDate,
             ShopName: purchase.Shop?.Name,
-            Total: purchase.Total,
+            TotalAmount: purchase.TotalAmount,
             Status: purchase.Status,
             Items: purchase.Items.Select(i => new PurchaseItemResponse(
                 Id: i.Id,
@@ -997,8 +1049,13 @@ using Nastart.Api.Shared.Data;
 
 namespace Nastart.Api.Features.Recipes.NotificationHandlers;
 
+// NOTE: This is a preview of RecalculateRecipeCostsHandler.
+// The canonical (complete) definition is in Week 4 — RecipeNotifications.cs.
+// Here we show the concept; in Week 4 we'll add yield-aware cost calculation.
+
 /// <summary>
 /// When ingredient price changes, recalculate all recipes using that ingredient.
+/// The full implementation with yield/batch support is defined in Week 4.
 /// </summary>
 public class RecalculateRecipeCostsHandler : INotificationHandler<PriceChangedNotification>
 {
@@ -1075,6 +1132,8 @@ public class RecalculateRecipeCostsHandler : INotificationHandler<PriceChangedNo
 
 /// <summary>
 /// Published when a recipe's margin falls below the minimum threshold.
+/// NOTE: Canonical definition is in Week 4 RecipeNotifications.cs.
+/// Shown here for context — do not duplicate this record definition.
 /// </summary>
 public sealed record MarginBelowThresholdNotification(
     Guid RecipeId,
@@ -1574,7 +1633,7 @@ public class RecordPurchaseTests
             Unit = "kg",
             CurrentPrice = 25000,
             CurrentStock = 0,
-            MinimumStock = 5
+            MinStock = 5
         };
         _db.Ingredients.Add(ingredient);
         await _db.SaveChangesAsync();
@@ -1600,7 +1659,7 @@ public class RecordPurchaseTests
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().NotBeNull();
         result.Value!.Items.Should().HaveCount(1);
-        result.Value.Total.Should().Be(130000); // 5 × 26000
+        result.Value.TotalAmount.Should().Be(130000); // 5 × 26000
         
         // Verify purchase was saved
         var savedPurchase = await _db.Purchases
@@ -1630,7 +1689,7 @@ public class RecordPurchaseTests
             Unit = "kg",
             CurrentPrice = 15000,
             CurrentStock = 0,
-            MinimumStock = 5
+            MinStock = 5
         };
         _db.Ingredients.Add(ingredient);
         await _db.SaveChangesAsync();
