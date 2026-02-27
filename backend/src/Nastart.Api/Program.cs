@@ -1,3 +1,4 @@
+using Nastart.Api.Features.Ingredients;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -18,5 +19,6 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 
 app.MapGet("/", ()=> "Nastart API is running!");
+app.MapIngredientsEndpoints();
 
 app.Run();
