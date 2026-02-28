@@ -5,7 +5,7 @@ namespace Nastart.Api.Features.Ingredients;
 public class Ingredient
 {
     public Guid Id { get; set; }
-    public Guid Userid { get; set; }
+    public Guid? Userid { get; set; }
     public required string Name { get; set; }
     public required string Unit { get; set; }
     public decimal? CurrentPrice { get; set; }

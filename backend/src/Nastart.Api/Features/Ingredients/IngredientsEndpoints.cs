@@ -1,3 +1,6 @@
+using Microsoft.EntityFrameworkCore;
+using Nastart.Api.Shared.Data;
+
 namespace Nastart.Api.Features.Ingredients;
 
 public static class IngredientsEndpoints
@@ -16,22 +19,22 @@ public static class IngredientsEndpoints
         return app;
     }
 
-    static IResult GetAll()
+    static async Task<IResult> GetAll(NastartDbContext db)
     {
-        var ingredients = IngredientStore.GetAll();
+        var ingredients = await db.Ingredients.ToListAsync();
 
         return TypedResults.Ok(ingredients);
     }
 
-    static IResult GetById(Guid id)
+    static async Task<IResult> GetById(Guid id, NastartDbContext db)
     {
-        var ingredient = IngredientStore.GetById(id);
+        var ingredient = await db.Ingredients.FindAsync(id);
         return ingredient is not null
             ? TypedResults.Ok(ingredient)
             : TypedResults.NotFound();
     }
 
-    static IResult Create(CreateIngredientRequest request)
+    static async Task<IResult> Create(CreateIngredientRequest request, NastartDbContext db)
     {
         var ingredient = new Ingredient
         {
@@ -42,14 +45,14 @@ public static class IngredientsEndpoints
             MinStock = request.MinStock
         };
 
-        var created = IngredientStore.Add(ingredient);
-
-        return TypedResults.Created($"/ingredients/${created.Id}", created);
+        db.Ingredients.Add(ingredient);
+        await db.SaveChangesAsync();
+        return TypedResults.Created($"/ingredients/${ingredient.Id}", ingredient);
     }
 
-    static IResult Update(Guid id, UpdateIngredientRequest request)
+    static async Task<IResult> Update(Guid id, UpdateIngredientRequest request, NastartDbContext db)
     {
-        var existing = IngredientStore.GetById(id);
+        var existing = await db.Ingredients.FindAsync(id);
         if (existing is null) return TypedResults.NotFound();
 
         existing.Name = request.Name ?? existing.Name;
@@ -58,13 +61,17 @@ public static class IngredientsEndpoints
         existing.CurrentStock = request.CurrentStock ?? existing.CurrentStock;
         existing.MinStock = request.MinStock ?? existing.MinStock;
 
-        IngredientStore.Update(id, existing);
+        await db.SaveChangesAsync();
         return TypedResults.Ok(existing);
     }
 
-    static IResult Delete(Guid id)
+    static async Task<IResult> Delete(Guid id, NastartDbContext db)
     {
-        var deleted = IngredientStore.Delete(id);
-        return deleted ? TypedResults.NoContent() : TypedResults.NotFound();
+        var ingredient = await db.Ingredients.FindAsync(id);
+        if (ingredient is null) return TypedResults.NotFound();
+
+        db.Ingredients.Remove(ingredient);
+        await db.SaveChangesAsync();
+        return TypedResults.NoContent();
     }
 }
