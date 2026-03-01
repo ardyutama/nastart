@@ -1,3 +1,4 @@
+using FluentValidation;
 using Microsoft.EntityFrameworkCore;
 using Nastart.Api.Features.Ingredients;
 using Nastart.Api.Shared.Data;
@@ -12,6 +13,8 @@ builder.Services.AddOpenApi();
 builder.Services.AddDbContext<NastartDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Default"))
 );
+
+builder.Services.AddValidatorsFromAssemblyContaining<CreateIngredientValidator>();
 
 var app = builder.Build();
 

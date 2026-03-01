@@ -20,7 +20,7 @@ public class Ingredient
 
     public bool HasPrice => CurrentPrice.HasValue;
     public bool IsLowStock => CurrentStock <= MinStock;
-    public User User { get; set; } = null;
+    public User? User { get; set; } = null;
     public Brand? Brand { get; set; }
     public Category? Category { get; set; }
 }
