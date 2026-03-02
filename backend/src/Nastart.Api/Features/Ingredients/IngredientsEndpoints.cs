@@ -1,4 +1,5 @@
 using FluentValidation;
+using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Nastart.Api.Shared.Data;
 using Nastart.Api.Shared.Validation;
@@ -40,40 +41,32 @@ public static class IngredientsEndpoints
         return app;
     }
 
-    static async Task<IResult> GetAll(NastartDbContext db)
+    static async Task<IResult> GetAll(IMediator mediator)
     {
-        var ingredients = await db.Ingredients.ToListAsync();
+        var ingredients = await mediator.Send(new GetIngredientsQuery());
 
         return TypedResults.Ok(ingredients);
     }
 
-    static async Task<IResult> GetById(Guid id, NastartDbContext db)
+    static async Task<IResult> GetById(Guid id, IMediator mediator)
     {
-        var ingredient = await db.Ingredients.FindAsync(id);
+        var ingredient = await mediator.Send(new GetIngredientsByIdQuery(id));
         return ingredient is not null
             ? TypedResults.Ok(ingredient)
             : TypedResults.NotFound();
     }
 
-    static async Task<IResult> Create(
-        CreateIngredientRequest request, 
-        IValidator<CreateIngredientRequest> validator,
-        NastartDbContext db)
+    static async Task<IResult> Create(CreateIngredientRequest request, IMediator mediator)
     {
-        var validationError = await ValidationHelper.ValidateAsync(validator, request);
-        if (validationError is not null) return validationError;
+        var command = new CreateIngredientCommand(
+            request.Name,
+            request.Unit,
+            request.CurrentPrice,
+            request.CurrentStock,
+            request.MinStock
+        );
 
-        var ingredient = new Ingredient
-        {
-            Name = request.Name,
-            Unit = request.Unit,
-            CurrentPrice = request.CurrentPrice,
-            CurrentStock = request.CurrentStock,
-            MinStock = request.MinStock
-        };
-
-        db.Ingredients.Add(ingredient);
-        await db.SaveChangesAsync();
+        var ingredient = mediator.Send(command);
         return TypedResults.Created($"/ingredients/${ingredient.Id}", ingredient);
     }
 

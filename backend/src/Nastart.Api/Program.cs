@@ -14,6 +14,10 @@ builder.Services.AddDbContext<NastartDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Default"))
 );
 
+builder.Services.AddMediatR(cfg =>
+    cfg.RegisterServicesFromAssemblyContaining<Program>()
+);
+
 builder.Services.AddValidatorsFromAssemblyContaining<CreateIngredientValidator>();
 
 var app = builder.Build();
