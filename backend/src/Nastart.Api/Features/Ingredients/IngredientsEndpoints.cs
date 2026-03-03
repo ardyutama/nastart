@@ -66,7 +66,7 @@ public static class IngredientsEndpoints
             request.MinStock
         );
 
-        var ingredient = mediator.Send(command);
+        var ingredient = await mediator.Send(command);
         return TypedResults.Created($"/ingredients/${ingredient.Id}", ingredient);
     }
 

@@ -1,4 +1,3 @@
-using System.Data;
 using FluentValidation;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -20,7 +19,7 @@ public class CreateIngredientCommandValidator : AbstractValidator<CreateIngredie
     {
         RuleFor(x => x.Name).NotEmpty().MaximumLength(200);
         RuleFor(x => x.CurrentPrice).GreaterThan(0);
-        RuleFor(x => x.Unit).MaximumLength(50).When(x => x is not null);
+        RuleFor(x => x.Unit).MaximumLength(50).When(x => x.Unit is not null);
     }
 }
 public class CreateIngredientHandler(NastartDbContext db) : IRequestHandler<CreateIngredientCommand, Ingredient>
