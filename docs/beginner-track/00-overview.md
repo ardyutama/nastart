@@ -27,6 +27,15 @@ Phase 2 — MediatR Refactor        (Lessons 06–09)
 
 Phase 3 — Telegram Bot            (Lessons 10–13)
   └─ Add a Telegram bot that uses the same MediatR handlers you already wrote.
+
+Phase 4 — Database Mastery        (Lessons 14–17)
+  └─ Normalize the schema, add indexes, write efficient queries, and build
+     the real business queries that power Nastart's dashboard and alerts.
+
+Phase 5 — Full Application        (Lessons 18–28)
+  └─ Extend the project to the full 11-table Nastart schema. Add JWT auth,
+     user-scoped ingredients, price history, recipes with costing, purchase
+     recording with transactions, and a parallel-query dashboard.
 ```
 
 ---
@@ -71,16 +80,31 @@ git --version       # should print git version
 ```
 src/Nastart.Api/
 ├── Features/
+│   ├── Auth/                          ← Phase 5
+│   │   ├── Register.cs
+│   │   ├── Login.cs
+│   │   └── AuthEndpoints.cs
+│   ├── Categories/                    ← Phase 5
+│   ├── Dashboard/                     ← Phase 5
 │   ├── Ingredients/
 │   │   ├── Ingredient.cs              ← entity model
+│   │   ├── PriceHistory.cs            ← Phase 5
 │   │   ├── CreateIngredient.cs        ← MediatR command + handler (Phase 2)
 │   │   ├── GetIngredients.cs          ← MediatR query + handler (Phase 2)
+│   │   ├── UpdateIngredientPrice.cs   ← Phase 5
 │   │   └── IngredientsEndpoints.cs    ← route registrations
-│   ├── Recipes/
-│   └── Purchases/
+│   ├── Recipes/                       ← Phase 5
+│   └── Purchases/                     ← Phase 5
 ├── Shared/
+│   ├── Config/
+│   │   └── JwtOptions.cs              ← Phase 5
 │   ├── Data/
 │   │   └── NastartDbContext.cs
+│   ├── Models/
+│   │   └── PagedResult.cs             ← Phase 5
+│   ├── Services/
+│   │   ├── ICurrentUser.cs            ← Phase 5
+│   │   └── CurrentUser.cs             ← Phase 5
 │   └── Behaviors/
 │       ├── ValidationBehavior.cs      ← Phase 2
 │       └── LoggingBehavior.cs         ← Phase 2
@@ -107,7 +131,24 @@ src/Nastart.Api/
 | [11](phase-3-telegram/11-webhook-endpoint.md) | Webhook endpoint | 3 |
 | [12](phase-3-telegram/12-ingredients-command.md) | /ingredients command | 3 |
 | [13](phase-3-telegram/13-cost-command.md) | /cost command + inline keyboard | 3 |
+| [14](phase-4-database/14-normalization.md) | Database normalization — Nastart schema analysis | 4 |
+| [15](phase-4-database/15-indexing.md) | Database indexing — which columns and why | 4 |
+| [16](phase-4-database/16-efficient-queries.md) | Efficient LINQ and EF Core queries | 4 |
+| [17](phase-4-database/17-business-queries.md) | Business queries — recipe cost, profit, dashboard | 4 |
+| [18](phase-5-full-app/18-schema-migration.md) | Schema migration — users + categories tables | 5 |
+| [19](phase-5-full-app/19-registration.md) | User registration with BCrypt | 5 |
+| [20](phase-5-full-app/20-jwt-login.md) | JWT login — signing in and getting a token | 5 |
+| [21](phase-5-full-app/21-protect-endpoints.md) | Protecting endpoints with ICurrentUser | 5 |
+| [22](phase-5-full-app/22-ingredients-full-schema.md) | Ingredients full schema — user ownership + stock | 5 |
+| [23](phase-5-full-app/23-price-history.md) | Price history + spike notifications | 5 |
+| [24](phase-5-full-app/24-recipes.md) | Recipes — junction tables + status state machine | 5 |
+| [25](phase-5-full-app/25-recipe-costing.md) | Recipe costing — cost + margin write-back | 5 |
+| [26](phase-5-full-app/26-record-purchase.md) | Record purchase — atomic multi-table transaction | 5 |
+| [27](phase-5-full-app/27-purchase-history.md) | Paginated purchase history with filters | 5 |
+| [28](phase-5-full-app/28-dashboard.md) | Dashboard — parallel queries with Task.WhenAll | 5 |
 
 ---
+
+📐 See the full database schema evolution: [schema-map.md](schema-map.md)
 
 ➡️ Start with [Lesson 01 — Create your first .NET project](phase-1-crud/01-first-dotnet-project.md)
