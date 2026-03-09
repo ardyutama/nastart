@@ -72,33 +72,26 @@ public static class IngredientsEndpoints
 
     static async Task<IResult> Update(
         Guid id, 
-        UpdateIngredientRequest request, 
-        IValidator<UpdateIngredientRequest> validator,
-        NastartDbContext db)
+        UpdateIngredientRequest request,
+        IMediator mediator)
     {
-        var validationError = await ValidationHelper.ValidateAsync(validator, request);
-        if(validationError is not null) return validationError;
+        var command = new UpdateIngredientCommand(
+            id,
+            request.Name,
+            request.Unit,
+            request.CurrentPrice,
+            request.CurrentStock,
+            request.MinStock
+        );
 
-        var existing = await db.Ingredients.FindAsync(id);
-        if (existing is null) return TypedResults.NotFound();
-
-        existing.Name = request.Name ?? existing.Name;
-        existing.Unit = request.Unit ?? existing.Unit;
-        existing.CurrentPrice = request.CurrentPrice ?? existing.CurrentPrice;
-        existing.CurrentStock = request.CurrentStock ?? existing.CurrentStock;
-        existing.MinStock = request.MinStock ?? existing.MinStock;
-
-        await db.SaveChangesAsync();
-        return TypedResults.Ok(existing);
+        var result = await mediator.Send(command);
+        return result is not null ? TypedResults.Ok(result) : TypedResults.NotFound();
     }
 
-    static async Task<IResult> Delete(Guid id, NastartDbContext db)
+    static async Task<IResult> Delete(Guid id, IMediator mediator)
     {
-        var ingredient = await db.Ingredients.FindAsync(id);
-        if (ingredient is null) return TypedResults.NotFound();
-
-        db.Ingredients.Remove(ingredient);
-        await db.SaveChangesAsync();
-        return TypedResults.NoContent();
+        var deleted = await mediator.Send(new DeleteIngredientCommand(id));
+        
+        return deleted ? TypedResults.NoContent() : TypedResults.NotFound();
     }
 }

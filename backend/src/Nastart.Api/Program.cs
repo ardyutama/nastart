@@ -16,6 +16,8 @@ builder.Services.AddDbContext<NastartDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Default"))
 );
 
+builder.Services.AddValidatorsFromAssemblyContaining<Program>();
+
 builder.Services.AddMediatR(cfg =>
 {
     cfg.RegisterServicesFromAssemblyContaining<Program>();
@@ -23,8 +25,6 @@ builder.Services.AddMediatR(cfg =>
     cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
     cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
 });
-
-builder.Services.AddValidatorsFromAssemblyContaining<CreateIngredientValidator>();
 
 var app = builder.Build();
 
