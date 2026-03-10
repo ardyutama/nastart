@@ -15,7 +15,7 @@ public class Ingredient
     public Guid? CategoryId { get; set; }
     public Guid? BrandId { get; set; }
     public DateTime? LastPurchaseDate { get; set; }
-    public DateTimeOffset CreatedAt {get; set;} = DateTimeOffset.UtcNow;
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTime? UpdatedAt { get; set; }
 
     public bool HasPrice => CurrentPrice.HasValue;
@@ -23,6 +23,7 @@ public class Ingredient
     public User? User { get; set; } = null;
     public Brand? Brand { get; set; }
     public Category? Category { get; set; }
+    public ICollection<PriceHistory> PriceHistories { get; } = [];
 }
 
 public class Category
@@ -35,7 +36,17 @@ public class Category
 
 public class Brand
 {
-    public Guid Id {get; set;}
-    public required string Name {get; set;}
-    public ICollection<Ingredient> Ingredients {get; set;} = [];
+    public Guid Id { get; set; }
+    public required string Name { get; set; }
+    public ICollection<Ingredient> Ingredients { get; set; } = [];
+}
+
+public class PriceHistory
+{
+    public Guid Id { get; set; }
+
+    public Guid IngredientId { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public decimal Price { get; set; }
+    public Ingredient? Ingredient { get; set; }
 }

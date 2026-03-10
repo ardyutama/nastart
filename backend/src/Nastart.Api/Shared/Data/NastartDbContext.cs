@@ -13,17 +13,7 @@ public class NastartDbContext(DbContextOptions<NastartDbContext> options)
         modelBuilder.Entity<Ingredient>(entity =>
         {
             entity.HasKey(e => e.Id);
-            entity.Property(e => e.Name)
-                .IsRequired()
-                .HasMaxLength(200);
-            entity.Property(e => e.Unit)
-                .HasMaxLength(50);
-            entity.Property(e => e.CurrentPrice)
-                .HasPrecision(18,4);
-            entity.Property(e => e.CurrentStock)
-                .HasPrecision(18,4);
-            entity.Property(e => e.MinStock)
-                .HasPrecision(18,4);
+            
         }
         );
     }
