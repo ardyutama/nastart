@@ -22,22 +22,32 @@ public sealed class IngredientConfiguration : IEntityTypeConfiguration<Ingredien
             .HasMaxLength(20);
 
         builder.Property(e => e.CurrentPrice)
-            .HasColumnType("decimal(18,4)");
+            .HasPrecision(18, 4);
 
         builder.Property(e => e.CurrentStock)
-            .HasColumnType("decimal(18,4)");
+            .HasPrecision(18, 4);
 
         builder.Property(e => e.MinStock)
-            .HasColumnType("decimal(18,4)");
+            .HasPrecision(18, 4);
 
         builder.HasOne(i => i.Category)
             .WithMany(c => c.Ingredients)
             .HasForeignKey(i => i.CategoryId)
             .OnDelete(DeleteBehavior.Restrict);
-        
+
         builder.HasMany(i => i.PriceHistories)
             .WithOne(ph => ph.Ingredient)
             .HasForeignKey(ph => ph.IngredientId)
             .OnDelete(DeleteBehavior.Cascade);
+        
+        builder.HasMany(i => i.PurchaseItems)
+            .WithOne(i => i.Ingredient)
+            .HasForeignKey(i => i.IngredientId)
+            .OnDelete(DeleteBehavior.Restrict);
+        
+        builder.HasMany(i => i.RecipeIngredients)
+            .WithOne(i => i.Ingredient)
+            .HasForeignKey(i => i.IngredientId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

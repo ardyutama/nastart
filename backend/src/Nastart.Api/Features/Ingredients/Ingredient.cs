@@ -1,3 +1,5 @@
+using Nastart.Api.Features.Purchases;
+using Nastart.Api.Features.Recipes;
 using Nastart.Api.Features.Users;
 
 namespace Nastart.Api.Features.Ingredients;
@@ -24,6 +26,8 @@ public class Ingredient
     public Brand? Brand { get; set; }
     public Category? Category { get; set; }
     public ICollection<PriceHistory> PriceHistories { get; } = [];
+    public ICollection<RecipeIngredient> RecipeIngredients { get; set; } = [];
+    public ICollection<PurchaseItem> PurchaseItems { get; set; } = [];
 }
 
 public class Category
