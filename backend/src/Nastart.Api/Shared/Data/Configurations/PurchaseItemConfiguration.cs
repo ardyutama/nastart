@@ -20,12 +20,12 @@ public sealed class PurchaseItemConfiguration : IEntityTypeConfiguration<Purchas
             .HasDefaultValue(ItemStatus.Pending);
 
         builder.HasOne(pi => pi.Purchase)
-            .WithMany(p => p.Items)
+            .WithMany(p => p.PurchaseItems)
             .HasForeignKey(pi => pi.PurchaseId)
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasOne(pi => pi.Ingredient)
-            .WithMany()
+            .WithMany(pi => pi.PurchaseItems)
             .HasForeignKey(pi => pi.IngredientId)
             .OnDelete(DeleteBehavior.Restrict);
     }

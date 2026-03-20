@@ -21,7 +21,7 @@ public class Purchase
     public String? ReceiptImageUrl { get; set; }
     public String? Notes { get; set; }
     public PurchaseStatus Status { get; set; }
-    public ICollection<PurchaseItem> Items { get; set; } = [];
+    public ICollection<PurchaseItem> PurchaseItems { get; set; } = [];
     public User? User { get; set; }
     public Shop? Shop { get; set; }
 }

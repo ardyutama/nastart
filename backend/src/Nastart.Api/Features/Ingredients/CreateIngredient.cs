@@ -7,7 +7,7 @@ namespace Nastart.Api.Features.Ingredients;
 
 public record CreateIngredientCommand(
     string Name,
-    string? Unit,
+    string Unit,
     decimal CurrentPrice,
     decimal CurrentStock,
     decimal MinStock

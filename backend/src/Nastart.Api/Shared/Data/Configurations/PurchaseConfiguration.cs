@@ -16,7 +16,7 @@ public class PurchaseConfiguration : IEntityTypeConfiguration<Purchase>
         builder.Property(p => p.ReceiptImageUrl).HasMaxLength(500);
         builder.Property(p => p.Notes).HasMaxLength(200);
 
-        builder.HasMany(p => p.Items)
+        builder.HasMany(p => p.PurchaseItems)
             .WithOne(p => p.Purchase)
             .HasForeignKey(p => p.PurchaseId)
             .OnDelete(DeleteBehavior.Cascade);
