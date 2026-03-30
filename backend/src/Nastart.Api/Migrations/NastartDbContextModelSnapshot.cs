@@ -149,7 +149,7 @@ namespace Nastart.Api.Migrations
 
                     b.HasIndex("IngredientId", "CreatedAt");
 
-                    b.ToTable("PriceHistory");
+                    b.ToTable("PriceHistories");
                 });
 
             modelBuilder.Entity("Nastart.Api.Features.Purchases.Purchase", b =>
