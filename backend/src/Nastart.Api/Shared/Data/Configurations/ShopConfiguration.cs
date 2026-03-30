@@ -9,7 +9,7 @@ public class ShopConfiguration : IEntityTypeConfiguration<Shop>
     public void Configure(EntityTypeBuilder<Shop> builder)
     {
         builder.ToTable("shops");
-        
+
         builder.HasKey(s => s.Id);
         builder.Property(s => s.Id).HasDefaultValueSql("uuidv7()");
 

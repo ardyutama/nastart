@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace Nastart.Api.Migrations
 {
     /// <inheritdoc />
-    public partial class NormalizedSchema : Migration
+    public partial class InitialCreate : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -34,26 +34,6 @@ namespace Nastart.Api.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_categories", x => x.Id);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "Recipe",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    UserId = table.Column<Guid>(type: "uuid", nullable: false),
-                    Name = table.Column<string>(type: "text", nullable: false),
-                    SellPrice = table.Column<decimal>(type: "numeric", nullable: false),
-                    TotalCost = table.Column<decimal>(type: "numeric", nullable: false),
-                    MarginPercent = table.Column<decimal>(type: "numeric", nullable: false),
-                    YieldQuantity = table.Column<int>(type: "integer", nullable: false),
-                    YieldUnit = table.Column<string>(type: "text", nullable: false),
-                    Status = table.Column<int>(type: "integer", nullable: false),
-                    Created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_Recipe", x => x.Id);
                 });
 
             migrationBuilder.CreateTable(
@@ -117,6 +97,32 @@ namespace Nastart.Api.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "recipes",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "uuidv7()"),
+                    UserId = table.Column<Guid>(type: "uuid", nullable: false),
+                    Name = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: false),
+                    SellPrice = table.Column<decimal>(type: "numeric(18,4)", precision: 18, scale: 4, nullable: false),
+                    TotalCost = table.Column<decimal>(type: "numeric(18,4)", precision: 18, scale: 4, nullable: false),
+                    MarginPercent = table.Column<decimal>(type: "numeric(18,4)", precision: 18, scale: 4, nullable: false),
+                    YieldQuantity = table.Column<int>(type: "integer", precision: 18, scale: 4, nullable: false),
+                    YieldUnit = table.Column<string>(type: "text", precision: 18, scale: 4, nullable: false),
+                    Status = table.Column<int>(type: "integer", maxLength: 200, nullable: false),
+                    Created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_recipes", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_recipes_User_UserId",
+                        column: x => x.UserId,
+                        principalTable: "User",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "shops",
                 columns: table => new
                 {
@@ -139,10 +145,10 @@ namespace Nastart.Api.Migrations
                 name: "PriceHistory",
                 columns: table => new
                 {
-                    Id = table.Column<Guid>(type: "uuid", nullable: false),
+                    Id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "uuidv7()"),
                     IngredientId = table.Column<Guid>(type: "uuid", nullable: false),
                     CreatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
-                    Price = table.Column<decimal>(type: "numeric", nullable: false)
+                    Price = table.Column<decimal>(type: "numeric(18,4)", precision: 18, scale: 4, nullable: false)
                 },
                 constraints: table =>
                 {
@@ -152,7 +158,7 @@ namespace Nastart.Api.Migrations
                         column: x => x.IngredientId,
                         principalTable: "ingredients",
                         principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.Restrict);
                 });
 
             migrationBuilder.CreateTable(
@@ -169,17 +175,17 @@ namespace Nastart.Api.Migrations
                 {
                     table.PrimaryKey("PK_RecipeIngredient", x => x.Id);
                     table.ForeignKey(
-                        name: "FK_RecipeIngredient_Recipe_RecipeId",
-                        column: x => x.RecipeId,
-                        principalTable: "Recipe",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
-                    table.ForeignKey(
                         name: "FK_RecipeIngredient_ingredients_IngredientId",
                         column: x => x.IngredientId,
                         principalTable: "ingredients",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_RecipeIngredient_recipes_RecipeId",
+                        column: x => x.RecipeId,
+                        principalTable: "recipes",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateTable(
@@ -222,8 +228,7 @@ namespace Nastart.Api.Migrations
                     RawText = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
                     Quantity = table.Column<decimal>(type: "numeric(18,4)", precision: 18, scale: 4, nullable: false),
                     Price = table.Column<decimal>(type: "numeric(18,4)", precision: 18, scale: 4, nullable: false),
-                    Status = table.Column<int>(type: "integer", nullable: false, defaultValue: 0),
-                    IngredientId1 = table.Column<Guid>(type: "uuid", nullable: true)
+                    Status = table.Column<int>(type: "integer", nullable: false, defaultValue: 0)
                 },
                 constraints: table =>
                 {
@@ -234,11 +239,6 @@ namespace Nastart.Api.Migrations
                         principalTable: "ingredients",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_purchase_items_ingredients_IngredientId1",
-                        column: x => x.IngredientId1,
-                        principalTable: "ingredients",
-                        principalColumn: "Id");
                     table.ForeignKey(
                         name: "FK_purchase_items_purchases_PurchaseId",
                         column: x => x.PurchaseId,
@@ -264,24 +264,26 @@ namespace Nastart.Api.Migrations
                 column: "CategoryId");
 
             migrationBuilder.CreateIndex(
+                name: "IX_ingredients_Name",
+                table: "ingredients",
+                column: "Name")
+                .Annotation("Npgsql:IndexMethod", "gin")
+                .Annotation("Npgsql:IndexOperators", new[] { "gin_trgm_ops" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_ingredients_Userid",
                 table: "ingredients",
                 column: "Userid");
 
             migrationBuilder.CreateIndex(
-                name: "IX_PriceHistory_IngredientId",
+                name: "IX_PriceHistory_IngredientId_CreatedAt",
                 table: "PriceHistory",
-                column: "IngredientId");
+                columns: new[] { "IngredientId", "CreatedAt" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_purchase_items_IngredientId",
                 table: "purchase_items",
                 column: "IngredientId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_purchase_items_IngredientId1",
-                table: "purchase_items",
-                column: "IngredientId1");
 
             migrationBuilder.CreateIndex(
                 name: "IX_purchase_items_PurchaseId",
@@ -294,9 +296,9 @@ namespace Nastart.Api.Migrations
                 column: "ShopId");
 
             migrationBuilder.CreateIndex(
-                name: "IX_purchases_UserId",
+                name: "IX_purchases_UserId_PurchaseDate",
                 table: "purchases",
-                column: "UserId");
+                columns: new[] { "UserId", "PurchaseDate" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_RecipeIngredient_IngredientId",
@@ -307,6 +309,11 @@ namespace Nastart.Api.Migrations
                 name: "IX_RecipeIngredient_RecipeId",
                 table: "RecipeIngredient",
                 column: "RecipeId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_recipes_UserId",
+                table: "recipes",
+                column: "UserId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_shops_UserId",
@@ -330,10 +337,10 @@ namespace Nastart.Api.Migrations
                 name: "purchases");
 
             migrationBuilder.DropTable(
-                name: "Recipe");
+                name: "ingredients");
 
             migrationBuilder.DropTable(
-                name: "ingredients");
+                name: "recipes");
 
             migrationBuilder.DropTable(
                 name: "shops");

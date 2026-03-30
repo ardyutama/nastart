@@ -12,7 +12,9 @@ public class PurchaseConfiguration : IEntityTypeConfiguration<Purchase>
         builder.HasKey(p => p.Id);
         builder.Property(p => p.Id).HasDefaultValueSql("uuidv7()");
 
-        builder.Property(p => p.TotalAmount).HasPrecision(18,4);
+        builder.HasIndex(p => new { p.UserId, p.PurchaseDate });
+
+        builder.Property(p => p.TotalAmount).HasPrecision(18, 4);
         builder.Property(p => p.ReceiptImageUrl).HasMaxLength(500);
         builder.Property(p => p.Notes).HasMaxLength(200);
 

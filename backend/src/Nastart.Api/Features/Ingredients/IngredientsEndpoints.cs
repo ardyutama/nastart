@@ -67,7 +67,7 @@ public static class IngredientsEndpoints
     }
 
     static async Task<IResult> Update(
-        Guid id, 
+        Guid id,
         UpdateIngredientRequest request,
         IMediator mediator)
     {
@@ -87,7 +87,7 @@ public static class IngredientsEndpoints
     static async Task<IResult> Delete(Guid id, IMediator mediator)
     {
         var deleted = await mediator.Send(new DeleteIngredientCommand(id));
-        
+
         return deleted ? TypedResults.NoContent() : TypedResults.NotFound();
     }
 }

@@ -12,9 +12,12 @@ public sealed class PurchaseItemConfiguration : IEntityTypeConfiguration<Purchas
         builder.HasKey(pi => pi.Id);
         builder.Property(i => i.Id).HasDefaultValueSql("uuidv7()");
 
+        builder.HasIndex(pi => pi.IngredientId);
+
         builder.Property(pi => pi.RawText).HasMaxLength(500);
         builder.Property(pi => pi.Quantity).HasPrecision(18, 4);
         builder.Property(pi => pi.Price).HasPrecision(18, 4);
+
         builder.Property(pi => pi.Status)
             .IsRequired()
             .HasDefaultValue(ItemStatus.Pending);

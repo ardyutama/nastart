@@ -11,7 +11,7 @@ public static class ValidationHelper
     {
         var result = await validator.ValidateAsync(request);
 
-        if(result.IsValid) return null;
+        if (result.IsValid) return null;
 
         var errors = result.Errors
             .GroupBy(e => e.PropertyName)

@@ -17,6 +17,9 @@ public sealed class IngredientConfiguration : IEntityTypeConfiguration<Ingredien
             .IsRequired()
             .HasMaxLength(200);
 
+        builder.HasIndex(i => i.Name).HasMethod("gin") .HasOperators("gin_trgm_ops");;
+        builder.HasIndex(i => i.Userid);
+
         builder.Property(i => i.Unit)
             .IsRequired()
             .HasMaxLength(20);
@@ -39,12 +42,12 @@ public sealed class IngredientConfiguration : IEntityTypeConfiguration<Ingredien
             .WithOne(ph => ph.Ingredient)
             .HasForeignKey(ph => ph.IngredientId)
             .OnDelete(DeleteBehavior.Cascade);
-        
+
         builder.HasMany(i => i.PurchaseItems)
             .WithOne(i => i.Ingredient)
             .HasForeignKey(i => i.IngredientId)
             .OnDelete(DeleteBehavior.Restrict);
-        
+
         builder.HasMany(i => i.RecipeIngredients)
             .WithOne(i => i.Ingredient)
             .HasForeignKey(i => i.IngredientId)

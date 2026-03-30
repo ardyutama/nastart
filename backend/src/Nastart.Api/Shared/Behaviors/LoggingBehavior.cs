@@ -17,8 +17,9 @@ public class LoggingBehavior<TRequest, TResponse>(
 
         logger.LogInformation("Handling {RequestName}", requestName);
 
-        try {
-            var response = await next();
+        try
+        {
+            var response = await next(cancellationToken);
 
             stopwatch.Stop();
             logger.LogInformation(

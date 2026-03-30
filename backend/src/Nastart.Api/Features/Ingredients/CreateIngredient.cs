@@ -24,7 +24,7 @@ public class CreateIngredientCommandValidator : AbstractValidator<CreateIngredie
 }
 public class CreateIngredientHandler(NastartDbContext db) : IRequestHandler<CreateIngredientCommand, Ingredient>
 {
-    public async Task <Ingredient> Handle(
+    public async Task<Ingredient> Handle(
         CreateIngredientCommand request,
         CancellationToken cancellationToken)
     {

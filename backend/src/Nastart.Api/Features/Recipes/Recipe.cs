@@ -1,4 +1,5 @@
 using Nastart.Api.Features.Ingredients;
+using Nastart.Api.Features.Users;
 
 namespace Nastart.Api.Features.Recipes;
 
@@ -21,6 +22,7 @@ public class Recipe
     public required String YieldUnit { get; set; }
     public RecipeStatus Status { get; set; }
     public DateTimeOffset Created_at { get; set; }
+    public User? User { get; set; }
     public ICollection<RecipeIngredient> RecipeIngredients { get; set; } = [];
 }
 

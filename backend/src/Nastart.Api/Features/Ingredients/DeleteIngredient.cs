@@ -7,7 +7,7 @@ namespace Nastart.Api.Features.Ingredients;
 
 public record DeleteIngredientCommand(Guid Id) : IRequest<bool>;
 
-public class DeleteIngredientHandler(NastartDbContext db): IRequestHandler<DeleteIngredientCommand, bool>
+public class DeleteIngredientHandler(NastartDbContext db) : IRequestHandler<DeleteIngredientCommand, bool>
 {
     public async Task<bool> Handle(
         DeleteIngredientCommand request,

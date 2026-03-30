@@ -49,8 +49,8 @@ app.UseExceptionHandler(exceptionApp =>
 
             await context.Response.WriteAsJsonAsync(new
             {
-                type   = "https://tools.ietf.org/html/rfc7807",
-                title  = "Validation failed",
+                type = "https://tools.ietf.org/html/rfc7807",
+                title = "Validation failed",
                 status = 400,
                 errors
             });
@@ -62,8 +62,8 @@ app.UseExceptionHandler(exceptionApp =>
         context.Response.ContentType = "application/problem+json";
         await context.Response.WriteAsJsonAsync(new
         {
-            type   = "https://tools.ietf.org/html/rfc7807",
-            title  = "An unexpected error occurred",
+            type = "https://tools.ietf.org/html/rfc7807",
+            title = "An unexpected error occurred",
             status = 500
         });
     });
@@ -78,7 +78,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-app.MapGet("/", ()=> "Nastart API is running!");
+app.MapGet("/", () => "Nastart API is running!");
 app.MapIngredientsEndpoints();
 
 app.Run();

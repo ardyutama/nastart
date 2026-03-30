@@ -118,6 +118,11 @@ namespace Nastart.Api.Migrations
 
                     b.HasIndex("CategoryId");
 
+                    b.HasIndex("Name");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Name"), "gin");
+                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Name"), new[] { "gin_trgm_ops" });
+
                     b.HasIndex("Userid");
 
                     b.ToTable("ingredients", (string)null);
@@ -127,7 +132,8 @@ namespace Nastart.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("uuidv7()");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -136,11 +142,12 @@ namespace Nastart.Api.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<decimal>("Price")
-                        .HasColumnType("numeric");
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("IngredientId");
+                    b.HasIndex("IngredientId", "CreatedAt");
 
                     b.ToTable("PriceHistory");
                 });
@@ -180,7 +187,7 @@ namespace Nastart.Api.Migrations
 
                     b.HasIndex("ShopId");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("UserId", "PurchaseDate");
 
                     b.ToTable("purchases", (string)null);
                 });
@@ -228,40 +235,50 @@ namespace Nastart.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("uuidv7()");
 
                     b.Property<DateTimeOffset>("Created_at")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<decimal>("MarginPercent")
-                        .HasColumnType("numeric");
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
 
                     b.Property<decimal>("SellPrice")
-                        .HasColumnType("numeric");
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
 
                     b.Property<int>("Status")
+                        .HasMaxLength(200)
                         .HasColumnType("integer");
 
                     b.Property<decimal>("TotalCost")
-                        .HasColumnType("numeric");
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
 
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid");
 
                     b.Property<int>("YieldQuantity")
+                        .HasPrecision(18, 4)
                         .HasColumnType("integer");
 
                     b.Property<string>("YieldUnit")
                         .IsRequired()
+                        .HasPrecision(18, 4)
                         .HasColumnType("text");
 
                     b.HasKey("Id");
 
-                    b.ToTable("Recipe");
+                    b.HasIndex("UserId");
+
+                    b.ToTable("recipes", (string)null);
                 });
 
             modelBuilder.Entity("Nastart.Api.Features.Recipes.RecipeIngredient", b =>
@@ -381,7 +398,7 @@ namespace Nastart.Api.Migrations
                     b.HasOne("Nastart.Api.Features.Ingredients.Ingredient", "Ingredient")
                         .WithMany("PriceHistories")
                         .HasForeignKey("IngredientId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("Ingredient");
@@ -420,6 +437,17 @@ namespace Nastart.Api.Migrations
                     b.Navigation("Ingredient");
 
                     b.Navigation("Purchase");
+                });
+
+            modelBuilder.Entity("Nastart.Api.Features.Recipes.Recipe", b =>
+                {
+                    b.HasOne("Nastart.Api.Features.Users.User", "User")
+                        .WithMany("Recipes")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("Nastart.Api.Features.Recipes.RecipeIngredient", b =>
@@ -489,6 +517,8 @@ namespace Nastart.Api.Migrations
             modelBuilder.Entity("Nastart.Api.Features.Users.User", b =>
                 {
                     b.Navigation("Purchases");
+
+                    b.Navigation("Recipes");
 
                     b.Navigation("Shops");
                 });

@@ -1,4 +1,5 @@
 using Nastart.Api.Features.Purchases;
+using Nastart.Api.Features.Recipes;
 using Nastart.Api.Features.Shops;
 
 namespace Nastart.Api.Features.Users;
@@ -16,6 +17,7 @@ public class User
     public string? TelegramUsername { get; set; }
     public bool IsOnboarded { get; set; }
     public DateTime CreatedAt { get; set; }
+    public ICollection<Recipe> Recipes { get; set; } = [];
     public ICollection<Purchase> Purchases { get; set; } = [];
     public ICollection<Shop> Shops { get; set; } = [];
 }
