@@ -27,7 +27,7 @@ public class RecipeConfiguration : IEntityTypeConfiguration<Recipe>
             .WithMany(r => r.Recipes)
             .HasForeignKey(r => r.UserId)
             .OnDelete(DeleteBehavior.Restrict);
-        
+
         builder.HasMany(r => r.RecipeIngredients)
             .WithOne(r => r.Recipe)
             .HasForeignKey(r => r.RecipeId)

@@ -17,7 +17,7 @@ public sealed class IngredientConfiguration : IEntityTypeConfiguration<Ingredien
             .IsRequired()
             .HasMaxLength(200);
 
-        builder.HasIndex(i => i.Name).HasMethod("gin") .HasOperators("gin_trgm_ops");;
+        builder.HasIndex(i => i.Name).HasMethod("gin").HasOperators("gin_trgm_ops"); ;
         builder.HasIndex(i => i.Userid);
 
         builder.Property(i => i.Unit)

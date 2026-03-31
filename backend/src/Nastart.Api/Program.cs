@@ -80,5 +80,6 @@ app.UseHttpsRedirection();
 
 app.MapGet("/", () => "Nastart API is running!");
 app.MapIngredientsEndpoints();
+app.MapRecipesEndpoints();
 
 app.Run();
