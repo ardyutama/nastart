@@ -1,0 +1,14 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Nastart DB",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "nastart",
+      "Username": "nastart",
+      "PassFile": "/pgpass",
+      "SSLMode": "prefer"
+    }
+  }
+}

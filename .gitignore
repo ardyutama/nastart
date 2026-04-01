@@ -30,3 +30,4 @@ appsettings.*.json
 !appsettings.json
 appsettings.Development.json
 /secrets
+pgpass
