@@ -34,5 +34,5 @@ public class RecipeIngredient
     public Decimal Quantity { get; set; }
     public Decimal Cost { get; set; }
     public Recipe? Recipe { get; set; }
-    public Ingredient? Ingredient { get; set; }
+    public Ingredient Ingredient { get; set; } = null!;
 }

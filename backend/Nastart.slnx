@@ -1,8 +1,11 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Nastart.Api/Nastart.Api.csproj" />
+    <Project Path="src/Nastart.Application/Nastart.Application.csproj" />
+    <Project Path="src/Nastart.Domain/Nastart.Domain.csproj" />
+    <Project Path="src/Nastart.Infrastructure/Nastart.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/Nastart.Api.Tests/Nastart.Api.Tests.csproj" />
+    <Project Path="tests/Nastart.Tests/Nastart.Tests.csproj" />
   </Folder>
 </Solution>

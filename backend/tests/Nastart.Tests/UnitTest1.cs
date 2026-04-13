@@ -1,4 +1,4 @@
-﻿namespace Nastart.Api.Tests;
+﻿namespace Nastart.Tests;
 
 public class UnitTest1
 {
