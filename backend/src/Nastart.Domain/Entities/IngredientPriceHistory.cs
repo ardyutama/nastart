@@ -9,6 +9,7 @@ public class IngredientPriceHistory : BaseEntity
     public Ingredient Ingredient { get; set; } = null!;
 
     public decimal Price { get; set; }
+    public decimal UnitSize { get; set; }
 
     public PriceSource Source { get; set; }
 

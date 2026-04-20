@@ -1,9 +1,4 @@
-using FluentValidation;
-using MediatR;
-using Microsoft.EntityFrameworkCore;
-using Nastart.Api.Features.Ingredients;
-using Nastart.Api.Shared.Behaviors;
-using Nastart.Api.Shared.Data;
+using Nastart.Infrastructure;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -12,62 +7,60 @@ var builder = WebApplication.CreateBuilder(args);
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
-builder.Services.AddDbContext<NastartDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("Default"))
-);
+builder.Services.AddInfrastructure(builder.Configuration);
 
-builder.Services.AddValidatorsFromAssemblyContaining<Program>();
+// builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 
-builder.Services.AddMediatR(cfg =>
-{
-    cfg.RegisterServicesFromAssemblyContaining<Program>();
+// builder.Services.AddMediatR(cfg =>
+// {
+//     cfg.RegisterServicesFromAssemblyContaining<Program>();
 
-    cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
-    cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
-});
+//     cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
+//     cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+// });
 
 var app = builder.Build();
 
-app.UseExceptionHandler(exceptionApp =>
-{
-    exceptionApp.Run(async context =>
-    {
-        var exceptionHandlerFeature = context.Features
-            .Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>();
+// app.UseExceptionHandler(exceptionApp =>
+// {
+//     exceptionApp.Run(async context =>
+//     {
+//         var exceptionHandlerFeature = context.Features
+//             .Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>();
 
-        if (exceptionHandlerFeature?.Error is ValidationException validationEx)
-        {
-            var errors = validationEx.Errors
-                .GroupBy(e => e.PropertyName)
-                .ToDictionary(
-                    g => g.Key,
-                    g => g.Select(e => e.ErrorMessage).ToArray()
-                );
+//         if (exceptionHandlerFeature?.Error is ValidationException validationEx)
+//         {
+//             var errors = validationEx.Errors
+//                 .GroupBy(e => e.PropertyName)
+//                 .ToDictionary(
+//                     g => g.Key,
+//                     g => g.Select(e => e.ErrorMessage).ToArray()
+//                 );
 
-            context.Response.StatusCode = 400;
-            context.Response.ContentType = "application/problem+json";
+//             context.Response.StatusCode = 400;
+//             context.Response.ContentType = "application/problem+json";
 
-            await context.Response.WriteAsJsonAsync(new
-            {
-                type = "https://tools.ietf.org/html/rfc7807",
-                title = "Validation failed",
-                status = 400,
-                errors
-            });
+//             await context.Response.WriteAsJsonAsync(new
+//             {
+//                 type = "https://tools.ietf.org/html/rfc7807",
+//                 title = "Validation failed",
+//                 status = 400,
+//                 errors
+//             });
 
-            return;
-        }
+//             return;
+//         }
 
-        context.Response.StatusCode = 500;
-        context.Response.ContentType = "application/problem+json";
-        await context.Response.WriteAsJsonAsync(new
-        {
-            type = "https://tools.ietf.org/html/rfc7807",
-            title = "An unexpected error occurred",
-            status = 500
-        });
-    });
-});
+//         context.Response.StatusCode = 500;
+//         context.Response.ContentType = "application/problem+json";
+//         await context.Response.WriteAsJsonAsync(new
+//         {
+//             type = "https://tools.ietf.org/html/rfc7807",
+//             title = "An unexpected error occurred",
+//             status = 500
+//         });
+//     });
+// });
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
@@ -79,7 +72,8 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 
 app.MapGet("/", () => "Nastart API is running!");
-app.MapIngredientsEndpoints();
-app.MapRecipesEndpoints();
+app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+// app.MapIngredientsEndpoints();
+// app.MapRecipesEndpoints();
 
 app.Run();
