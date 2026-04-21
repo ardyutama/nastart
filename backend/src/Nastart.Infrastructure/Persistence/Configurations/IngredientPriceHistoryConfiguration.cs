@@ -15,7 +15,7 @@ public class IngredientPriceHistoryConfiguration : IEntityTypeConfiguration<Ingr
 
         builder.Property(p => p.CommitedAt).HasDefaultValueSql("NOW()");
 
-        builder.HasIndex(p => new {p.IngredientId, p.CommitedAt})
+        builder.HasIndex(p => new { p.IngredientId, p.CommitedAt })
             .IsDescending(false, true)
             .HasDatabaseName("ix_ingredient_price_history_ingredient_commited");
 
@@ -23,11 +23,11 @@ public class IngredientPriceHistoryConfiguration : IEntityTypeConfiguration<Ingr
             .WithMany(i => i.PriceHistory)
             .HasForeignKey(p => p.IngredientId)
             .OnDelete(DeleteBehavior.Cascade);
-        
+
         builder.HasIndex(p => p.InvoiceLineItemId)
             .HasFilter("invoice_line_item_id IS NOT NULL")
             .HasDatabaseName("ingredient_price_histories_invoice_line_item_id_idx");
-        
+
         builder.ToTable(t => t.HasCheckConstraint("ck_ingredient_price_history_price_positive", "price > 0"));
         builder.ToTable(t => t.HasCheckConstraint("ck_ingredient_price_history_unit_size_positive", "unit_size > 0"));
     }

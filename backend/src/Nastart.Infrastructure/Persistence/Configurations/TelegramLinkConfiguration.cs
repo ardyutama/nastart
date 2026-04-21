@@ -19,10 +19,10 @@ public class TelegramLinkConfiguration : IEntityTypeConfiguration<TelegramLink>
                 v => v.ToString().ToLowerInvariant(),
                 v => (TelegramLinkStatus)Enum.Parse(typeof(TelegramLinkStatus), v, ignoreCase: true))
             .HasMaxLength(20);
-        
+
         builder.HasIndex(t => t.CodeHash).IsUnique()
             .HasDatabaseName("telegram_link_code_hash_idx");
-        builder.HasIndex(t => new {t.UserId, t.Status})
+        builder.HasIndex(t => new { t.UserId, t.Status })
             .HasDatabaseName("telegram_links_user_id_status_idx");
 
         builder.HasOne(t => t.User)
