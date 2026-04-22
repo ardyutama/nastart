@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Nastart.Application.Common.Interfaces;
 using Nastart.Infrastructure.Persistence;
+using Nastart.Infrastructure.Services;
 
 namespace Nastart.Infrastructure;
 
@@ -19,6 +20,8 @@ public static class DependencyInjection
 
         services.AddScoped<IAppDbContext>(provider =>
             provider.GetRequiredService<AppDbContext>());
+
+        services.AddScoped<IEmailService, ConsoleEmailService>();
 
         return services;
     }
