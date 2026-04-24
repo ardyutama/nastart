@@ -4,15 +4,10 @@ using Nastart.Application.Common.Interfaces;
 
 namespace Nastart.Application.Features.Ingredients.Queries.GetIngredients;
 
-public class GetIngredientsHandler
-    : IRequestHandler<GetIngredientsQuery, List<IngredientListResponse>>
+public class GetIngredientsHandler(IAppDbContext db)
+        : IRequestHandler<GetIngredientsQuery, List<IngredientListResponse>>
 {
-    private readonly IAppDbContext _db;
-
-    public GetIngredientsHandler(IAppDbContext db)
-    {
-        _db = db;
-    }
+    private readonly IAppDbContext _db = db;
 
     public async Task<List<IngredientListResponse>> Handle(
         GetIngredientsQuery request, CancellationToken cancellationToken)

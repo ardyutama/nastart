@@ -13,4 +13,13 @@ public class TelegramLink : BaseEntity
     public long? TelegramUserId { get; set; }
     public string? TelegramUsername { get; set; }
     public DateTimeOffset? LinkedAt { get; set; }
+    public void Confirm(long telegramUserId, string? telegramUsername)
+    {
+        if(Status != TelegramLinkStatus.Pending)
+            throw new InvalidOperationException("Only Pending links can be confirmed");
+        TelegramUserId = telegramUserId;
+        TelegramUsername = telegramUsername;
+        LinkedAt = DateTimeOffset.UtcNow;
+        Status = TelegramLinkStatus.Confirmed;
+    }
 }

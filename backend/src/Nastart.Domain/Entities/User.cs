@@ -10,6 +10,6 @@ public class User : BaseEntity
     public bool IsVerified { get; set; }
     public bool IsActive { get; set; }
 
-    public ICollection<TelegramLink> TelegramLinks { get; set; } = new List<TelegramLink>();
-    public ICollection<Ingredient> Ingredients { get; set; } = new List<Ingredient>();
+    public ICollection<TelegramLink> TelegramLinks { get; set; } = [];
+    public ICollection<Ingredient> Ingredients { get; set; } = [];
 }

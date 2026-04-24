@@ -35,5 +35,14 @@ public class IngredientConfiguration : IEntityTypeConfiguration<Ingredient>
 
         builder.HasIndex(i => i.UnitId)
             .HasDatabaseName("ingredients_unit_id_idx");
+
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("ck_ingredient_unit_size_positive", "unit_size > 0");
+            t.HasCheckConstraint(
+                "ck_ingredient_spike_threshold_range",
+                "price_spike_threshold_pct IS NULL OR (price_spike_threshold_pct >= 0 AND price_spike_threshold_pct <= 100)"
+            );   
+        });
     }
 }

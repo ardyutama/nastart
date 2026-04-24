@@ -28,7 +28,11 @@ public class IngredientPriceHistoryConfiguration : IEntityTypeConfiguration<Ingr
             .HasFilter("invoice_line_item_id IS NOT NULL")
             .HasDatabaseName("ingredient_price_histories_invoice_line_item_id_idx");
 
-        builder.ToTable(t => t.HasCheckConstraint("ck_ingredient_price_history_price_positive", "price > 0"));
-        builder.ToTable(t => t.HasCheckConstraint("ck_ingredient_price_history_unit_size_positive", "unit_size > 0"));
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("ck_ingredient_price_history_source", "source IN ('Manual', 'InvoiceScan')");
+            t.HasCheckConstraint("ck_ingredient_price_history_price_positive", "price > 0");
+            t.HasCheckConstraint("ck_ingredient_price_history_unit_size_positive", "unit_size > 0");
+        });
     }
 }

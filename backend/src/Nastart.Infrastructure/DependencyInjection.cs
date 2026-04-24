@@ -11,16 +11,19 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
+        var connectionString = configuration.GetConnectionString("DefaultConnection") 
+            ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing. " + "Add it to appsettings.Development.json (gitignored - never commit)");
+
         services.AddDbContext<AppDbContext>(options =>
             options.UseNpgsql(
-                configuration.GetConnectionString("DefaultConnection"),
-                o => o.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)
+                connectionString,
+                npgsqlOptions => npgsqlOptions.MigrationsAssembly(typeof(AppDbContext).Assembly.GetName().Name)
             ).UseSnakeCaseNamingConvention()
         );
 
         services.AddScoped<IAppDbContext>(provider =>
             provider.GetRequiredService<AppDbContext>());
-
+        
         services.AddScoped<IEmailService, ConsoleEmailService>();
 
         return services;

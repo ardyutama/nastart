@@ -5,10 +5,8 @@ using Nastart.Domain.Entities;
 
 namespace Nastart.Infrastructure.Persistence;
 
-public class AppDbContext : DbContext, IAppDbContext
+public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options), IAppDbContext
 {
-    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
-
     public DbSet<User> Users => Set<User>();
     public DbSet<TelegramLink> TelegramLinks => Set<TelegramLink>();
     public DbSet<Ingredient> Ingredients => Set<Ingredient>();
@@ -21,21 +19,26 @@ public class AppDbContext : DbContext, IAppDbContext
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
     }
 
-    public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    private void ApplyAuditTimestamps()
     {
         foreach (var entry in ChangeTracker.Entries<BaseEntity>())
         {
-            switch (entry.State)
-            {
-                case EntityState.Added:
-                    entry.Entity.CreatedAt = DateTimeOffset.UtcNow;
-                    break;
-                case EntityState.Modified:
-                    entry.Entity.UpdatedAt = DateTimeOffset.UtcNow;
-                    break;
-            }
+            if (entry.State == EntityState.Added)
+                entry.Entity.CreatedAt = DateTimeOffset.UtcNow;
+            else if (entry.State == EntityState.Modified)
+                entry.Entity.UpdatedAt = DateTimeOffset.UtcNow;
         }
+    }
 
+    public override int SaveChanges()
+    {
+        ApplyAuditTimestamps();
+        return base.SaveChanges();
+    }
+
+    public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        ApplyAuditTimestamps();
         return await base.SaveChangesAsync(cancellationToken);
     }
 }

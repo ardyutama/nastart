@@ -17,7 +17,7 @@ public class TelegramLinkConfiguration : IEntityTypeConfiguration<TelegramLink>
         builder.Property(t => t.Status)
             .HasConversion(
                 v => v.ToString().ToLowerInvariant(),
-                v => (TelegramLinkStatus)Enum.Parse(typeof(TelegramLinkStatus), v, ignoreCase: true))
+                v => ParseStatus(v))
             .HasMaxLength(20);
 
         builder.HasIndex(t => t.CodeHash).IsUnique()
@@ -30,4 +30,9 @@ public class TelegramLinkConfiguration : IEntityTypeConfiguration<TelegramLink>
             .HasForeignKey(t => t.UserId)
             .OnDelete(DeleteBehavior.Cascade);
     }
+
+     private static TelegramLinkStatus ParseStatus(string value) =>
+            Enum.TryParse<TelegramLinkStatus>(value, ignoreCase: true, out var result)
+                ? result
+                : TelegramLinkStatus.Pending;
 }

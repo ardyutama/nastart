@@ -6,4 +6,4 @@ public record IngredientListResponse(
     string? CategoryName,
     string UnitAbbreviation,
     decimal UnitSize,
-    decimal? PriceSpikeThresholdPct);
+    decimal? PriceSpikeThreshold);

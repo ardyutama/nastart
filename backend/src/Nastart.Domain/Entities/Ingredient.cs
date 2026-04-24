@@ -8,7 +8,7 @@ public class Ingredient : BaseEntity
     public Guid UserId { get; set; }
     public User User { get; set; } = null!;
 
-    public Guid CategoryId { get; set; }
+    public Guid? CategoryId { get; set; }
     public Category? Category { get; set; }
 
     public Guid UnitId { get; set; }
@@ -18,6 +18,6 @@ public class Ingredient : BaseEntity
 
     public decimal? PriceSpikeThresholdPct { get; set; }
 
-    public ICollection<IngredientPriceHistory> PriceHistory { get; set; } = new List<IngredientPriceHistory>();
+    public ICollection<IngredientPriceHistory> PriceHistory { get; set; } = [];
 
 }

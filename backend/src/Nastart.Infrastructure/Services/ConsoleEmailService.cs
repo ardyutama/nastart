@@ -1,16 +1,12 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Nastart.Application.Common.Interfaces;
 
 namespace Nastart.Infrastructure.Services;
 
-public class ConsoleEmailService : IEmailService
+public class ConsoleEmailService(ILogger<ConsoleEmailService> logger) : IEmailService
 {
-    private readonly ILogger<ConsoleEmailService> _logger;
-
-    public ConsoleEmailService(ILogger<ConsoleEmailService> logger)
-    {
-        _logger = logger;
-    }
+    private readonly ILogger<ConsoleEmailService> _logger = logger;
 
     public Task SendAsync(string to, string subject, string body)
     {
