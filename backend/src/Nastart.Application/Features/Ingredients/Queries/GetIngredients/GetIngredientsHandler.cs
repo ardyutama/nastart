@@ -22,7 +22,8 @@ public class GetIngredientsHandler(IAppDbContext db)
                 i.Unit.Abbrevation,
                 i.UnitSize,
                 i.PriceSpikeThresholdPct))
-            .ToListAsync(cancellationToken);
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
 
         return ingredients;
     }

@@ -42,7 +42,7 @@ public class IngredientConfiguration : IEntityTypeConfiguration<Ingredient>
             t.HasCheckConstraint(
                 "ck_ingredient_spike_threshold_range",
                 "price_spike_threshold_pct IS NULL OR (price_spike_threshold_pct >= 0 AND price_spike_threshold_pct <= 100)"
-            );   
+            );
         });
     }
 }

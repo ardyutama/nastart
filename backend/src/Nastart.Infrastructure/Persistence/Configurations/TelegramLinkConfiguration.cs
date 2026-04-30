@@ -31,8 +31,8 @@ public class TelegramLinkConfiguration : IEntityTypeConfiguration<TelegramLink>
             .OnDelete(DeleteBehavior.Cascade);
     }
 
-     private static TelegramLinkStatus ParseStatus(string value) =>
-            Enum.TryParse<TelegramLinkStatus>(value, ignoreCase: true, out var result)
-                ? result
-                : TelegramLinkStatus.Pending;
+    private static TelegramLinkStatus ParseStatus(string value) =>
+           Enum.TryParse<TelegramLinkStatus>(value, ignoreCase: true, out var result)
+               ? result
+               : TelegramLinkStatus.Pending;
 }

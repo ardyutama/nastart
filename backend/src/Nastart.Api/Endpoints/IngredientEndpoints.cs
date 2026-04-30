@@ -12,8 +12,8 @@ public static class IngredientEndpoints
 
         group.MapGet("/", async (ISender sender, HttpContext httpContext, CancellationToken ct) =>
         {
-            // var userId = httpContext.User.GetUserId();
-            // var result = await sender.Send(new GetIngredientsQuery(userId), ct);
+            var userId = Guid.Parse("c0000000-0000-0000-0000-000000000001");
+            var result = await sender.Send(new GetIngredientsQuery(userId), ct);
             return Results.Ok();
         });
     }

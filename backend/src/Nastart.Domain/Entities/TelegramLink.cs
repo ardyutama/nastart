@@ -15,7 +15,7 @@ public class TelegramLink : BaseEntity
     public DateTimeOffset? LinkedAt { get; set; }
     public void Confirm(long telegramUserId, string? telegramUsername)
     {
-        if(Status != TelegramLinkStatus.Pending)
+        if (Status != TelegramLinkStatus.Pending)
             throw new InvalidOperationException("Only Pending links can be confirmed");
         TelegramUserId = telegramUserId;
         TelegramUsername = telegramUsername;
