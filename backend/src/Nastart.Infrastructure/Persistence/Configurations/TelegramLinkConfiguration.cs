@@ -11,7 +11,7 @@ public class TelegramLinkConfiguration : IEntityTypeConfiguration<TelegramLink>
     {
         builder.Property(t => t.CodeHash).HasMaxLength(64).IsRequired();
 
-        builder.Property(t => t.TelegramUserId).HasColumnName("telegram_user_id");
+        builder.Property(t => t.TelegramUserId);
         builder.Property(t => t.TelegramUsername).HasMaxLength(255);
 
         builder.Property(t => t.Status)
@@ -20,10 +20,8 @@ public class TelegramLinkConfiguration : IEntityTypeConfiguration<TelegramLink>
                 v => ParseStatus(v))
             .HasMaxLength(20);
 
-        builder.HasIndex(t => t.CodeHash).IsUnique()
-            .HasDatabaseName("telegram_link_code_hash_idx");
-        builder.HasIndex(t => new { t.UserId, t.Status })
-            .HasDatabaseName("telegram_links_user_id_status_idx");
+        builder.HasIndex(t => t.CodeHash).IsUnique();
+        builder.HasIndex(t => new { t.UserId, t.Status });
 
         builder.HasOne(t => t.User)
             .WithMany(u => u.TelegramLinks)

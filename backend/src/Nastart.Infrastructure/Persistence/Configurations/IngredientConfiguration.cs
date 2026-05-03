@@ -8,8 +8,7 @@ public class IngredientConfiguration : IEntityTypeConfiguration<Ingredient>
 {
     public void Configure(EntityTypeBuilder<Ingredient> builder)
     {
-        builder.HasIndex(i => new { i.UserId, i.Name }).IsUnique()
-            .HasDatabaseName("ingredients_user_id_name_idx");
+        builder.HasIndex(i => new { i.UserId, i.Name }).IsUnique();
 
         builder.Property(i => i.Name).HasMaxLength(255).IsRequired();
         builder.Property(i => i.UnitSize).HasPrecision(10, 4);
@@ -25,24 +24,13 @@ public class IngredientConfiguration : IEntityTypeConfiguration<Ingredient>
             .HasForeignKey(i => i.CategoryId)
             .OnDelete(DeleteBehavior.SetNull);
 
-        builder.HasIndex(i => i.CategoryId)
-            .HasDatabaseName("ingredients_category_id_idx");
+        builder.HasIndex(i => i.CategoryId);
 
         builder.HasOne(i => i.Unit)
             .WithMany()
             .HasForeignKey(i => i.UnitId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        builder.HasIndex(i => i.UnitId)
-            .HasDatabaseName("ingredients_unit_id_idx");
-
-        builder.ToTable(t =>
-        {
-            t.HasCheckConstraint("ck_ingredient_unit_size_positive", "unit_size > 0");
-            t.HasCheckConstraint(
-                "ck_ingredient_spike_threshold_range",
-                "price_spike_threshold_pct IS NULL OR (price_spike_threshold_pct >= 0 AND price_spike_threshold_pct <= 100)"
-            );
-        });
+        builder.HasIndex(i => i.UnitId);
     }
 }

@@ -9,8 +9,7 @@ public class CategoryConfiguration : IEntityTypeConfiguration<Category>
     public void Configure(EntityTypeBuilder<Category> builder)
     {
         builder.Property(c => c.Name).HasMaxLength(255).IsRequired();
-        builder.HasIndex(c => new { c.UserId, c.Name }).IsUnique()
-            .HasDatabaseName("categories_user_id_name_idx");
+        builder.HasIndex(c => new { c.UserId, c.Name }).IsUnique();
 
         builder.HasOne(c => c.User)
             .WithMany()
