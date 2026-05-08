@@ -1,4 +1,5 @@
 using Nastart.Api.Endpoints;
+using Nastart.Api.Middleware;
 using Nastart.Application;
 using Nastart.Infrastructure;
 using Scalar.AspNetCore;
@@ -11,6 +12,8 @@ builder.Services.AddOpenApi();
 
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration, builder.Environment);
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddProblemDetails();
 
 var app = builder.Build();
 
@@ -21,7 +24,7 @@ if (app.Environment.IsDevelopment())
     app.MapScalarApiReference();
 }
 
-app.UseHttpsRedirection();
+app.UseExceptionHandler();
 
 app.MapGet("/", () => "Nastart API is running!");
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
