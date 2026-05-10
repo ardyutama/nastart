@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Nastart.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260503054915_CreateSchema")]
+    [Migration("20260510085037_CreateSchema")]
     partial class CreateSchema
     {
         /// <inheritdoc />
@@ -246,11 +246,11 @@ namespace Nastart.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<string>("Abbrevation")
+                    b.Property<string>("Abbreviation")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
-                        .HasColumnName("abbrevation");
+                        .HasColumnName("abbreviation");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -269,9 +269,9 @@ namespace Nastart.Infrastructure.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_units");
 
-                    b.HasIndex("Abbrevation")
+                    b.HasIndex("Abbreviation")
                         .IsUnique()
-                        .HasDatabaseName("ix_units_abbrevation");
+                        .HasDatabaseName("ix_units_abbreviation");
 
                     b.HasIndex("Name")
                         .IsUnique()

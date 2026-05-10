@@ -17,7 +17,7 @@ namespace Nastart.Infrastructure.Persistence.Migrations
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false),
                     name = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
-                    abbrevation = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
+                    abbreviation = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
                     created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     updated_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true)
                 },
@@ -194,9 +194,9 @@ namespace Nastart.Infrastructure.Persistence.Migrations
                 columns: new[] { "user_id", "status" });
 
             migrationBuilder.CreateIndex(
-                name: "ix_units_abbrevation",
+                name: "ix_units_abbreviation",
                 table: "units",
-                column: "abbrevation",
+                column: "abbreviation",
                 unique: true);
 
             migrationBuilder.CreateIndex(

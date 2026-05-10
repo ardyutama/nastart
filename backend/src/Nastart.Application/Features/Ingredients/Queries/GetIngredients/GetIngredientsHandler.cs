@@ -19,7 +19,7 @@ public class GetIngredientsHandler(IAppDbContext db)
                 i.Id,
                 i.Name,
                 i.Category != null ? i.Category.Name : null,
-                i.Unit.Abbrevation,
+                i.Unit.Abbreviation,
                 i.UnitSize,
                 i.PriceSpikeThresholdPct))
             .ToListAsync(cancellationToken)

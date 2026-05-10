@@ -28,6 +28,6 @@ public class ValidationBehavior<TRequest, TResponse>(IValidator<TRequest>? valid
             .Select(e => Error.Validation(e.PropertyName, e.ErrorMessage))
             .ToList();
         
-        return (TResponse)(object)errors;
+        return (TResponse)(dynamic)errors;
     }
 }
