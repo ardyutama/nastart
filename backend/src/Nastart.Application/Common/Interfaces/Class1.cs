@@ -1,1 +1,0 @@
-namespace Nastart.Application.Common.Interfaces;

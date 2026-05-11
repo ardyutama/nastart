@@ -27,6 +27,8 @@ public static class DependencyInjection
         services.AddScoped<IAppDbContext>(provider =>
             provider.GetRequiredService<AppDbContext>());
 
+        services.AddScoped<IPasswordHasher, BcryptPasswordHasher>();
+
         if (environment.IsDevelopment())
             services.AddScoped<IEmailService, ConsoleEmailService>();
         else
