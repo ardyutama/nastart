@@ -15,14 +15,14 @@ public class CreateIngredientHandler(IAppDbContext db) : IRequestHandler<CreateI
         var exists = await db.Ingredients
             .AnyAsync(i => i.UserId == command.UserId && i.Name == command.Name, ct)
             .ConfigureAwait(false);
-        
-        if(exists)
+
+        if (exists)
             return Error.Conflict("Ingredient.Duplicate", "An ingredient with this name already exists. ");
-        
+
         var unitExists = await db.Units
             .AnyAsync(u => u.Id == command.UnitId, ct)
             .ConfigureAwait(false);
-        if(!unitExists)
+        if (!unitExists)
             return Error.NotFound("Unit.NotFound", "The specified unit does not exists.");
 
         var ingredient = new Ingredient
@@ -38,7 +38,7 @@ public class CreateIngredientHandler(IAppDbContext db) : IRequestHandler<CreateI
 
         db.Ingredients.Add(ingredient);
 
-        if(command.InitialPrice.HasValue)
+        if (command.InitialPrice.HasValue)
         {
             var priceRecord = new IngredientPriceHistory
             {

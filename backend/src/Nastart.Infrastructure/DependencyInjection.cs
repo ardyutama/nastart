@@ -19,7 +19,7 @@ public static class DependencyInjection
             ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing. " + "Add it to appsettings.Development.json (gitignored - never commit)");
 
         services.AddDbContext<AppDbContext>(options =>
-            options.UseNpgsql(connectionString, 
+            options.UseNpgsql(connectionString,
                 o => o.SetPostgresVersion(18, 3)
             ).UseSnakeCaseNamingConvention()
         );

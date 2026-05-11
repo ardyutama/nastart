@@ -35,7 +35,7 @@ public static class IngredientEndpoints
 
             var result = await sender.Send(command, ct);
 
-            if(result.IsError)
+            if (result.IsError)
                 return result.ToApiResult();
 
             return Results.Created($"/api/ingredients/{result.Value!.Id}", result.Value);

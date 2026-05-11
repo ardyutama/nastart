@@ -4,7 +4,7 @@ using MediatR;
 
 namespace Nastart.Application.Common.Behaviors;
 
-public class ValidationBehavior<TRequest, TResponse>(IValidator<TRequest>? validator = null) 
+public class ValidationBehavior<TRequest, TResponse>(IValidator<TRequest>? validator = null)
     : IPipelineBehavior<TRequest, TResponse>
     where TRequest : IRequest<TResponse>
     where TResponse : IErrorOr
@@ -16,18 +16,18 @@ public class ValidationBehavior<TRequest, TResponse>(IValidator<TRequest>? valid
     {
         if (validator is null)
             return await next(cancellationToken).ConfigureAwait(false);
-        
+
         var validationResult = await validator
             .ValidateAsync(request, cancellationToken)
             .ConfigureAwait(false);
-        
-        if(validationResult.IsValid)
+
+        if (validationResult.IsValid)
             return await next(cancellationToken).ConfigureAwait(false);
-        
+
         var errors = validationResult.Errors
             .Select(e => Error.Validation(e.PropertyName, e.ErrorMessage))
             .ToList();
-        
+
         return (TResponse)(dynamic)errors;
     }
 }

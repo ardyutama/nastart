@@ -6,14 +6,14 @@ public static class ResultExtensions
 {
     public static IResult ToApiResult<T>(this ErrorOr<T> result)
     {
-        if(!result.IsError)
+        if (!result.IsError)
             return Results.Ok(result.Value);
 
         return result.FirstError.Type switch
         {
             ErrorType.Validation => Results.BadRequest(new
             {
-                errors = result.Errors.Select(e => new {e.Code, e.Description})
+                errors = result.Errors.Select(e => new { e.Code, e.Description })
             }),
             ErrorType.NotFound => Results.NotFound(new
             {
@@ -31,9 +31,9 @@ public static class ResultExtensions
 
     public static IResult ToCreatedResult<T>(this ErrorOr<T> result, string location)
     {
-        if(!result.IsError)
+        if (!result.IsError)
             return Results.Created(location, result.Value);
-        
+
         return result.ToApiResult();
     }
 }
