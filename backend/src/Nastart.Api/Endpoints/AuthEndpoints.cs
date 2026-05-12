@@ -2,6 +2,7 @@ using MediatR;
 using Nastart.Api.Extensions;
 using Nastart.Application.Features.Auth.Commands.Login;
 using Nastart.Application.Features.Auth.Commands.Register;
+using Nastart.Application.Features.Auth.Commands.VerifyEmail;
 
 namespace Nastart.Api.Endpoints;
 
@@ -24,6 +25,12 @@ public static class AuthEndpoints
         });
 
         group.MapPost("/login", async (LoginCommand command, ISender sender, CancellationToken ct) =>
+        {
+            var result = await sender.Send(command, ct);
+            return result.ToApiResult();
+        });
+
+        group.MapPost("/verify", async (VerifyEmailCommand command, ISender sender, CancellationToken ct) =>
         {
             var result = await sender.Send(command, ct);
             return result.ToApiResult();

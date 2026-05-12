@@ -10,7 +10,8 @@ public static class IngredientEndpoints
     public static void MapIngredientEndpoints(this WebApplication app)
     {
         var group = app.MapGroup("api/ingredients")
-            .WithTags("Ingredients");
+            .WithTags("Ingredients")
+            .RequireAuthorization();
 
         group.MapGet("/", async (ISender sender, HttpContext httpContext, CancellationToken ct) =>
         {

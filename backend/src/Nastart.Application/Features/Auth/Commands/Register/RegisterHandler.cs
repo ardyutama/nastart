@@ -17,7 +17,7 @@ public class RegisterHandler(
         RegisterCommand command, CancellationToken ct)
     {
         var emailTaken = await db.Users
-            .AnyAsync(u => u.Email.Equals(command.Email, StringComparison.InvariantCultureIgnoreCase), ct)
+            .AnyAsync(u => u.Email == command.Email.ToLowerInvariant(), ct)
             .ConfigureAwait(false);
 
         if (emailTaken)
