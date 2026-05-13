@@ -1,6 +1,7 @@
 using MediatR;
 using Nastart.Api.Extensions;
 using Nastart.Application.Features.Ingredients.Commands.CreateIngredient;
+using Nastart.Application.Features.Ingredients.Queries.GetIngredientById;
 using Nastart.Application.Features.Ingredients.Queries.GetIngredients;
 
 namespace Nastart.Api.Endpoints;
@@ -19,6 +20,14 @@ public static class IngredientEndpoints
             var result = await sender.Send(new GetIngredientsQuery(userId), ct);
             return Results.Ok(result);
         });
+
+        group.MapGet("/{ingredientId:guid}", async (
+            Guid ingredientId, HttpContext httpContext, ISender sender, CancellationToken ct) =>
+        {
+            var userId = httpContext.User.GetUserId();
+            var result = await sender.Send(new GetIngredientByIdQuery(ingredientId, UserId: userId), ct);
+            return result.ToApiResult();
+        }).WithName("GetIngredients");
 
         group.MapPost("/", async (CreateIngredientRequest request, ISender sender, HttpContext httpContext, CancellationToken ct) =>
         {
