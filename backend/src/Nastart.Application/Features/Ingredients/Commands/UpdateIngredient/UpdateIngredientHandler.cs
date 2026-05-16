@@ -16,17 +16,14 @@ public class UpdateIngredientHandler(IAppDbContext db)
         if (ingredient is null || ingredient.UserId != command.UserId)
             return Error.Forbidden("Ingredient.AccessDenied", "You do not have access to this ingredient");
 
-        if (!EF.Functions.Like(ingredient.Name, command.Name))
-        {
-            var duplicateName = await db.Ingredients
-                .AnyAsync(i =>
-                    i.UserId == command.UserId &&
-                    i.Id != command.IngredientId &&
-                    EF.Functions.Like(i.Name, command.Name), ct);
+        var duplicateName = await db.Ingredients
+            .AnyAsync(i =>
+                i.UserId == command.UserId &&
+                i.Id != command.IngredientId &&
+                EF.Functions.Like(i.Name, command.Name), ct);
 
-            if (duplicateName)
-                return Error.Conflict("Ingredient.Duplicate", "An ingredient with this name already exists.");
-        }
+        if (duplicateName)
+            return Error.Conflict("Ingredient.Duplicate", "An ingredient with this name already exists.");
 
         var unitExists = await db.Units.AnyAsync(u => u.Id == command.UnitId, ct);
         if (!unitExists)
