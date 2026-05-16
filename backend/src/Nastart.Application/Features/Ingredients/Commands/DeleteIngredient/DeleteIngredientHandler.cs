@@ -5,7 +5,7 @@ using Nastart.Application.Common.Interfaces;
 
 namespace Nastart.Application.Features.Ingredients.Commands.DeleteIngredient;
 
-public class DeleteIngredientHandlet(IAppDbContext db) 
+public class DeleteIngredientHandlet(IAppDbContext db)
     : IRequestHandler<DeleteIngredientCommand, ErrorOr<DeleteIngredientResponse>>
 {
     public async Task<ErrorOr<DeleteIngredientResponse>> Handle(

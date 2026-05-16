@@ -1,6 +1,8 @@
 using MediatR;
 using Nastart.Api.Extensions;
 using Nastart.Application.Features.Ingredients.Commands.CreateIngredient;
+using Nastart.Application.Features.Ingredients.Commands.DeleteIngredient;
+using Nastart.Application.Features.Ingredients.Commands.UpdateIngredient;
 using Nastart.Application.Features.Ingredients.Queries.GetIngredientById;
 using Nastart.Application.Features.Ingredients.Queries.GetIngredients;
 
@@ -19,7 +21,7 @@ public static class IngredientEndpoints
             var userId = httpContext.User.GetUserId();
             var result = await sender.Send(new GetIngredientsQuery(userId), ct);
             return Results.Ok(result);
-        });
+        }).WithName("GetIngredients"); ;
 
         group.MapGet("/{ingredientId:guid}", async (
             Guid ingredientId, HttpContext httpContext, ISender sender, CancellationToken ct) =>
@@ -27,38 +29,35 @@ public static class IngredientEndpoints
             var userId = httpContext.User.GetUserId();
             var result = await sender.Send(new GetIngredientByIdQuery(ingredientId, UserId: userId), ct);
             return result.ToApiResult();
-        }).WithName("GetIngredients");
+        }).WithName("GetIngredientById");
 
-        group.MapPost("/", async (CreateIngredientRequest request, ISender sender, HttpContext httpContext, CancellationToken ct) =>
+        group.MapPost("/", async (CreateIngredientCommand command, ISender sender, HttpContext httpContext, CancellationToken ct) =>
         {
             var userId = httpContext.User.GetUserId();
-            var command = new CreateIngredientCommand(
-                Name: request.Name,
-                UserId: userId,
-                CategoryId: request.CategoryId,
-                UnitId: request.UnitId,
-                UnitSize: request.UnitSize,
-                PriceSpikeThresholdPct: request.PriceSpikeThresholdPct,
-                InitialPrice: request.InitialPrice,
-                EffectiveDate: request.EffectiveDate
-            );
+            var cmd = command with { UserId = userId };
 
-            var result = await sender.Send(command, ct);
+            var result = await sender.Send(cmd, ct);
+            return result.ToCreatedResult($"/api/ingredients/{result.Value!.Id}");
+        }).WithName("CreateIngredient");
 
-            if (result.IsError)
-                return result.ToApiResult();
+        group.MapPut("/{ingredientId:guid}", async (
+            Guid ingredientId, UpdateIngredientCommand command, HttpContext httpContext,
+            ISender sender, CancellationToken ct) =>
+        {
+            var userId = httpContext.User.GetUserId();
+            var cmd = command with { UserId = userId, IngredientId = ingredientId };
 
-            return Results.Created($"/api/ingredients/{result.Value!.Id}", result.Value);
-        });
+            var result = await sender.Send(cmd, ct);
+            return result.ToApiResult();
+        }).WithName("UpdateIngredient");
+
+        group.MapDelete("/{ingredientId:guid}", async (
+            Guid ingredientId, HttpContext httpContext,
+            ISender sender, CancellationToken ct) =>
+        {
+            var userId = httpContext.User.GetUserId();
+            var result = await sender.Send(new DeleteIngredientCommand(ingredientId, UserId: userId), ct);
+            return result.ToApiResult();
+        }).WithName("DeleteIngredient");
     }
-
-    public record CreateIngredientRequest(
-        string Name,
-        Guid? CategoryId,
-        Guid UnitId,
-        decimal UnitSize,
-        decimal PriceSpikeThresholdPct = 10m,
-        decimal? InitialPrice = null,
-        DateOnly? EffectiveDate = null
-    );
 }
