@@ -12,18 +12,27 @@ public class CreateIngredientHandler(IAppDbContext db) : IRequestHandler<CreateI
     public async Task<ErrorOr<CreateIngredientResponse>> Handle(
         CreateIngredientCommand command, CancellationToken ct)
     {
+        var unitExists = await db.Units
+            .AnyAsync(u => u.Id == command.UnitId, ct)
+            .ConfigureAwait(false);
+        if (!unitExists)
+            return Error.NotFound("Unit.NotFound", "The specified unit does not exists.");
+
+
+        if (command.CategoryId.HasValue)
+        {
+            var categoryExists = await db.Categories
+                .AnyAsync(c => c.Id == command.CategoryId.Value && c.UserId == command.UserId, ct);
+            if (!categoryExists)
+                return Error.NotFound("Category.NotFound", "The specified category does not found");
+        }
+
         var exists = await db.Ingredients
             .AnyAsync(i => i.UserId == command.UserId && i.Name == command.Name, ct)
             .ConfigureAwait(false);
 
         if (exists)
             return Error.Conflict("Ingredient.Duplicate", "An ingredient with this name already exists. ");
-
-        var unitExists = await db.Units
-            .AnyAsync(u => u.Id == command.UnitId, ct)
-            .ConfigureAwait(false);
-        if (!unitExists)
-            return Error.NotFound("Unit.NotFound", "The specified unit does not exists.");
 
         var ingredient = new Ingredient
         {

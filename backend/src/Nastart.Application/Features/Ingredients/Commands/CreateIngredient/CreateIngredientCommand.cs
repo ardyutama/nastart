@@ -9,7 +9,7 @@ public record CreateIngredientCommand(
     Guid? CategoryId,
     Guid UnitId,
     decimal UnitSize,
-    decimal PriceSpikeThresholdPct = 10m,
+    decimal? PriceSpikeThresholdPct = null,
     decimal? InitialPrice = null,
     DateOnly? EffectiveDate = null
 ) : IRequest<ErrorOr<CreateIngredientResponse>>;
