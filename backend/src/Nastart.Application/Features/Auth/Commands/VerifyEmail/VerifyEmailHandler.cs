@@ -14,10 +14,10 @@ public class VerifyEmailHander(IAppDbContext db) : IRequestHandler<VerifyEmailCo
             .FirstOrDefaultAsync(u => u.Id == command.UserId, ct)
             .ConfigureAwait(false);
 
-        if(user is null)
+        if (user is null)
             return Error.NotFound("User.NotFound", "User not found.");
-        
-        if(user.IsEmailVerified)
+
+        if (user.IsEmailVerified)
             return Error.Conflict("User.AlreadyVerified", "Email is already verified.");
 
         user.IsEmailVerified = true;

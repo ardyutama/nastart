@@ -17,9 +17,9 @@ public class GetIngredientByIdHandler(IAppDbContext db)
             .Include(i => i.Category)
             .FirstOrDefaultAsync(i => i.Id == query.IngredientId, ct);
 
-        if(ingredient is null || ingredient.UserId != query.UserId)
+        if (ingredient is null || ingredient.UserId != query.UserId)
             return Error.Forbidden("Ingredient.AccessDenied", "You do not have access to this ingredient.");
-        
+
         var latestPrice = await db.IngredientPriceHistories
             .AsNoTracking()
             .Where(p => p.IngredientId == query.IngredientId)
