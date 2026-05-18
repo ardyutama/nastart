@@ -1,5 +1,6 @@
 using MediatR;
 using Nastart.Api.Extensions;
+using Nastart.Application.Features.Ingredients.Commands.AddIngredientPrice;
 using Nastart.Application.Features.Ingredients.Commands.CreateIngredient;
 using Nastart.Application.Features.Ingredients.Commands.DeleteIngredient;
 using Nastart.Application.Features.Ingredients.Commands.UpdateIngredient;
@@ -59,5 +60,26 @@ public static class IngredientEndpoints
             var result = await sender.Send(new DeleteIngredientCommand(ingredientId, UserId: userId), ct);
             return result.ToApiResult();
         }).WithName("DeleteIngredient");
+
+        var pricesGroup = group.MapGroup("/{ingredientId:guid}/prices")
+            .WithTags("Ingredient Prices");
+
+        pricesGroup.MapPost("/", async (
+            Guid ingredientId, AddIngredientPriceCommand command,
+            HttpContext httpContext, ISender sender, CancellationToken ct) =>
+        {
+            var userId = httpContext.User.GetUserId();
+            var cmd = command with {UserId = userId, IngredientId = ingredientId};
+            var result = await sender.Send(cmd, ct);
+            return result.ToCreatedResult($"/api/ingredients/{ingredientId}/prices");
+        }).WithName("AddIngredientPrice");
+
+        pricesGroup.MapGet("/", async (
+            Guid ingredientId, HttpContext httpContext, ISender sender, CancellationToken ct) =>
+        {
+            var userId = httpContext.User.GetUserId();
+            var result = await sender.Send(new GetIngredientByIdQuery(ingredientId, UserId: userId), ct);
+            return result.ToApiResult();
+        }).WithName("GetIngredientPriceHistory");
     }
 }

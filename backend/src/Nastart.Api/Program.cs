@@ -52,7 +52,9 @@ app.UseAuthorization();
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi().AllowAnonymous();
-    app.MapScalarApiReference().AllowAnonymous();
+    app.MapScalarApiReference(options => options
+        .WithTitle("Nastart API")
+    ).AllowAnonymous();
 }
 
 app.MapGet("/", () => "Nastart API is running!");
