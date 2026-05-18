@@ -21,7 +21,7 @@ public class GetIngredientsHandler(IAppDbContext db)
                 i.Category != null ? i.Category.Name : "Uncategorized",
                 i.UnitSize,
                 i.PriceHistory
-                    .OrderByDescending(p => p.CommitedAt)
+                    .OrderByDescending(p => p.CommittedAt)
                     .Select(p => (decimal?)p.Price)
                     .FirstOrDefault()
             ))
