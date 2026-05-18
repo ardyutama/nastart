@@ -13,9 +13,9 @@ public class IngredientPriceHistoryConfiguration : IEntityTypeConfiguration<Ingr
 
         builder.Property(p => p.Source).HasConversion<string>().HasMaxLength(20);
 
-        builder.Property(p => p.CommitedAt).HasDefaultValueSql("NOW()");
+        builder.Property(p => p.CommittedAt).HasDefaultValueSql("NOW()");
 
-        builder.HasIndex(p => new { p.IngredientId, p.CommitedAt })
+        builder.HasIndex(p => new { p.IngredientId, p.CommittedAt })
             .IsDescending(false, true);
 
         builder.HasOne(p => p.Ingredient)

@@ -23,7 +23,7 @@ public class GetIngredientByIdHandler(IAppDbContext db)
         var latestPrice = await db.IngredientPriceHistories
             .AsNoTracking()
             .Where(p => p.IngredientId == query.IngredientId)
-            .OrderByDescending(p => p.CommitedAt)
+            .OrderByDescending(p => p.CommittedAt)
             .FirstOrDefaultAsync(ct);
 
         return new GetIngredientByIdResponse(
@@ -34,7 +34,7 @@ public class GetIngredientByIdHandler(IAppDbContext db)
             ingredient.UnitSize,
             ingredient.PriceSpikeThresholdPct,
             latestPrice?.Price,
-            latestPrice?.CommitedAt
+            latestPrice?.CommittedAt
         );
     }
 }

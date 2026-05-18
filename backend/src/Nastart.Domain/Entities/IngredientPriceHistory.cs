@@ -13,7 +13,7 @@ public class IngredientPriceHistory : BaseEntity
 
     public PriceSource Source { get; init; }
 
-    public DateTimeOffset CommitedAt { get; init; }
+    public DateTimeOffset CommittedAt { get; init; }
     public DateOnly EffectiveDate { get; init; }
     public Guid? InvoiceLineItemId { get; set; }
 }
