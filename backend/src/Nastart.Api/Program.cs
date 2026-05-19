@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Nastart.Api.Endpoints;
 using Nastart.Api.Middleware;
+using Nastart.Api.OpenApi;
 using Nastart.Application;
 using Nastart.Infrastructure;
 using Scalar.AspNetCore;
@@ -11,7 +12,10 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+builder.Services.AddOpenApi(options =>
+{
+    options.AddDocumentTransformer<BearerSecuritySchemeTransformer>();
+});
 
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration, builder.Environment);
@@ -54,6 +58,7 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi().AllowAnonymous();
     app.MapScalarApiReference(options => options
         .WithTitle("Nastart API")
+        .AddPreferredSecuritySchemes("Bearer")
     ).AllowAnonymous();
 }
 

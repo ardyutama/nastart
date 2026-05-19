@@ -69,7 +69,7 @@ public static class IngredientEndpoints
             HttpContext httpContext, ISender sender, CancellationToken ct) =>
         {
             var userId = httpContext.User.GetUserId();
-            var cmd = command with {UserId = userId, IngredientId = ingredientId};
+            var cmd = command with { UserId = userId, IngredientId = ingredientId };
             var result = await sender.Send(cmd, ct);
             return result.ToCreatedResult($"/api/ingredients/{ingredientId}/prices");
         }).WithName("AddIngredientPrice");
