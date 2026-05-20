@@ -5,6 +5,7 @@ using Nastart.Application.Features.Ingredients.Commands.CreateIngredient;
 using Nastart.Application.Features.Ingredients.Commands.DeleteIngredient;
 using Nastart.Application.Features.Ingredients.Commands.UpdateIngredient;
 using Nastart.Application.Features.Ingredients.Queries.GetIngredientById;
+using Nastart.Application.Features.Ingredients.Queries.GetIngredientPriceHistory;
 using Nastart.Application.Features.Ingredients.Queries.GetIngredients;
 
 namespace Nastart.Api.Endpoints;
@@ -78,7 +79,7 @@ public static class IngredientEndpoints
             Guid ingredientId, HttpContext httpContext, ISender sender, CancellationToken ct) =>
         {
             var userId = httpContext.User.GetUserId();
-            var result = await sender.Send(new GetIngredientByIdQuery(ingredientId, UserId: userId), ct);
+            var result = await sender.Send(new GetIngredientPriceHistoryQuery(ingredientId, UserId: userId), ct);
             return result.ToApiResult();
         }).WithName("GetIngredientPriceHistory");
     }
