@@ -13,6 +13,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<IngredientPriceHistory> IngredientPriceHistories => Set<IngredientPriceHistory>();
     public DbSet<Unit> Units => Set<Unit>();
     public DbSet<Category> Categories => Set<Category>();
+    public DbSet<Recipe> Recipes => Set<Recipe>();
+    public DbSet<RecipeItem> RecipeItems => Set<RecipeItem>();
+    public DbSet<CascadeErrorLog> CascadeErrorLogs => Set<CascadeErrorLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
