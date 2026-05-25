@@ -16,7 +16,8 @@ public static class DependencyInjection
         IHostEnvironment environment)
     {
         var connectionString = configuration.GetConnectionString("DefaultConnection")
-            ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing. " + "Add it to appsettings.Development.json (gitignored - never commit)");
+            ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing. " 
+            + "Add it to appsettings.Development.json (gitignored - never commit)");
 
         services.AddDbContext<AppDbContext>(options =>
             options.UseNpgsql(connectionString,
@@ -36,6 +37,8 @@ public static class DependencyInjection
             throw new InvalidOperationException(
                 "No production email provider is configured. " +
                 "Register a real IEmailService implementation for non-development environments.");
+
+        services.AddScoped<IAlertDispatcher, ConsoleAlertDispatcher>();
 
         return services;
     }

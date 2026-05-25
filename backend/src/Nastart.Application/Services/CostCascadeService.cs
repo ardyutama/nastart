@@ -41,15 +41,15 @@ public sealed class CostCascadeService(
             return new CascadeResult(0, 0);
         }
 
-        int succesCount = 0;
+        int successCount = 0;
         int failCount = 0;
 
         foreach(var recipeId in affectedRecipeIds)
         {
             try
             {
-                await RecalculateForIngredientAsync(recipeId, cancellationToken).ConfigureAwait(false);
-                succesCount++;
+                await RecalculateRecipeAsync(recipeId, cancellationToken).ConfigureAwait(false);
+                successCount++;
             }
             catch (Exception ex)
             {
@@ -79,7 +79,7 @@ public sealed class CostCascadeService(
                 }
             }
         }
-        return new CascadeResult(succesCount, failCount);
+        return new CascadeResult(successCount, failCount);
     }
 
     private async Task RecalculateRecipeAsync(Guid recipeId, CancellationToken cancellationToken)
@@ -109,7 +109,7 @@ public sealed class CostCascadeService(
 
         foreach (var item in recipe.RecipeItems)
         {
-            if(!latestPrices.TryGetValue(item.IngredientId, out var latestPrice) || latestPrices is null)
+            if(!latestPrices.TryGetValue(item.IngredientId, out var latestPrice))
             {
                 throw new InvalidOperationException(
                     $"Ingredient {item.IngredientId} in recipe {recipeId} has no price history.");
