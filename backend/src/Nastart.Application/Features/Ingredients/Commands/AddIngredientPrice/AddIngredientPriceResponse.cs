@@ -1,8 +1,8 @@
 namespace Nastart.Application.Features.Ingredients.Commands.AddIngredientPrice;
 
 public record AddIngredientPriceResponse(
-    Guid IngredientId,
+    Guid PriceHistoryId,
     decimal Price,
-    DateOnly EffectiveDate,
-    DateTimeOffset CommittedAt
+    int AffectedRecipe,
+    int FailedRecipe
 );

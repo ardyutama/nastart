@@ -6,8 +6,8 @@ public class AddIngredientPriceCommandValidator : AbstractValidator<AddIngredien
 {
     public AddIngredientPriceCommandValidator()
     {
-        RuleFor(x => x.IngredientId).NotEmpty();
-        RuleFor(x => x.UserId).NotEmpty();
+        RuleFor(x => x.IngredientId).NotEmpty().WithMessage("IngredientId is required");
+        RuleFor(x => x.UserId).NotEmpty().WithMessage("UserId is required");
         RuleFor(x => x.Price)
             .GreaterThan(0).WithMessage("Price must be greater than zero.");
 
