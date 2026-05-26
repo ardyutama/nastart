@@ -67,5 +67,6 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
 app.MapAuthEndpoints();
 app.MapIngredientEndpoints();
+app.MapRecipeEndpoints();
 
 app.Run();
