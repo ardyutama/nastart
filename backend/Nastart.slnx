@@ -7,5 +7,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Nastart.Tests/Nastart.Tests.csproj" />
+    <Project Path="tests/Nastart.Application.Tests/Nastart.Application.Tests.csproj" />
   </Folder>
 </Solution>
