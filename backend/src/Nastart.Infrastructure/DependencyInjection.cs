@@ -16,7 +16,7 @@ public static class DependencyInjection
         IHostEnvironment environment)
     {
         var connectionString = configuration.GetConnectionString("DefaultConnection")
-            ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing. " 
+            ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing. "
             + "Add it to appsettings.Development.json (gitignored - never commit)");
 
         services.AddDbContext<AppDbContext>(options =>

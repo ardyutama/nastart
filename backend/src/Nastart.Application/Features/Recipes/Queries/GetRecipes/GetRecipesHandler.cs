@@ -27,8 +27,8 @@ public sealed class GetRecipesHandler(IAppDbContext db)
             return new RecipeResponse(
                 recipe.Id, recipe.Name, recipe.PortionCount,
                 recipe.CostPerPortion, recipe.PackagingCost, recipe.TargetMargin,
-                derivedSellPrice, foodCostPct, recipe.VersionNumber, 
-                recipe.VersionLabel,recipe.VersionGroupId
+                derivedSellPrice, foodCostPct, recipe.VersionNumber,
+                recipe.VersionLabel, recipe.VersionGroupId
             );
         }).ToArray();
 

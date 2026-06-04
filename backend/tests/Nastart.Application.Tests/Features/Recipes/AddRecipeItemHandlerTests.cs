@@ -32,16 +32,23 @@ public sealed class AddRecipeItemHandlerTests
         db.Users.Add(new User { Id = userId, Email = $"{userId}@test.com", PasswordHash = "x" });
         db.Units.Add(new Unit { Id = unitId, Name = "Gram", Abbreviation = "g" });
         db.Ingredients.Add(new Ingredient
-            { Id = ingredientId, UserId = userId, UnitId = unitId, Name = "Flour", UnitSize = 1000m });
+        { Id = ingredientId, UserId = userId, UnitId = unitId, Name = "Flour", UnitSize = 1000m });
         db.Recipes.Add(new Recipe
         {
-            Id = recipeId, UserId = userId, Name = "Brownie Box", PortionCount = 12,
-            VersionGroupId = Guid.NewGuid(), VersionNumber = 1
+            Id = recipeId,
+            UserId = userId,
+            Name = "Brownie Box",
+            PortionCount = 12,
+            VersionGroupId = Guid.NewGuid(),
+            VersionNumber = 1
         });
         db.RecipeItems.Add(new RecipeItem
         {
-            Id = Guid.NewGuid(), RecipeId = recipeId, IngredientId = ingredientId,
-            Quantity = 500m, YieldPercentage = 1.0m
+            Id = Guid.NewGuid(),
+            RecipeId = recipeId,
+            IngredientId = ingredientId,
+            Quantity = 500m,
+            YieldPercentage = 1.0m
         });
         await db.SaveChangesAsync();
 

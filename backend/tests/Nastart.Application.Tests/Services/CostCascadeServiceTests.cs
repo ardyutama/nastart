@@ -44,33 +44,46 @@ public sealed class CostCascadeServiceTests
         // Arrange
         await using var db = await Database.CreateDbContextAsync();
         var ingredientId = Guid.NewGuid();
-        var recipeId     = Guid.NewGuid();
-        var userId       = Guid.NewGuid();
-        var unitId       = Guid.NewGuid();
+        var recipeId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var unitId = Guid.NewGuid();
 
         AddRequiredReferenceData(db, userId, unitId);
 
         db.Ingredients.Add(new Ingredient
         {
-            Id = ingredientId, UserId = userId, Name = "Test Ingredient", UnitId = unitId, UnitSize = unitSize
+            Id = ingredientId,
+            UserId = userId,
+            Name = "Test Ingredient",
+            UnitId = unitId,
+            UnitSize = unitSize
         });
         db.IngredientPriceHistories.Add(new IngredientPriceHistory
         {
-            Id = Guid.NewGuid(), IngredientId = ingredientId,
-            Price = price, UnitSize = unitSize, CommittedAt = DateTimeOffset.UtcNow,
+            Id = Guid.NewGuid(),
+            IngredientId = ingredientId,
+            Price = price,
+            UnitSize = unitSize,
+            CommittedAt = DateTimeOffset.UtcNow,
             Source = PriceSource.Manual,
             EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow)
         });
         db.Recipes.Add(new Recipe
         {
-            Id = recipeId, UserId = userId, Name = "Formula Test Recipe",
-            PortionCount = portionCount, CostPerPortion = 0m,
+            Id = recipeId,
+            UserId = userId,
+            Name = "Formula Test Recipe",
+            PortionCount = portionCount,
+            CostPerPortion = 0m,
             VersionGroupId = Guid.NewGuid()
         });
         db.RecipeItems.Add(new RecipeItem
         {
-            Id = Guid.NewGuid(), RecipeId = recipeId, IngredientId = ingredientId,
-            Quantity = quantity, YieldPercentage = yieldPct
+            Id = Guid.NewGuid(),
+            RecipeId = recipeId,
+            IngredientId = ingredientId,
+            Quantity = quantity,
+            YieldPercentage = yieldPct
         });
         await db.SaveChangesAsync();
 
@@ -100,47 +113,65 @@ public sealed class CostCascadeServiceTests
     {
         // Arrange
         await using var db = await Database.CreateDbContextAsync();
-        var flourId  = Guid.NewGuid();
+        var flourId = Guid.NewGuid();
         var butterId = Guid.NewGuid();
         var recipeId = Guid.NewGuid();
-        var userId   = Guid.NewGuid();
-        var unitId   = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var unitId = Guid.NewGuid();
 
         AddRequiredReferenceData(db, userId, unitId);
 
         db.Ingredients.AddRange(
-            new Ingredient { Id = flourId,  UserId = userId, Name = "Flour",  UnitId = unitId, UnitSize = 1000m },
-            new Ingredient { Id = butterId, UserId = userId, Name = "Butter", UnitId = unitId, UnitSize = 250m  }
+            new Ingredient { Id = flourId, UserId = userId, Name = "Flour", UnitId = unitId, UnitSize = 1000m },
+            new Ingredient { Id = butterId, UserId = userId, Name = "Butter", UnitId = unitId, UnitSize = 250m }
         );
         db.IngredientPriceHistories.AddRange(
             new IngredientPriceHistory
             {
-                Id = Guid.NewGuid(), IngredientId = flourId,
-                Price = 10m, UnitSize = 1000m, CommittedAt = DateTimeOffset.UtcNow,
-                Source = PriceSource.Manual, EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow)
+                Id = Guid.NewGuid(),
+                IngredientId = flourId,
+                Price = 10m,
+                UnitSize = 1000m,
+                CommittedAt = DateTimeOffset.UtcNow,
+                Source = PriceSource.Manual,
+                EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow)
             },
             new IngredientPriceHistory
             {
-                Id = Guid.NewGuid(), IngredientId = butterId,
-                Price = 20m, UnitSize = 250m, CommittedAt = DateTimeOffset.UtcNow,
-                Source = PriceSource.Manual, EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow)
+                Id = Guid.NewGuid(),
+                IngredientId = butterId,
+                Price = 20m,
+                UnitSize = 250m,
+                CommittedAt = DateTimeOffset.UtcNow,
+                Source = PriceSource.Manual,
+                EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow)
             }
         );
         db.Recipes.Add(new Recipe
         {
-            Id = recipeId, UserId = userId, Name = "Butter Cake",
-            PortionCount = 4, CostPerPortion = 0m, VersionGroupId = Guid.NewGuid()
+            Id = recipeId,
+            UserId = userId,
+            Name = "Butter Cake",
+            PortionCount = 4,
+            CostPerPortion = 0m,
+            VersionGroupId = Guid.NewGuid()
         });
         db.RecipeItems.AddRange(
             new RecipeItem
             {
-                Id = Guid.NewGuid(), RecipeId = recipeId, IngredientId = flourId,
-                Quantity = 500m, YieldPercentage = 1.0m
+                Id = Guid.NewGuid(),
+                RecipeId = recipeId,
+                IngredientId = flourId,
+                Quantity = 500m,
+                YieldPercentage = 1.0m
             },
             new RecipeItem
             {
-                Id = Guid.NewGuid(), RecipeId = recipeId, IngredientId = butterId,
-                Quantity = 100m, YieldPercentage = 1.0m
+                Id = Guid.NewGuid(),
+                RecipeId = recipeId,
+                IngredientId = butterId,
+                Quantity = 100m,
+                YieldPercentage = 1.0m
             }
         );
         await db.SaveChangesAsync();
@@ -166,33 +197,46 @@ public sealed class CostCascadeServiceTests
         // Arrange
         await using var db = await Database.CreateDbContextAsync();
         var ingredientId = Guid.NewGuid();
-        var recipeId     = Guid.NewGuid();
-        var userId       = Guid.NewGuid();
-        var unitId       = Guid.NewGuid();
+        var recipeId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var unitId = Guid.NewGuid();
 
         AddRequiredReferenceData(db, userId, unitId);
 
         db.Ingredients.Add(new Ingredient
         {
-            Id = ingredientId, UserId = userId, Name = "Flour", UnitId = unitId, UnitSize = 1000m
+            Id = ingredientId,
+            UserId = userId,
+            Name = "Flour",
+            UnitId = unitId,
+            UnitSize = 1000m
         });
         db.IngredientPriceHistories.Add(new IngredientPriceHistory
         {
-            Id = Guid.NewGuid(), IngredientId = ingredientId,
-            Price = 10m, UnitSize = 1000m, CommittedAt = DateTimeOffset.UtcNow,
-            Source = PriceSource.Manual, EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow)
+            Id = Guid.NewGuid(),
+            IngredientId = ingredientId,
+            Price = 10m,
+            UnitSize = 1000m,
+            CommittedAt = DateTimeOffset.UtcNow,
+            Source = PriceSource.Manual,
+            EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow)
         });
         db.Recipes.Add(new Recipe
         {
-            Id = recipeId, UserId = userId, Name = "Zero Portion Recipe",
+            Id = recipeId,
+            UserId = userId,
+            Name = "Zero Portion Recipe",
             PortionCount = 0,                    // guard under test
             CostPerPortion = 99m,                // pre-set to non-zero to prove it is overwritten
             VersionGroupId = Guid.NewGuid()
         });
         db.RecipeItems.Add(new RecipeItem
         {
-            Id = Guid.NewGuid(), RecipeId = recipeId, IngredientId = ingredientId,
-            Quantity = 500m, YieldPercentage = 1.0m
+            Id = Guid.NewGuid(),
+            RecipeId = recipeId,
+            IngredientId = ingredientId,
+            Quantity = 500m,
+            YieldPercentage = 1.0m
         });
         await db.SaveChangesAsync();
 
@@ -237,46 +281,68 @@ public sealed class CostCascadeServiceTests
         // Arrange
         await using var db = await Database.CreateDbContextAsync();
         var ingredientId = Guid.NewGuid();
-        var userId       = Guid.NewGuid();
-        var unitId       = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var unitId = Guid.NewGuid();
 
         AddRequiredReferenceData(db, userId, unitId);
 
         db.Ingredients.Add(new Ingredient
         {
-            Id = ingredientId, UserId = userId, Name = "Butter", UnitId = unitId, UnitSize = 500m
+            Id = ingredientId,
+            UserId = userId,
+            Name = "Butter",
+            UnitId = unitId,
+            UnitSize = 500m
         });
         db.IngredientPriceHistories.Add(new IngredientPriceHistory
         {
-            Id = Guid.NewGuid(), IngredientId = ingredientId,
-            Price = 5m, UnitSize = 500m, CommittedAt = DateTimeOffset.UtcNow,
-            Source = PriceSource.Manual, EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow)
+            Id = Guid.NewGuid(),
+            IngredientId = ingredientId,
+            Price = 5m,
+            UnitSize = 500m,
+            CommittedAt = DateTimeOffset.UtcNow,
+            Source = PriceSource.Manual,
+            EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow)
         });
 
         // Good recipe — (5/500)*100*(1/1.0)/4 = 0.2500
         var goodRecipeId = Guid.NewGuid();
         db.Recipes.Add(new Recipe
         {
-            Id = goodRecipeId, UserId = userId, Name = "Butter Cake",
-            PortionCount = 4, CostPerPortion = 0m, VersionGroupId = Guid.NewGuid()
+            Id = goodRecipeId,
+            UserId = userId,
+            Name = "Butter Cake",
+            PortionCount = 4,
+            CostPerPortion = 0m,
+            VersionGroupId = Guid.NewGuid()
         });
         db.RecipeItems.Add(new RecipeItem
         {
-            Id = Guid.NewGuid(), RecipeId = goodRecipeId, IngredientId = ingredientId,
-            Quantity = 100m, YieldPercentage = 1.0m
+            Id = Guid.NewGuid(),
+            RecipeId = goodRecipeId,
+            IngredientId = ingredientId,
+            Quantity = 100m,
+            YieldPercentage = 1.0m
         });
 
         // Bad recipe — YieldPercentage = 0 causes 1m/0m → DivideByZeroException in C-2 formula
         var badRecipeId = Guid.NewGuid();
         db.Recipes.Add(new Recipe
         {
-            Id = badRecipeId, UserId = userId, Name = "Broken Recipe",
-            PortionCount = 1, CostPerPortion = 0m, VersionGroupId = Guid.NewGuid()
+            Id = badRecipeId,
+            UserId = userId,
+            Name = "Broken Recipe",
+            PortionCount = 1,
+            CostPerPortion = 0m,
+            VersionGroupId = Guid.NewGuid()
         });
         db.RecipeItems.Add(new RecipeItem
         {
-            Id = Guid.NewGuid(), RecipeId = badRecipeId, IngredientId = ingredientId,
-            Quantity = 50m, YieldPercentage = 0m     // zero yield → exception in C-2
+            Id = Guid.NewGuid(),
+            RecipeId = badRecipeId,
+            IngredientId = ingredientId,
+            Quantity = 50m,
+            YieldPercentage = 0m     // zero yield → exception in C-2
         });
         await db.SaveChangesAsync();
 
@@ -287,7 +353,7 @@ public sealed class CostCascadeServiceTests
 
         // Assert — C-5: counts
         Assert.AreEqual(1, result.AffectedRecipes, "One recipe should succeed");
-        Assert.AreEqual(1, result.FailedRecipes,   "One recipe should fail");
+        Assert.AreEqual(1, result.FailedRecipes, "One recipe should fail");
 
         var updatedGood = await db.Recipes.FindAsync(goodRecipeId);
         Assert.AreEqual(0.2500m, updatedGood!.CostPerPortion,

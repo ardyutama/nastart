@@ -17,7 +17,7 @@ public sealed class CreateRecipeHandler(IAppDbContext db, ICostCascadeService ca
             .AnyAsync(r => r.UserId == command.UserId && r.Name == command.Name, ct)
             .ConfigureAwait(false);
 
-        if(isDuplicate)
+        if (isDuplicate)
             return Error.Conflict("Recipe.Duplicate",
                 "A recipe with this name already exists.");
 
@@ -57,7 +57,7 @@ public sealed class CreateRecipeHandler(IAppDbContext db, ICostCascadeService ca
 
         foreach (var item in recipeItems)
             db.RecipeItems.Add(item);
-        
+
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         foreach (var IngredientId in ingredientIds)
@@ -80,5 +80,5 @@ public sealed class CreateRecipeHandler(IAppDbContext db, ICostCascadeService ca
             updatedRecipe.VersionGroupId,
             updatedRecipe.VersionNumber
         );
-    } 
+    }
 }

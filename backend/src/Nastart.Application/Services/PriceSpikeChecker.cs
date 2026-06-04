@@ -21,10 +21,10 @@ public sealed class PriceSpikeChecker(
             .Select(i => i.PriceSpikeThresholdPct)
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
-        
-        if(thresholdPct is null or <= 0m)
+
+        if (thresholdPct is null or <= 0m)
             return;
-        
+
         var previousPrice = await db.IngredientPriceHistories
             .Where(iph => iph.IngredientId == ingredientId)
             .OrderByDescending(iph => iph.CommittedAt)
@@ -43,9 +43,9 @@ public sealed class PriceSpikeChecker(
         decimal changePct = ((newPrice - oldPrice) / oldPrice) * 100m;
         decimal absChangePct = Math.Abs(changePct);
 
-        if(absChangePct <= thresholdPct.Value)
+        if (absChangePct <= thresholdPct.Value)
             return;
-        
+
         logger.LogWarning(
             "Price spike detected on ingredient {IngredientId}: {OldPrice} -> {NewPrice} "
             + "({ChangePct:F1}% change, threshold = {Threshold}%)",

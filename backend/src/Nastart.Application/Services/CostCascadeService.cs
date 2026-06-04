@@ -20,7 +20,7 @@ public sealed class CostCascadeService(
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if(currentPriceRecord is null)
+        if (currentPriceRecord is null)
         {
             logger.LogWarning(
                 "Cascade skipped for ingredient {IngredientId}: no price history found",
@@ -35,7 +35,7 @@ public sealed class CostCascadeService(
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if(affectedRecipeIds.Count == 0)
+        if (affectedRecipeIds.Count == 0)
         {
             logger.LogInformation("No recipes use ingredient {IngredientId}", ingredientId);
             return new CascadeResult(0, 0);
@@ -44,7 +44,7 @@ public sealed class CostCascadeService(
         int successCount = 0;
         int failCount = 0;
 
-        foreach(var recipeId in affectedRecipeIds)
+        foreach (var recipeId in affectedRecipeIds)
         {
             try
             {
@@ -96,20 +96,20 @@ public sealed class CostCascadeService(
             .Select(ri => ri.IngredientId)
             .Distinct()
             .ToList();
-        
+
         var latestPrices = await db.IngredientPriceHistories
             .Where(iph => ingredientIds.Contains(iph.IngredientId))
             .GroupBy(iph => iph.IngredientId)
             .Select(g => g.OrderByDescending(iph => iph.CommittedAt)
-                .Select(iph => new { iph.IngredientId, iph.Price, iph.UnitSize}).First())
+                .Select(iph => new { iph.IngredientId, iph.Price, iph.UnitSize }).First())
             .ToDictionaryAsync(x => x.IngredientId, x => x, cancellationToken)
             .ConfigureAwait(false);
-        
+
         decimal totalCost = 0m;
 
         foreach (var item in recipe.RecipeItems)
         {
-            if(!latestPrices.TryGetValue(item.IngredientId, out var latestPrice))
+            if (!latestPrices.TryGetValue(item.IngredientId, out var latestPrice))
             {
                 throw new InvalidOperationException(
                     $"Ingredient {item.IngredientId} in recipe {recipeId} has no price history.");
@@ -121,13 +121,13 @@ public sealed class CostCascadeService(
             var itemCost = (latestPrice.Price / latestPrice.UnitSize)
                 * item.Quantity
                 * (1m / item.YieldPercentage);
-            
+
             totalCost += itemCost;
         }
 
         recipe.CostPerPortion = recipe.PortionCount > 0
             ? Math.Round(totalCost / recipe.PortionCount, 4) : 0m;
-        
+
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         logger.LogInformation("Recipe {RecipeId} recalculated: cost_per_portion = {CostPerPortion}",

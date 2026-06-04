@@ -16,19 +16,19 @@ public static class RecipeEndpoints
         var group = app.MapGroup("api/recipes")
             .WithTags("Recipes")
             .RequireAuthorization();
-        
+
         group.MapGet("/", GetRecipes)
             .WithName("GetRecipes");
 
         group.MapPost("/", CreateRecipe)
             .WithName("CreateRecipe");
-        
+
         group.MapGet("/{recipeId:guid}", GetRecipeById)
             .WithName("GetRecipeById");
-        
+
         var itemsGroup = group.MapGroup("/{recipeId:guid}/items")
             .WithTags("Recipe Items");
-        
+
         itemsGroup.MapPost("/", AddRecipeItem)
             .WithName("AddRecipeItem");
 
@@ -45,8 +45,8 @@ public static class RecipeEndpoints
         return result.ToApiResult();
     }
 
-     private static async Task<IResult> CreateRecipe(
-            CreateRecipeRequest request, HttpContext httpContext, ISender sender, CancellationToken ct)
+    private static async Task<IResult> CreateRecipe(
+           CreateRecipeRequest request, HttpContext httpContext, ISender sender, CancellationToken ct)
     {
         var userId = httpContext.User.GetUserId();
         var command = new CreateRecipeCommand(

@@ -13,7 +13,7 @@ public class AddIngredientPriceHandler(
         ICostCascadeService cascadeService,
         IPriceSpikeChecker priceSpikeChecker,
         ILogger<AddIngredientPriceHandler> logger
-    ): IRequestHandler<AddIngredientPriceCommand, ErrorOr<AddIngredientPriceResponse>>
+    ) : IRequestHandler<AddIngredientPriceCommand, ErrorOr<AddIngredientPriceResponse>>
 {
     public async Task<ErrorOr<AddIngredientPriceResponse>> Handle(
         AddIngredientPriceCommand command, CancellationToken ct)

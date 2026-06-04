@@ -12,10 +12,10 @@ public sealed class RecipeItemConfiguration : IEntityTypeConfiguration<RecipeIte
 
         entity.Property(ri => ri.Quantity)
             .HasPrecision(18, 4);
-        
+
         entity.Property(ri => ri.YieldPercentage)
             .HasPrecision(5, 4);
-        
+
         entity.HasOne(ri => ri.Ingredient)
             .WithMany()
             .HasForeignKey(ri => ri.IngredientId)

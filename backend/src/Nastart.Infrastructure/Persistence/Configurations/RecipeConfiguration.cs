@@ -14,11 +14,11 @@ public sealed class RecipeConfiguration : IEntityTypeConfiguration<Recipe>
             .IsRequired()
             .HasMaxLength(200);
 
-        entity.HasIndex(r => new { r.UserId, r.Name})
+        entity.HasIndex(r => new { r.UserId, r.Name })
             .IsUnique();
 
         entity.Property(r => r.CostPerPortion)
-            .HasPrecision(18,4);
+            .HasPrecision(18, 4);
 
         entity.Property(r => r.PackagingCost)
             .HasPrecision(10, 4)
@@ -28,10 +28,10 @@ public sealed class RecipeConfiguration : IEntityTypeConfiguration<Recipe>
             .HasPrecision(5, 4)
             .HasDefaultValue(0m);
 
-        entity.HasIndex(r => new { r.VersionGroupId, r.VersionNumber})
+        entity.HasIndex(r => new { r.VersionGroupId, r.VersionNumber })
             .IsDescending(false, true);
-        
-        entity.HasIndex(r => new { r.UserId, r.VersionGroupId});
+
+        entity.HasIndex(r => new { r.UserId, r.VersionGroupId });
 
         entity.HasOne(r => r.User)
             .WithMany()

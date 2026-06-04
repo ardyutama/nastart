@@ -22,7 +22,7 @@ public sealed class ConsoleAlertDispatcher(
             oldPrice,
             newPrice
         );
-    
+
         return Task.CompletedTask;
     }
 }

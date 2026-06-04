@@ -12,7 +12,7 @@ public sealed class PostgreSqlTestDatabase : IAsyncDisposable
         .WithUsername("postgres")
         .WithPassword("postgres")
         .Build();
-    
+
     public Task InitializeAsync() => _container.StartAsync();
 
     public async Task<AppDbContext> CreateDbContextAsync()
@@ -39,7 +39,7 @@ public sealed class PostgreSqlTestDatabase : IAsyncDisposable
                 npsql => npsql.MigrationsAssembly(typeof(AppDbContext).Assembly.GetName().Name))
             .UseSnakeCaseNamingConvention()
             .Options;
-        
+
         var db = new AppDbContext(options);
         await db.Database.MigrateAsync();
         return db;

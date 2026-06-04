@@ -17,10 +17,10 @@ public sealed class GetRecipeByIdHandler(IAppDbContext db)
             .ThenInclude(ri => ri.Ingredient)
             .FirstOrDefaultAsync(r => r.Id == query.RecipeId && r.UserId == query.UserId, ct)
             .ConfigureAwait(false);
-        
-        if(recipe is null)
+
+        if (recipe is null)
             return Error.NotFound("Recipe.NotFound", "Recipe not found or doesn't belong to this user.");
-        
+
         var ingredientIds = recipe.RecipeItems.Select(ri => ri.IngredientId).Distinct().ToList();
         var latestPrices = await db.IngredientPriceHistories
             .Where(ph => ingredientIds.Contains(ph.IngredientId))
@@ -45,12 +45,12 @@ public sealed class GetRecipeByIdHandler(IAppDbContext db)
             );
         }).ToArray();
 
-        decimal? derivedSellPrice = recipe.TargetMargin < 1m 
+        decimal? derivedSellPrice = recipe.TargetMargin < 1m
             ? (recipe.CostPerPortion + recipe.PackagingCost) / (1m - recipe.TargetMargin) : null;
-        
+
         decimal? foodCostPct = derivedSellPrice.HasValue && derivedSellPrice.Value > 0
             ? (recipe.CostPerPortion / derivedSellPrice.Value) * 100m : null;
-        
+
         return new RecipeDetailResponse(
             recipe.Id, recipe.Name, recipe.PortionCount,
             recipe.CostPerPortion, recipe.PackagingCost,

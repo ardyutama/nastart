@@ -16,23 +16,23 @@ public sealed class AddRecipeItemHandler(IAppDbContext db, ICostCascadeService c
             .AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == command.RecipeId && r.UserId == command.UserId, ct)
             .ConfigureAwait(false);
-        
-        if(recipe is null)
+
+        if (recipe is null)
             return Error.NotFound("Recipe.NotFound", "Recipe not found or doesn't belong to this user.");
-        
+
         var ingredient = await db.Ingredients
             .AsNoTracking()
             .FirstOrDefaultAsync(i => i.Id == command.IngredientId && i.UserId == command.UserId, ct)
             .ConfigureAwait(false);
-        
-        if(ingredient is null)
+
+        if (ingredient is null)
             return Error.NotFound("Ingredient.NotFound", "Ingredient not found or doesn't belong to this user.");
-        
+
         var alreadyExist = await db.RecipeItems
             .AnyAsync(ri => ri.RecipeId == command.RecipeId && ri.IngredientId == command.IngredientId, ct)
             .ConfigureAwait(false);
-        
-        if(alreadyExist)
+
+        if (alreadyExist)
             return Error.Conflict("RecipeItem.Duplicate", "This ingredient is already in the recipe. Use UpdateRecipeItem to change quantity.");
 
         var recipeItem = new RecipeItem
