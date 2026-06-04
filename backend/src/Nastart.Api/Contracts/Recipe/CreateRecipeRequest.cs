@@ -10,3 +10,5 @@ public record CreateRecipeRequest(
 );
 
 public record CreateRecipeItemRequest(Guid IngredientId, decimal Quantity, decimal YieldPercentage);
+
+public record AddRecipeItemRequest(Guid IngredientId, decimal Quantity, decimal YieldPercentage);

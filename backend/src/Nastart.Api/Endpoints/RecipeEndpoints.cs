@@ -1,6 +1,7 @@
 using MediatR;
 using Nastart.Api.Contracts.Recipe;
 using Nastart.Api.Extensions;
+using Nastart.Application.Features.Recipes.Commands.AddRecipeItem;
 using Nastart.Application.Features.Recipes.Commands.CreateRecipe;
 using Nastart.Application.Features.Recipes.Queries.GetRecipeById;
 using Nastart.Application.Features.Recipes.Queries.GetRecipes;
@@ -24,6 +25,12 @@ public static class RecipeEndpoints
         
         group.MapGet("/{recipeId:guid}", GetRecipeById)
             .WithName("GetRecipeById");
+        
+        var itemsGroup = group.MapGroup("/{recipeId:guid}/items")
+            .WithTags("Recipe Items");
+        
+        itemsGroup.MapPost("/", AddRecipeItem)
+            .WithName("AddRecipeItem");
 
     }
 
@@ -66,5 +73,21 @@ public static class RecipeEndpoints
         var result = await sender.Send(query, ct);
 
         return result.ToApiResult();
+    }
+
+    private static async Task<IResult> AddRecipeItem(
+        Guid recipeId, AddRecipeItemRequest request, HttpContext httpContext, ISender sender, CancellationToken ct)
+    {
+        var userId = httpContext.User.GetUserId();
+        var command = new AddRecipeItemCommand(
+            recipeId,
+            userId,
+            request.IngredientId,
+            request.Quantity,
+            request.YieldPercentage
+        );
+
+        var result = await sender.Send(command, ct);
+        return result.ToCreatedResult($"/api/recipes/{recipeId}/items/{result.Value?.RecipeItemId}");
     }
 }
