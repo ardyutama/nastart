@@ -3,6 +3,7 @@ using Nastart.Api.Contracts.Recipe;
 using Nastart.Api.Extensions;
 using Nastart.Application.Features.Recipes.Commands.AddRecipeItem;
 using Nastart.Application.Features.Recipes.Commands.CreateRecipe;
+using Nastart.Application.Features.Recipes.Commands.RemoveRecipeItem;
 using Nastart.Application.Features.Recipes.Queries.GetRecipeById;
 using Nastart.Application.Features.Recipes.Queries.GetRecipes;
 using Nastart.Domain.Entities;
@@ -31,6 +32,9 @@ public static class RecipeEndpoints
 
         itemsGroup.MapPost("/", AddRecipeItem)
             .WithName("AddRecipeItem");
+
+        itemsGroup.MapDelete("/{recipeItemId:guid}", RemoveRecipeItem)
+            .WithName("RemoveRecipeItem");
 
     }
 
@@ -89,5 +93,15 @@ public static class RecipeEndpoints
 
         var result = await sender.Send(command, ct);
         return result.ToCreatedResult($"/api/recipes/{recipeId}/items/{result.Value?.RecipeItemId}");
+    }
+
+    private static async Task<IResult> RemoveRecipeItem(
+        Guid recipeId, Guid recipeItemId, HttpContext httpContext, ISender sender, CancellationToken ct)
+    {
+        var userId = httpContext.User.GetUserId();
+        var command = new RemoveRecipeItemCommand(recipeItemId, recipeId, userId);
+        var result = await sender.Send(command, ct);
+
+        return result.ToApiResult();
     }
 }
