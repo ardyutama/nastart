@@ -14,7 +14,7 @@ public sealed class RecipeConfiguration : IEntityTypeConfiguration<Recipe>
             .IsRequired()
             .HasMaxLength(200);
 
-        entity.HasIndex(r => new { r.UserId, r.Name })
+        entity.HasIndex(r => new { r.VersionGroupId, r.VersionLabel })
             .IsUnique();
 
         entity.Property(r => r.CostPerPortion)
