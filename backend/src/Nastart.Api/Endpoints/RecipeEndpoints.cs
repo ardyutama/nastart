@@ -5,6 +5,7 @@ using Nastart.Application.Features.Recipes.Commands.AddRecipeItem;
 using Nastart.Application.Features.Recipes.Commands.CreateRecipe;
 using Nastart.Application.Features.Recipes.Commands.CreateRecipeVersion;
 using Nastart.Application.Features.Recipes.Commands.RemoveRecipeItem;
+using Nastart.Application.Features.Recipes.Commands.UpdateRecipe;
 using Nastart.Application.Features.Recipes.Queries.GetRecipeById;
 using Nastart.Application.Features.Recipes.Queries.GetRecipes;
 using Nastart.Domain.Entities;
@@ -27,6 +28,9 @@ public static class RecipeEndpoints
 
         group.MapGet("/{recipeId:guid}", GetRecipeById)
             .WithName("GetRecipeById");
+
+        group.MapPut("/{recipeId:guid}", UpdateRecipe)
+            .WithName("UpdateRecipe");
 
         var itemsGroup = group.MapGroup("/{recipeId:guid}/items")
             .WithTags("Recipe Items");
@@ -73,6 +77,24 @@ public static class RecipeEndpoints
 
         var result = await sender.Send(command, ct);
         return result.ToCreatedResult($"/api/recipes/{result.Value?.Id}");
+    }
+
+    private static async Task<IResult> UpdateRecipe(
+        Guid recipeId, UpdateRecipeRequest request, HttpContext httpContext, ISender sender, CancellationToken ct)
+    {
+        var userId = httpContext.User.GetUserId();
+        var command = new UpdateRecipeCommand(
+            recipeId,
+            userId,
+            request.Name,
+            request.PortionCount,
+            request.PackagingCost,
+            request.TargetMargin,
+            request.VersionLabel
+        );
+
+        var result = await sender.Send(command, ct);
+        return result.ToApiResult();
     }
 
     private static async Task<IResult> GetRecipeById(

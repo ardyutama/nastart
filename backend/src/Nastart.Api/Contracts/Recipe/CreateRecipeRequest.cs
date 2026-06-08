@@ -13,4 +13,12 @@ public record CreateRecipeItemRequest(Guid IngredientId, decimal Quantity, decim
 
 public record AddRecipeItemRequest(Guid IngredientId, decimal Quantity, decimal YieldPercentage);
 
+public record UpdateRecipeRequest(
+    string Name,
+    int PortionCount,
+    decimal PackagingCost,
+    decimal TargetMargin,
+    string VersionLabel
+);
+
 public record CreateRecipeVersionRequest(string VersionLabel);
