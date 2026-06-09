@@ -1,0 +1,36 @@
+# .dockerignore — Place in project root
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Node
+node_modules/
+.nuxt/
+.output/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# IDE
+.idea/
+*.swp
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (NEVER include in build context!)
+.env
+appsettings.*.json
+!.dockerignore
+
+# Git
+.git/
+.gitignore
